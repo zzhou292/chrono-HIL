@@ -9,7 +9,11 @@ The software framework aims to provide an open-source solution to driving simula
 * Global real-time enforcement of the simulation.
 * Highly customizable rendering and control coupling to allow installation on any driving simulators and computing clusters.
 
-<img src="/images/0.png" width="200" /> <img src="/images/1.png" width="200" />
+<img src="/images/0.png" length="500" /> <img src="/images/1.png" length="500" />
+
+<img src="/images/2.png" length="500" /> <img src="/images/3.png" length="500" /> 
+
+<img src="/images/4.png" length="900" /> 
 
 Chrono::HIL is released as an open-source software under BSD-3 license, in-line with the licensing used for Project Chrono (https://projectchrono.org/). While the middleware is free, open-souce, and anyone is free to modify and repackaging the middleware for commercial purposes, there is no technical support comes with chrono::HIL. You are free to open an Issue, and Jason will try his best to porvide support. However no reponse or support is garanteed.
 
