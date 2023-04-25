@@ -17,7 +17,7 @@ The software framework aims to provide an open-source solution to driving simula
 
 Chrono::HIL is released as an open-source software under BSD-3 license, in-line with the licensing used for Project Chrono (https://projectchrono.org/). While the middleware is free, open-souce, and anyone is free to modify and repackaging the middleware for commercial purposes, there is no technical support comes with chrono::HIL. You are free to open an Issue, and Jason will try his best to porvide support. However no reponse or support is garanteed.
 
-Software and Hardware support can be provided in the following cases, please contact Jason (zzhou292@wisc.edu) :
+Software and Hardware support can be provided in the following cases, request priority ranking from high to low, please contact Jason (zzhou292@wisc.edu) :
 - A full or partial sponsorship to Jason's Research Assistantship (RA) to complete his PhD degree. For this option, please contact Prof. Dan Negrut (negrut@wisc.edu)
 - A full-time researcher/technician/engineer position with US Visa Sponsorship provided to Jason in either a research/not-for-profit institution or for-profit commercial institution.
 - A post-doc position in Engineering with US Visa Sponsorship provided to Jason in a research/not-for-profit institution.
