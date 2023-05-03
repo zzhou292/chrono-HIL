@@ -16,6 +16,8 @@
 #include "chrono/utils/ChFilters.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
 
+#include "chrono/utils/ChFilters.h"
+
 #include "chrono_vehicle/driver/ChPathFollowerDriver.h"
 
 #include "chrono_hil/timer/ChRealtimeCumulative.h"
@@ -42,6 +44,7 @@ using namespace chrono::vehicle;
 using namespace chrono::vehicle::sedan;
 using namespace chrono::geometry;
 using namespace chrono::hil;
+using namespace chrono::utils;
 
 const double RADS_2_RPM = 30 / CH_C_PI;
 const double MS_2_MPH = 2.2369;
@@ -49,12 +52,12 @@ const double MS_2_MPH = 2.2369;
 #define PORT_IN 1209
 #define PORT_OUT 1204
 #define IP_OUT "127.0.0.1"
-bool render = true;
+bool render = false;
 
 // =============================================================================
 
 // Initial vehicle location and orientation
-ChVector<> initLoc(-91.788, 98.647, 0.4);
+ChVector<> initLoc(-91.788, 98.647, 0.25);
 ChQuaternion<> initRot(1, 0, 0, 0);
 
 // Contact method
@@ -81,7 +84,7 @@ int main(int argc, char *argv[]) {
   std::string powertrain_filename =
       vehicle::GetDataFile("audi/json/audi_SimpleMapPowertrain.json");
   std::string tire_filename =
-      vehicle::GetDataFile("audi/json/audi_Pac02Tire.json");
+      vehicle::GetDataFile("audi/json/audi_TMeasyTire.json");
 
   // --------------
   // Create systems
@@ -156,7 +159,7 @@ int main(int argc, char *argv[]) {
   // Create a Irrlicht vis
   // ------------------------
   ChVector<> trackPoint(0.0, 0.0, 1.75);
-  int render_step = 100;
+  int render_step = 20;
   auto vis = chrono_types::make_shared<ChWheeledVehicleVisualSystemIrrlicht>();
   vis->SetWindowTitle("NADS");
   vis->SetChaseCamera(trackPoint, 6.0, 0.5);
@@ -191,8 +194,17 @@ int main(int argc, char *argv[]) {
   // create boost data streaming interface
   ChBoostOutStreamer boost_streamer(IP_OUT, PORT_OUT);
 
+  // declare a set of moving average filter for data smoothing
+  ChRunningAverage acc_x(100);
+  ChRunningAverage acc_y(100);
+  ChRunningAverage acc_z(100);
+
+  ChRunningAverage ang_vel_x(100);
+  ChRunningAverage ang_vel_y(100);
+  ChRunningAverage ang_vel_z(100);
+
   // simulation loop
-  while (true) {
+  while (vis->Run()) {
     double time = my_vehicle.GetSystem()->GetChTime();
 
     ChVector<> pos = my_vehicle.GetChassis()->GetPos();
@@ -223,7 +235,7 @@ int main(int argc, char *argv[]) {
     if (gear == 0.0) {
       my_vehicle.GetPowertrain()->SetDriveMode(
           ChPowertrain::DriveMode::NEUTRAL);
-      driver_inputs.m_braking = 1.0;
+      driver_inputs.m_braking = 0.8;
     } else if (gear == 1.0) {
       my_vehicle.GetPowertrain()->SetDriveMode(
           ChPowertrain::DriveMode::FORWARD);
@@ -246,6 +258,7 @@ int main(int argc, char *argv[]) {
     boost_streamer.AddData(eu_rot.x()); // 4 - x rotation
     boost_streamer.AddData(eu_rot.y()); // 5 - y rotation
     boost_streamer.AddData(eu_rot.z()); // 6 - z rotation
+
     auto vel =
         my_vehicle.GetChassis()->GetBody()->GetFrame_REF_to_abs().GetPos_dt();
     boost_streamer.AddData(vel.x()); // 7 - x velocity
@@ -254,18 +267,26 @@ int main(int argc, char *argv[]) {
     boost_streamer.AddData(
         (float)(my_vehicle.GetSpeed() * MS_2_MPH)); // 10 - speed (m/s)
 
-    auto acc =
-        my_vehicle.GetChassis()->GetBody()->GetFrame_REF_to_abs().GetPos_dtdt();
-    boost_streamer.AddData(acc.x()); // 11 - x acceleration
-    boost_streamer.AddData(acc.y()); // 12 - y acceleration
-    boost_streamer.AddData(acc.z()); // 13 - z acceleration
+    auto acc_local = my_vehicle.GetPointAcceleration(
+        my_vehicle.GetChassis()->GetCOMFrame().GetPos());
+    auto acc_loc_x_filtered = acc_x.Add(acc_local.x());
+    auto acc_loc_y_filtered = acc_y.Add(acc_local.y());
+    auto acc_loc_z_filtered = acc_z.Add(acc_local.z());
 
-    auto ang_vel_q =
-        my_vehicle.GetChassis()->GetBody()->GetFrame_REF_to_abs().GetRot_dt();
-    auto ang_vel = Q_to_Euler123(ang_vel_q);
-    boost_streamer.AddData(ang_vel.x()); // 14 - x ang vel of chassis
-    boost_streamer.AddData(ang_vel.y()); // 15 - y ang vel of chassis
-    boost_streamer.AddData(ang_vel.z()); // 16 - z ang vel of chassis
+    boost_streamer.AddData(
+        acc_loc_x_filtered); // 11 - x acceleration (local frame)
+    boost_streamer.AddData(
+        acc_loc_y_filtered); // 12 - y acceleration (local frame)
+    boost_streamer.AddData(
+        acc_loc_z_filtered); // 13 - z acceleration (local frame)
+
+    auto ang_vel = my_vehicle.GetChassis()->GetBody()->GetWvel_loc();
+    auto ang_vel_x_filtered = ang_vel_x.Add(ang_vel.x());
+    auto ang_vel_y_filtered = ang_vel_y.Add(ang_vel.y());
+    auto ang_vel_z_filtered = ang_vel_z.Add(ang_vel.z());
+    boost_streamer.AddData(ang_vel_x_filtered); // 14 - x ang vel of chassis
+    boost_streamer.AddData(ang_vel_y_filtered); // 15 - y ang vel of chassis
+    boost_streamer.AddData(ang_vel_z_filtered); // 16 - z ang vel of chassis
 
     boost_streamer.AddData(
         my_vehicle.GetPowertrain()
@@ -308,7 +329,7 @@ int main(int argc, char *argv[]) {
       start = std::chrono::high_resolution_clock::now();
     }
 
-    if (render == true) {
+    if (render == true && step_number % render_step == 0) {
       vis->BeginScene();
       vis->Render();
       vis->EndScene();

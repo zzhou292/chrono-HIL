@@ -180,7 +180,7 @@ int main(int argc, char *argv[]) {
     // ROM_VEHICLE
     std::shared_ptr<Ch_8DOF_vehicle> rom_veh =
         chrono_types::make_shared<Ch_8DOF_vehicle>(
-            rom_json, rom_data[i].pos.z(), step_size);
+            rom_json, rom_data[i].pos.z(), step_size, true);
     rom_veh->SetInitPos(rom_data[i].pos);
     rom_veh->SetInitRot(rom_data[i].rot.z());
     rom_veh->Initialize(&my_system);

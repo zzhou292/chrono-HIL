@@ -98,10 +98,10 @@ int main(int argc, char *argv[]) {
     in_streamer.Synchronize();
 
     recv_data = in_streamer.GetRecvData();
-    for (int i = 0; i < recv_data.size(); i++) {
-      std::cout << recv_data[i] << ",";
-    }
-    std::cout << std::endl;
+    // for (int i = 0; i < recv_data.size(); i++) {
+    //   std::cout << recv_data[i] << ",";
+    // }
+    // std::cout << std::endl;
 
     if (SDLDriver.Synchronize() == 1) {
       break;

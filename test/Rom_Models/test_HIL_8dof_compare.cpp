@@ -94,8 +94,8 @@ int main(int argc, char *argv[]) {
   // ========== Chrono::Vehicle HMMWV vehicle ===============
   // Create the HMMWV vehicle, set parameters, and initialize
 
-  VEH_TYPE rom_type = VEH_TYPE::PATROL;
-  TEST_CASE test_case = TEST_CASE::STRAIGHT;
+  VEH_TYPE rom_type = VEH_TYPE::HMMWV;
+  TEST_CASE test_case = TEST_CASE::TURN;
 
   float init_height = 0.45;
   std::string vehicle_filename;
@@ -222,8 +222,8 @@ int main(int argc, char *argv[]) {
   cam->PushFilter(
       chrono_types::make_shared<ChFilterVisualize>(1920, 1080, "test", false));
   // Provide the host access to the RGBA8 buffer
-  // cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
-  // cam->PushFilter(chrono_types::make_shared<ChFilterSave>("cam/"));
+  cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
+  cam->PushFilter(chrono_types::make_shared<ChFilterSave>("cam/"));
   manager->AddSensor(cam);
   manager->Update();
 
@@ -340,8 +340,6 @@ int main(int argc, char *argv[]) {
           << rom_rot_euler.x() << "," << rom_rot_euler.z() << ","
           << (rom_veh->GetVel()).Length() << std::endl;
       csv.write_to_file(out_dir + "/output.csv");
-
-      std::cout << rom_veh->GetVel().Length() << std::endl;
     }
 
     manager->Update();

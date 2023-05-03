@@ -387,7 +387,8 @@ int main(int argc, char *argv[]) {
       rom_json = audi_json;
     }
 
-    auto rom_zombie = chrono_types::make_shared<Ch_8DOF_zombie>(rom_json, 0.0);
+    auto rom_zombie =
+        chrono_types::make_shared<Ch_8DOF_zombie>(rom_json, 0.0, true);
     zombie_vec.push_back(rom_zombie);
     rom_zombie->Initialize(my_vehicle.GetSystem());
     std::cout << "zombie: " << i << std::endl;
@@ -500,27 +501,61 @@ int main(int argc, char *argv[]) {
                                   {brightness, brightness, brightness}, 100000);
     manager->scene->SetAmbientLight({.1, .1, .1});
     manager->scene->SetSceneEpsilon(1e-3);
-    // manager->scene->EnableDynamicOrigin(true);
-    // manager->scene->SetOriginOffsetThreshold(500.f);
+    manager->scene->EnableDynamicOrigin(true);
+    manager->scene->SetOriginOffsetThreshold(500.f);
 
-    // camera at driver's eye location for Audi
-    auto driver_cam = chrono_types::make_shared<ChCameraSensor>(
-        zombie_vec[38]->GetChassisBody(), // body camera is attached to
-                                          // my_vehicle.GetChassisBody()
-        25,                               // update rate in Hz
-        chrono::ChFrame<double>({-6.0, 0.0, 2.5},
+    /*
+        // camera at driver's eye location for Audi
+        auto driver_cam = chrono_types::make_shared<ChCameraSensor>(
+            my_vehicle.GetChassisBody(), // body camera is attached to
+                                         // my_vehicle.GetChassisBody()
+            25,                          // update rate in Hz
+            chrono::ChFrame<double>({-6.0, 0.0, 2.5},
+                                    Q_from_AngAxis(0.0, {0, 1, 0})), // offset
+       pose 640,                                                     // image
+       width 320,                                                     // image
+       height 3.14 / 1.5,                                              // fov
+            1);
+
+        driver_cam->SetName("DriverCam");
+        driver_cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
+            1920, 1080, "Camera1", false));
+        //
+       driver_cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
+        //
+       driver_cam->PushFilter(chrono_types::make_shared<ChFilterSave>("rom/"));
+        */
+
+    auto lidar = chrono_types::make_shared<ChLidarSensor>(
+        my_vehicle.GetChassisBody(), // body lidar is attached to
+        25,                          // scanning rate in Hz
+        chrono::ChFrame<double>({0.0, 0.0, 3.5},
                                 Q_from_AngAxis(0.0, {0, 1, 0})), // offset pose
-        1920,                                                    // image width
-        1080,                                                    // image height
-        3.14 / 1.5,                                              // fov
-        2);
+        1280,                 // number of horizontal samples
+        720,                  // numberof vertical channels
+        (float)(2 * CH_C_PI), // horizontal field of view
+        (float)CH_C_PI / 12, (float)-CH_C_PI / 3,
+        200.0f // vertical field of view
+    );
+    lidar->SetName("Lidar Sensor 1");
+    lidar->SetLag(0.f);
+    lidar->SetCollectionWindow(0.02f);
 
-    driver_cam->SetName("DriverCam");
-    // driver_cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
-    //     1920 * 3, 1080, "Camera1", false));
-    //  driver_cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
-    driver_cam->PushFilter(chrono_types::make_shared<ChFilterSave>("rom/"));
-    manager->AddSensor(driver_cam);
+    // Create a filter graph for post-processing the data from the lidar
+    // Provides the host access to the Depth,Intensity data
+    lidar->PushFilter(chrono_types::make_shared<ChFilterDIAccess>());
+
+    // Convert Depth,Intensity data to XYZI point
+    // cloud data
+    lidar->PushFilter(chrono_types::make_shared<ChFilterPCfromDepth>());
+    // Render the point cloud
+    lidar->PushFilter(chrono_types::make_shared<ChFilterVisualizePointCloud>(
+        1280, 720, 1.0, "Lidar Point Cloud"));
+    // Access the lidar data as an XYZI buffer
+    lidar->PushFilter(chrono_types::make_shared<ChFilterXYZIAccess>());
+
+    // manager->AddSensor(driver_cam);
+    manager->AddSensor(lidar);
   }
 
   // --------------
@@ -675,7 +710,7 @@ int main(int argc, char *argv[]) {
     terrain.Advance(step_size);
 
     if (node_id == 0 && step_number % int(heartbeat / step_size) == 0) {
-      // manager->Update();
+      manager->Update();
     }
 
     // Synchronize
