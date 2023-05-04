@@ -47,11 +47,22 @@ using namespace chrono::hil;
 using namespace chrono::utils;
 
 const double RADS_2_RPM = 30 / CH_C_PI;
+const double RADS_2_DEG = 180 / CH_C_PI;
 const double MS_2_MPH = 2.2369;
+const double M_2_FT = 3.28084;
 
+#define USENADS
+
+#ifdef USENADS
+#define PORT_IN 9090
+#define PORT_OUT 9091
+#define IP_OUT "90.0.0.125"
+#else
 #define PORT_IN 1209
 #define PORT_OUT 1204
 #define IP_OUT "127.0.0.1"
+#endif
+
 bool render = false;
 
 // =============================================================================
@@ -180,6 +191,7 @@ int main(int argc, char *argv[]) {
   // Simulation loop
   // ---------------
   std::cout << "\nVehicle mass: " << my_vehicle.GetMass() << std::endl;
+  std::cout << "\nIP_OUT: " << IP_OUT << std::endl;
 
   // Initialize simulation frame counters
   int step_number = 0;
@@ -251,19 +263,18 @@ int main(int argc, char *argv[]) {
     // data stream out section
     // =======================
     boost_streamer.AddData((float)time); // 0 - time
-    boost_streamer.AddData(pos.x());     // 1 - x position
-    boost_streamer.AddData(pos.y());     // 2 - y position
-    boost_streamer.AddData(pos.z());     // 3 - z position
+    boost_streamer.AddData(-pos.y() * M_2_FT);     // 1 - x position
+    boost_streamer.AddData( pos.x() * M_2_FT);     // 2 - y position
+    boost_streamer.AddData( pos.z() * M_2_FT);     // 3 - z position
     auto eu_rot = Q_to_Euler123(rot);
-    boost_streamer.AddData(eu_rot.x()); // 4 - x rotation
-    boost_streamer.AddData(eu_rot.y()); // 5 - y rotation
-    boost_streamer.AddData(eu_rot.z()); // 6 - z rotation
-
+    boost_streamer.AddData( eu_rot.z() * RADS_2_DEG); // 4 - x rotation, yaw
+    boost_streamer.AddData(-eu_rot.y() * RADS_2_DEG); // 5 - y rotation, pitch
+    boost_streamer.AddData( eu_rot.x() * RADS_2_DEG); // 6 - z rotation, roll
     auto vel =
         my_vehicle.GetChassis()->GetBody()->GetFrame_REF_to_abs().GetPos_dt();
-    boost_streamer.AddData(vel.x()); // 7 - x velocity
-    boost_streamer.AddData(vel.y()); // 8 - y velocity
-    boost_streamer.AddData(vel.z()); // 9 - z velocity
+    boost_streamer.AddData(-vel.y() * M_2_FT); // 7 - x velocity
+    boost_streamer.AddData( vel.x() * M_2_FT); // 8 - y velocity
+    boost_streamer.AddData( vel.z() * M_2_FT); // 9 - z velocity
     boost_streamer.AddData(
         (float)(my_vehicle.GetSpeed() * MS_2_MPH)); // 10 - speed (m/s)
 
@@ -274,19 +285,19 @@ int main(int argc, char *argv[]) {
     auto acc_loc_z_filtered = acc_z.Add(acc_local.z());
 
     boost_streamer.AddData(
-        acc_loc_x_filtered); // 11 - x acceleration (local frame)
+         acc_loc_x_filtered * M_2_FT); // 11 - x acceleration (local frame)
     boost_streamer.AddData(
-        acc_loc_y_filtered); // 12 - y acceleration (local frame)
+        -acc_loc_y_filtered * M_2_FT); // 12 - y acceleration (local frame)
     boost_streamer.AddData(
-        acc_loc_z_filtered); // 13 - z acceleration (local frame)
+        -acc_loc_z_filtered * M_2_FT); // 13 - z acceleration (local frame)
 
     auto ang_vel = my_vehicle.GetChassis()->GetBody()->GetWvel_loc();
     auto ang_vel_x_filtered = ang_vel_x.Add(ang_vel.x());
     auto ang_vel_y_filtered = ang_vel_y.Add(ang_vel.y());
     auto ang_vel_z_filtered = ang_vel_z.Add(ang_vel.z());
-    boost_streamer.AddData(ang_vel_x_filtered); // 14 - x ang vel of chassis
-    boost_streamer.AddData(ang_vel_y_filtered); // 15 - y ang vel of chassis
-    boost_streamer.AddData(ang_vel_z_filtered); // 16 - z ang vel of chassis
+    boost_streamer.AddData( ang_vel_x_filtered * RADS_2_DEG); // 14 - x ang vel of chassis
+    boost_streamer.AddData(-ang_vel_y_filtered * RADS_2_DEG); // 15 - y ang vel of chassis
+    boost_streamer.AddData(-ang_vel_z_filtered * RADS_2_DEG); // 16 - z ang vel of chassis
 
     boost_streamer.AddData(
         my_vehicle.GetPowertrain()
