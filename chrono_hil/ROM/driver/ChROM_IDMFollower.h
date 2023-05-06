@@ -1,3 +1,19 @@
+// =============================================================================
+// CHRONO-HIL - https://github.com/zzhou292/chrono-HIL
+//
+// Copyright (c) Jason Zhou
+// All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license that can be found
+// in the LICENSE file at the top level of the distribution
+//
+// =============================================================================
+// Authors: Jason Zhou
+// =============================================================================
+//
+// An IDM wrapped around path follower
+//
+// =============================================================================
 #ifndef CH_IDM_FOLLOWER_H
 #define CH_IDM_FOLLOWER_H
 

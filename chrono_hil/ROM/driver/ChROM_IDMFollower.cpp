@@ -1,3 +1,20 @@
+// =============================================================================
+// CHRONO-HIL - https://github.com/zzhou292/chrono-HIL
+//
+// Copyright (c) 2014 projectchrono.org
+// Jason Zhou
+// All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license that can be found
+// in the LICENSE file at the top level of the distribution
+//
+// =============================================================================
+// Authors: Jason Zhou
+// =============================================================================
+//
+// An IDM wrapped around path follower
+//
+// =============================================================================
 #include "ChROM_IDMFollower.h"
 
 #include <algorithm>
