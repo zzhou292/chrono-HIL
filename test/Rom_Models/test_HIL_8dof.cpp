@@ -98,7 +98,7 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  Ch_8DOF_vehicle rom_veh(rom_json, init_height, step_size);
+  Ch_8DOF_vehicle rom_veh(rom_json, init_height, step_size, true);
 
   rom_veh.Initialize(&sys);
 

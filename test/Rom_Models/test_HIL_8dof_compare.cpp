@@ -82,10 +82,10 @@ ChQuaternion<> initRot(1, 0, 0, 0);
 // Point on chassis tracked by the camera
 ChVector<> trackPoint(0.0, 0.0, 1.75);
 
-bool output = true;
+bool output = false;
 const std::string out_dir = GetChronoOutputPath() + "8dof";
 
-enum VEH_TYPE { HMMWV, PATROL, AUDI, SEDAN };
+enum VEH_TYPE { HMMWV, AUDI, SEDAN };
 
 enum TEST_CASE { STRAIGHT, TURN };
 
@@ -94,49 +94,45 @@ int main(int argc, char *argv[]) {
   // ========== Chrono::Vehicle HMMWV vehicle ===============
   // Create the HMMWV vehicle, set parameters, and initialize
 
-  VEH_TYPE rom_type = VEH_TYPE::HMMWV;
+  VEH_TYPE rom_type = VEH_TYPE::SEDAN;
   TEST_CASE test_case = TEST_CASE::TURN;
 
   float init_height = 0.45;
   std::string vehicle_filename;
   std::string tire_filename;
-  std::string powertrain_filename;
+  std::string transmission_filename;
+  std::string engine_filename;
   std::string rom_json;
 
   switch (rom_type) {
   case VEH_TYPE::HMMWV:
     vehicle_filename = vehicle::GetDataFile("hmmwv/vehicle/HMMWV_Vehicle.json");
     tire_filename = vehicle::GetDataFile("hmmwv/tire/HMMWV_TMeasyTire.json");
-    powertrain_filename =
-        vehicle::GetDataFile("hmmwv/powertrain/HMMWV_ShaftsPowertrain.json");
+    transmission_filename = vehicle::GetDataFile(
+        "hmmwv/powertrain/HMMWV_AutomaticTransmissionShafts.json");
+    engine_filename =
+        vehicle::GetDataFile("hmmwv/powertrain/HMMWV_EngineShafts.json");
     rom_json =
         std::string(STRINGIFY(HIL_DATA_DIR)) + "/rom/hmmwv/hmmwv_rom.json";
-    init_height = 0.45;
-    break;
-  case VEH_TYPE::PATROL:
-    vehicle_filename =
-        vehicle::GetDataFile("Nissan_Patrol/json/suv_Vehicle.json");
-    tire_filename =
-        vehicle::GetDataFile("Nissan_Patrol/json/suv_TMeasyTire.json");
-    powertrain_filename =
-        vehicle::GetDataFile("Nissan_Patrol/json/suv_ShaftsPowertrain.json");
-    rom_json =
-        std::string(STRINGIFY(HIL_DATA_DIR)) + "/rom/patrol/patrol_rom.json";
     init_height = 0.45;
     break;
   case VEH_TYPE::AUDI:
     vehicle_filename = vehicle::GetDataFile("audi/json/audi_Vehicle.json");
     tire_filename = vehicle::GetDataFile("audi/json/audi_TMeasyTire.json");
-    powertrain_filename =
-        vehicle::GetDataFile("audi/json/audi_SimpleMapPowertrain.json");
+    transmission_filename = vehicle::GetDataFile(
+        "audi/json/audi_AutomaticTransmissionSimpleMap.json");
+    engine_filename =
+        vehicle::GetDataFile("audi/json/audi_EngineSimpleMap.json");
     rom_json = std::string(STRINGIFY(HIL_DATA_DIR)) + "/rom/audi/audi_rom.json";
     init_height = 0.20;
     break;
   case VEH_TYPE::SEDAN:
     vehicle_filename = vehicle::GetDataFile("sedan/vehicle/Sedan_Vehicle.json");
     tire_filename = vehicle::GetDataFile("sedan/tire/Sedan_TMeasyTire.json");
-    powertrain_filename =
-        vehicle::GetDataFile("sedan/powertrain/Sedan_SimpleMapPowertrain.json");
+    transmission_filename = vehicle::GetDataFile(
+        "sedan/powertrain/Sedan_AutomaticTransmissionSimpleMap.json");
+    engine_filename =
+        vehicle::GetDataFile("sedan/powertrain/Sedan_EngineSimpleMap.json");
     rom_json =
         std::string(STRINGIFY(HIL_DATA_DIR)) + "/rom/sedan/sedan_rom.json";
     init_height = 0.20;
@@ -149,7 +145,12 @@ int main(int argc, char *argv[]) {
   auto ego_chassis = my_vehicle.GetChassis();
   my_vehicle.Initialize(ChCoordsys<>(initLoc, initRot));
   my_vehicle.GetChassis()->SetFixed(false);
-  auto powertrain = ReadPowertrainJSON(powertrain_filename);
+
+  auto engine = ReadEngineJSON(engine_filename);
+  auto transmission = ReadTransmissionJSON(transmission_filename);
+  auto powertrain =
+      chrono_types::make_shared<ChPowertrainAssembly>(engine, transmission);
+
   my_vehicle.InitializePowertrain(powertrain);
   my_vehicle.SetChassisVisualizationType(VisualizationType::MESH);
   my_vehicle.SetSuspensionVisualizationType(VisualizationType::MESH);
@@ -215,15 +216,15 @@ int main(int argc, char *argv[]) {
       chrono::ChFrame<double>(
           ChVector<>(20.0, -25.0, 10.0),
           Q_from_Euler123(ChVector<>(0.0, C_PI / 6, C_PI / 2))), // offset pose
-      1920,                                                      // image width
-      1080,                                                      // image
-      1.608f, 2); // fov, lag, exposure cam->SetName("Camera Sensor");
+      1280,                                                      // image width
+      720,                                                       // image
+      1.608f, 1); // fov, lag, exposure cam->SetName("Camera Sensor");
 
   cam->PushFilter(
-      chrono_types::make_shared<ChFilterVisualize>(1920, 1080, "test", false));
+      chrono_types::make_shared<ChFilterVisualize>(1280, 720, "test", false));
   // Provide the host access to the RGBA8 buffer
-  cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
-  cam->PushFilter(chrono_types::make_shared<ChFilterSave>("cam/"));
+  // cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
+  // cam->PushFilter(chrono_types::make_shared<ChFilterSave>("cam/"));
   manager->AddSensor(cam);
   manager->Update();
 

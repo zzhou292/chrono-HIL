@@ -27,7 +27,7 @@ namespace chrono {
 namespace hil {
 
 /// Class for a timer which attempts to enforce soft real-time.
-class ChRealtimeCumulative : public ChTimer<double> {
+class ChRealtimeCumulative : public ChTimer {
 public:
   /// Create the timer (outside the simulation loop, preferably just before
   /// beginning the loop)
