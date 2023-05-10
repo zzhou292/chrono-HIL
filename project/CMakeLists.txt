@@ -8,7 +8,6 @@ if(ENABLE_PROJECTS)
   if(CHRONO_SENSOR_FOUND)
     #add_subdirectory(Iowa_Highway)
     #add_subdirectory(SanFran_City)
-    #add_subdirectory(Jsonfy_Env)
     #add_subdirectory(Ring_Exp)
     #add_subdirectory(Rom_Models)
 
