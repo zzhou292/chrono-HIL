@@ -24,6 +24,8 @@ using namespace chrono::geometry;
 Ch_8DOF_vehicle::Ch_8DOF_vehicle(std::string rom_json, float z_plane,
                                  float step_size, bool vis) {
 
+  preload_vis_mesh = false;
+
   rom_z_plane = z_plane;
   enable_vis = vis;
 
@@ -42,9 +44,102 @@ Ch_8DOF_vehicle::Ch_8DOF_vehicle(std::string rom_json, float z_plane,
   engine_json =
       std::string(STRINGIFY(HIL_DATA_DIR)) + d["Engine_File"].GetString();
 
-  chassis_mesh =
+  m_chassis_mesh =
       std::string(STRINGIFY(HIL_DATA_DIR)) + d["Chassis_Mesh"].GetString();
-  wheel_mesh =
+  m_wheel_mesh =
+      std::string(STRINGIFY(HIL_DATA_DIR)) + d["Wheel_Mesh"].GetString();
+
+  // 1 -> LF
+  // 2 -> RF
+  // 3 -> LR
+  // 4 -> RR
+  wheels_offset_pos[0] = vehicle::ReadVectorJSON(d["Wheel_Pos_0"]);
+  wheels_offset_pos[1] = vehicle::ReadVectorJSON(d["Wheel_Pos_1"]);
+  wheels_offset_pos[2] = vehicle::ReadVectorJSON(d["Wheel_Pos_2"]);
+  wheels_offset_pos[3] = vehicle::ReadVectorJSON(d["Wheel_Pos_3"]);
+
+  // initialization of vehicle's tire rotation angle on Y direction
+  prev_tire_rotation[0] = 0.0;
+  prev_tire_rotation[1] = 0.0;
+  prev_tire_rotation[2] = 0.0;
+  prev_tire_rotation[3] = 0.0;
+
+  wheels_offset_rot[0].Q_from_Euler123(
+      vehicle::ReadVectorJSON(d["Wheel_Rot_0"]));
+  wheels_offset_rot[1].Q_from_Euler123(
+      vehicle::ReadVectorJSON(d["Wheel_Rot_1"]));
+  wheels_offset_rot[2].Q_from_Euler123(
+      vehicle::ReadVectorJSON(d["Wheel_Rot_2"]));
+  wheels_offset_rot[3].Q_from_Euler123(
+      vehicle::ReadVectorJSON(d["Wheel_Rot_3"]));
+
+  rapidjson::Document d_dyn;
+  vehicle::ReadFileJSON(vehicle_dyn_json, d_dyn);
+
+  if (d_dyn.HasParseError()) {
+    std::cout << "Error with 8DOF Dyn Json file:" << std::endl
+              << d_dyn.GetParseError() << std::endl;
+  }
+
+  rapidjson::Document d_eng;
+  vehicle::ReadFileJSON(engine_json, d_eng);
+
+  if (d_dyn.HasParseError()) {
+    std::cout << "Error with 8DOF Engine Json file:" << std::endl
+              << d_eng.GetParseError() << std::endl;
+  }
+
+  rapidjson::Document d_tire;
+  vehicle::ReadFileJSON(tire_json, d_tire);
+
+  if (d_dyn.HasParseError()) {
+    std::cout << "Error with 8DOF Tire Json file:" << std::endl
+              << d_tire.GetParseError() << std::endl;
+  }
+
+  // Set vehicle parameters from JSON file
+  setVehParamsJSON(veh1_param, d_dyn);
+  setEngParamsJSON(veh1_param, d_eng);
+
+  vehInit(veh1_st, veh1_param, step_size);
+
+  // set the tire parameters from a JSON file
+  setTireParamsJSON(tire_param, d_tire);
+
+  // now we initialize each of our parameters
+  tireInit(tire_param, step_size);
+}
+
+Ch_8DOF_vehicle::Ch_8DOF_vehicle(
+    std::string rom_json, float z_plane, float step_size,
+    std::shared_ptr<ChTriangleMeshConnected> chassis_mesh,
+    std::shared_ptr<ChTriangleMeshConnected> wheel_mesh_l,
+    std::shared_ptr<ChTriangleMeshConnected> wheel_mesh_r, bool vis) {
+
+  preload_vis_mesh = true;
+  m_chassis_trimesh = chassis_mesh;
+  m_wheel_trimesh_l = wheel_mesh_l;
+  m_wheel_trimesh_r = wheel_mesh_r;
+
+  rom_z_plane = z_plane;
+  enable_vis = vis;
+
+  rapidjson::Document d;
+  vehicle::ReadFileJSON(rom_json, d);
+
+  if (d.HasParseError()) {
+    std::cout << "Error with 8DOF Json file:" << std::endl
+              << d.GetParseError() << std::endl;
+  }
+
+  vehicle_dyn_json =
+      std::string(STRINGIFY(HIL_DATA_DIR)) + d["Dynamic_File"].GetString();
+
+  tire_json = std::string(STRINGIFY(HIL_DATA_DIR)) + d["Tire_File"].GetString();
+  engine_json =
+      std::string(STRINGIFY(HIL_DATA_DIR)) + d["Engine_File"].GetString();
+
+  m_wheel_mesh =
       std::string(STRINGIFY(HIL_DATA_DIR)) + d["Wheel_Mesh"].GetString();
 
   // 1 -> LF
@@ -118,15 +213,27 @@ void Ch_8DOF_vehicle::Initialize(ChSystem *sys) {
 
     chassis_body->SetBodyFixed(true);
 
-    auto chassis_mmesh = chrono_types::make_shared<ChTriangleMeshConnected>();
-    chassis_mmesh->LoadWavefrontMesh(chassis_mesh, false, true);
+    // initializing visualization assets for chassis
+    if (preload_vis_mesh == true) {
+      auto chassis_trimesh_shape =
+          chrono_types::make_shared<ChTriangleMeshShape>();
+      chassis_trimesh_shape->SetMesh(m_chassis_trimesh);
+      chassis_trimesh_shape->SetMutable(false);
 
-    auto chassis_trimesh_shape =
-        chrono_types::make_shared<ChTriangleMeshShape>();
-    chassis_trimesh_shape->SetMesh(chassis_mmesh);
-    chassis_trimesh_shape->SetMutable(false);
+      chassis_body->AddVisualShape(chassis_trimesh_shape);
 
-    chassis_body->AddVisualShape(chassis_trimesh_shape);
+      sys->AddBody(chassis_body);
+    } else {
+      auto chassis_mmesh = chrono_types::make_shared<ChTriangleMeshConnected>();
+      chassis_mmesh->LoadWavefrontMesh(m_chassis_mesh, false, true);
+
+      auto chassis_trimesh_shape =
+          chrono_types::make_shared<ChTriangleMeshShape>();
+      chassis_trimesh_shape->SetMesh(chassis_mmesh);
+      chassis_trimesh_shape->SetMutable(false);
+
+      chassis_body->AddVisualShape(chassis_trimesh_shape);
+    }
 
     sys->AddBody(chassis_body);
 
@@ -140,6 +247,7 @@ void Ch_8DOF_vehicle::Initialize(ChSystem *sys) {
     ChFrame<> X_RR = chassis_body->GetFrame_REF_to_abs() *
                      ChFrame<>(wheels_offset_pos[3], wheels_offset_rot[3]);
 
+    // initializing visualization assets for wheels
     for (int i = 0; i < 4; i++) {
 
       wheels_body[i] = chrono_types::make_shared<ChBodyAuxRef>();
@@ -148,17 +256,36 @@ void Ch_8DOF_vehicle::Initialize(ChSystem *sys) {
       wheels_body[i]->SetBodyFixed(true);
 
       if (enable_vis) {
-        auto wheel_mmesh = chrono_types::make_shared<ChTriangleMeshConnected>();
-        wheel_mmesh->LoadWavefrontMesh(wheel_mesh, false, true);
+        if (preload_vis_mesh) {
+          if (i % 2 == 0) {
+            auto wheel_trimesh_shape =
+                chrono_types::make_shared<ChTriangleMeshShape>();
+            wheel_trimesh_shape->SetMesh(m_wheel_trimesh_l);
+            wheel_trimesh_shape->SetMutable(false);
+            wheels_body[i]->AddVisualShape(wheel_trimesh_shape);
+          } else {
+            auto wheel_trimesh_shape =
+                chrono_types::make_shared<ChTriangleMeshShape>();
+            wheel_trimesh_shape->SetMesh(m_wheel_trimesh_r);
+            wheel_trimesh_shape->SetMutable(false);
+            wheels_body[i]->AddVisualShape(wheel_trimesh_shape);
+          }
 
-        // transform all wheel rotations, to the meshes
-        wheel_mmesh->Transform(ChVector<>(0.0, 0.0, 0.0), wheels_offset_rot[i]);
+        } else {
+          auto wheel_mmesh =
+              chrono_types::make_shared<ChTriangleMeshConnected>();
+          wheel_mmesh->LoadWavefrontMesh(m_wheel_mesh, false, true);
 
-        auto wheel_trimesh_shape =
-            chrono_types::make_shared<ChTriangleMeshShape>();
-        wheel_trimesh_shape->SetMesh(wheel_mmesh);
-        wheel_trimesh_shape->SetMutable(false);
-        wheels_body[i]->AddVisualShape(wheel_trimesh_shape);
+          // transform all wheel rotations, to the meshes
+          wheel_mmesh->Transform(ChVector<>(0.0, 0.0, 0.0),
+                                 wheels_offset_rot[i]);
+
+          auto wheel_trimesh_shape =
+              chrono_types::make_shared<ChTriangleMeshShape>();
+          wheel_trimesh_shape->SetMesh(wheel_mmesh);
+          wheel_trimesh_shape->SetMutable(false);
+          wheels_body[i]->AddVisualShape(wheel_trimesh_shape);
+        }
       }
 
       if (i == 0) {

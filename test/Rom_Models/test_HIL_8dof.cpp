@@ -50,7 +50,7 @@ int main(int argc, char *argv[]) {
   RigidTerrain terrain(&sys);
 
   // Define ROM vehicle type
-  VEH_TYPE rom_type = VEH_TYPE::HMMWV;
+  VEH_TYPE rom_type = VEH_TYPE::AUDI;
   float init_height = 0.45;
 
   ChContactMaterialData minfo;

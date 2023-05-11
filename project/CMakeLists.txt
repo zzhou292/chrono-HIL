@@ -6,7 +6,7 @@ if(ENABLE_PROJECTS)
   add_subdirectory(NADS)
 
   if(CHRONO_SENSOR_FOUND)
-    #add_subdirectory(Iowa_Highway)
+    add_subdirectory(Iowa_Highway)
     #add_subdirectory(SanFran_City)
     #add_subdirectory(Ring_Exp)
     #add_subdirectory(Rom_Models)

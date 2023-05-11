@@ -59,8 +59,6 @@
 
 #include "chrono_hil/network/udp/ChBoostOutStreamer.h"
 
-#define IP_OUT "128.104.190.187"
-#define PORT_OUT 1204
 // Use the namespaces of Chrono
 using namespace chrono;
 using namespace chrono::irrlicht;
@@ -84,7 +82,7 @@ ChVector<> trackPoint(0.0, 0.0, 1.75);
 
 int main(int argc, char *argv[]) {
   ChSystemSMC my_system;
-  int num_rom = 300;
+  int num_rom = 100;
 
   vehicle::SetDataPath(CHRONO_DATA_DIR + std::string("vehicle/"));
 
@@ -94,10 +92,33 @@ int main(int argc, char *argv[]) {
   std::string rom_json =
       std::string(STRINGIFY(HIL_DATA_DIR)) + "/rom/hmmwv/hmmwv_rom.json";
 
+  std::string chassis_mesh_obj =
+      std::string(STRINGIFY(HIL_DATA_DIR)) + "/rom/hmmwv/hmmwv_chassis.obj";
+  auto chassis_mmesh = chrono_types::make_shared<ChTriangleMeshConnected>();
+  chassis_mmesh->LoadWavefrontMesh(chassis_mesh_obj, false, true);
+
+  std::string wheel_mesh_obj =
+      std::string(STRINGIFY(HIL_DATA_DIR)) + "/rom/hmmwv/full_tire.obj";
+
+  auto wheel_mmesh_l = chrono_types::make_shared<ChTriangleMeshConnected>();
+  wheel_mmesh_l->LoadWavefrontMesh(wheel_mesh_obj, false, true);
+
+  auto wheel_mmesh_r = chrono_types::make_shared<ChTriangleMeshConnected>();
+  wheel_mmesh_r->LoadWavefrontMesh(wheel_mesh_obj, false, true);
+  ChQuaternion<> mmesh_rot(1, 0, 0, 0);
+  mmesh_rot.Q_from_AngZ(C_PI);
+  wheel_mmesh_r->Transform(ChVector<>(0.0, 0.0, 0.0), mmesh_rot);
+
   for (int i = 0; i < num_rom; i++) {
     std::shared_ptr<Ch_8DOF_vehicle> rom_veh =
-        chrono_types::make_shared<Ch_8DOF_vehicle>(rom_json, init_height,
-                                                   step_size);
+        chrono_types::make_shared<Ch_8DOF_vehicle>(
+            rom_json, init_height, step_size, chassis_mmesh, wheel_mmesh_l,
+            wheel_mmesh_r, true);
+
+    // std::shared_ptr<Ch_8DOF_vehicle> rom_veh =
+    //     chrono_types::make_shared<Ch_8DOF_vehicle>(rom_json, init_height,
+    //                                                step_size, true);
+
     rom_veh->SetInitPos(initLoc + ChVector<>(0.0, 0.0 + i * 2.0, init_height));
     rom_veh->SetInitRot(0.0);
     rom_veh->Initialize(&my_system);
@@ -179,9 +200,6 @@ int main(int argc, char *argv[]) {
   auto tt_0 = std::chrono::high_resolution_clock::now();
   double start_time;
 
-  // create boost data streaming interface
-  ChBoostOutStreamer boost_streamer(IP_OUT, PORT_OUT);
-
   while (time <= t_end) {
 
     time = my_system.GetChTime();
@@ -222,7 +240,7 @@ int main(int argc, char *argv[]) {
     terrain.Advance(step_size);
     my_system.DoStepDynamics(step_size);
 
-    // manager->Update();
+    manager->Update();
 
     if (step_number == 0) {
       auto tt_1 = std::chrono::high_resolution_clock::now();
@@ -239,13 +257,6 @@ int main(int argc, char *argv[]) {
           start_time;
       std::cout << "RTF: " << wall_time / time << std::endl;
     }
-
-    // Send out data
-    for (int i = 0; i < num_rom; i++) {
-      boost_streamer.AddData(rom_vec[i]->GetPos().x()); // 18 - current RPM
-    }
-
-    boost_streamer.Synchronize();
 
     // Increment frame number
     step_number++;

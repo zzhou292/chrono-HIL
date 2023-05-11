@@ -30,13 +30,20 @@
 
 using namespace chrono;
 using namespace chrono::vehicle;
+using namespace chrono::geometry;
 
-/// Class definition for the 8DOF Reduced-Order Vehicle Model (ROM).
+// Class definition for the 8DOF Reduced-Order Vehicle Model (ROM).
 class CH_HIL_API Ch_8DOF_vehicle {
 
   /// ROM class constructor
 public:
   Ch_8DOF_vehicle(std::string rom_json, float z_plane, float step_size,
+                  bool vis = false);
+
+  Ch_8DOF_vehicle(std::string rom_json, float z_plane, float step_size,
+                  std::shared_ptr<ChTriangleMeshConnected> chassis_mesh,
+                  std::shared_ptr<ChTriangleMeshConnected> wheel_mesh_l,
+                  std::shared_ptr<ChTriangleMeshConnected> wheel_mesh_r,
                   bool vis = false);
 
   /// Initialize the 8DOF ROM vehicle instance
@@ -88,6 +95,8 @@ private:
                    ///< enable_vis is set to false, no communication will happen
                    ///< between Chrono system and the ROM dynamics solver.
 
+  bool preload_vis_mesh; ///< Whether to preload visualization mesh
+
   float
       rom_z_plane; ///< The height of the z plane the ROM's motion is limited to
 
@@ -100,11 +109,15 @@ private:
   std::string engine_json; ///< Path to the json file which contains the engine
                            ///< parameters
 
-  std::string chassis_mesh; ///< Path to the mesh file which contains the
-                            ///< vehicle chassis trimesh (obj)
+  std::string m_chassis_mesh; ///< Path to the mesh file which contains the
+                              ///< vehicle chassis trimesh (obj)
 
-  std::string wheel_mesh; ///< Path to the mesh file which contains the vehicle
-                          ///< wheel+tire trimesh (obj)
+  std::string m_wheel_mesh; ///< Path to the mesh file which contains the
+                            ///< vehicle wheel+tire trimesh (obj)
+
+  std::shared_ptr<ChTriangleMeshConnected> m_chassis_trimesh;
+  std::shared_ptr<ChTriangleMeshConnected> m_wheel_trimesh_l;
+  std::shared_ptr<ChTriangleMeshConnected> m_wheel_trimesh_r;
 
   VehicleState veh1_st;
   VehicleParam veh1_param;
