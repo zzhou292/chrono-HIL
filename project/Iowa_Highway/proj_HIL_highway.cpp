@@ -740,23 +740,14 @@ int main(int argc, char *argv[]) {
   SetChronoDataPath(CHRONO_DATA_DIR);
   vehicle::SetDataPath(CHRONO_DATA_DIR + std::string("vehicle/"));
 
-  GetLog() << "Copyright (c) 2017 projectchrono.org\nChrono version: "
-           << CHRONO_VERSION << "\n\n";
-  std::string vehicle_file =
+  std::string vehicle_filename =
       vehicle::GetDataFile("audi/json/audi_Vehicle.json");
-  std::string powertrain_file =
-      vehicle::GetDataFile("audi/json/audi_SimpleMapPowertrain.json");
+  std::string engine_filename =
+      vehicle::GetDataFile("audi/json/audi_EngineSimpleMap.json");
+  std::string transmission_filename = vehicle::GetDataFile(
+      "audi/json/audi_AutomaticTransmissionSimpleMap.json");
   std::string tire_file = vehicle::GetDataFile("audi/json/audi_Pac02Tire.json");
-  /*
-    std::string vehicle_file =
-        vehicle::GetDataFile("sedan/vehicle/Sedan_Vehicle.json");
-    std::string powertrain_file =
-        vehicle::GetDataFile("sedan/powertrain/Sedan_SimpleMapPowertrain.json");
-    std::string tire_file =
-        vehicle::GetDataFile("sedan/tire/Sedan_TMeasyTire.json");*/
 
-  // std::string path_file = demo_data_path +
-  // "/Environments/Iowa/terrain/oval_highway_path.csv";
   std::string outer_path_file =
       demo_data_path + "/Environments/Iowa/Driver/OnOuterLane.txt";
   auto outer_path = ChBezierCurve::read(outer_path_file, true);
@@ -773,7 +764,7 @@ int main(int argc, char *argv[]) {
       demo_data_path + "/Environments/Iowa/Driver/OnOuterLane.txt";
   auto lane_1_path = ChBezierCurve::read(lane_1_path_file, true);
 
-  WheeledVehicle vehicle(vehicle_file, ChContactMethod::SMC);
+  WheeledVehicle vehicle(vehicle_filename, ChContactMethod::SMC);
   auto ego_chassis = vehicle.GetChassis();
   vehicle.Initialize(ChCoordsys<>(initLoc, initRot));
   vehicle.GetChassis()->SetFixed(false);
@@ -781,7 +772,12 @@ int main(int argc, char *argv[]) {
   vehicle.SetSuspensionVisualizationType(suspension_vis_type);
   vehicle.SetSteeringVisualizationType(steering_vis_type);
   vehicle.SetWheelVisualizationType(wheel_vis_type);
-  auto powertrain = ReadPowertrainJSON(powertrain_file);
+
+  auto engine = ReadEngineJSON(engine_filename);
+  auto transmission = ReadTransmissionJSON(transmission_filename);
+  auto powertrain =
+      chrono_types::make_shared<ChPowertrainAssembly>(engine, transmission);
+
   vehicle.InitializePowertrain(powertrain);
 
   output_file_path =
@@ -877,8 +873,15 @@ int main(int argc, char *argv[]) {
   std::vector<std::shared_ptr<WheeledVehicle>> lead_vehicles;
   for (int i = 0; i < num_dynamic; i++) {
     auto lead_vehicle = chrono_types::make_shared<WheeledVehicle>(
-        vehicle.GetSystem(), vehicle_file);
-    auto lead_powertrain = ReadPowertrainJSON(powertrain_file);
+        vehicle.GetSystem(), vehicle_filename);
+
+    auto lead_engine = ReadEngineJSON(engine_filename);
+    auto lead_transmission = ReadTransmissionJSON(transmission_filename);
+    auto lead_powertrain = chrono_types::make_shared<ChPowertrainAssembly>(
+        lead_engine, lead_transmission);
+
+    lead_vehicle->InitializePowertrain(lead_powertrain);
+
     // lead_vehicle->Initialize(ChCoordsys<>(dynamic_pos[i] +
     // initRot.Rotate(ChVector<>(lead_heading * (i + 1), 0, 0)), initRot));
     lead_vehicle->Initialize(ChCoordsys<>(dynamic_pos[i], initRot));
@@ -2099,7 +2102,7 @@ void IrrDashUpdate(
   app.GetDevice()->getVideoDriver()->draw2DImage(
       texture_DASH, irr::core::position2d<irr::s32>(0, 0));
 
-  int curr_gear = vehicle.GetPowertrain()->GetCurrentTransmissionGear();
+  int curr_gear = vehicle.GetTransmission()->GetCurrentGear();
 
   switch (curr_gear) {
   case 1:
@@ -2137,7 +2140,7 @@ void IrrDashUpdate(
                                                   sm_needle * cos(theta)),
       sm_center, irr::video::SColor(255, 255, 0, 0));
 
-  double engine_rpm = vehicle.GetPowertrain()->GetMotorSpeed() * rads2rpm;
+  double engine_rpm = vehicle.GetEngine()->GetMotorSpeed() * rads2rpm;
   double alpha = ((265.0 / 6500.0) * engine_rpm) * (CH_C_PI / 180);
   app.GetDevice()->getVideoDriver()->draw2DLine(
       rpm_center + irr::core::position2d<irr::s32>(-sm_needle * sin(alpha),
