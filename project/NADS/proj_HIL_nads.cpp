@@ -50,6 +50,7 @@ const double RADS_2_RPM = 30 / CH_C_PI;
 const double RADS_2_DEG = 180 / CH_C_PI;
 const double MS_2_MPH = 2.2369;
 const double M_2_FT = 3.28084;
+const double G_2_MPSS = 9.81;
 
 #ifdef USENADS
 #define PORT_IN 9090
@@ -288,26 +289,26 @@ int main(int argc, char *argv[]) {
       boost_streamer.AddData((float)time); // 0 - time
 
       // Chassis location
-      boost_streamer.AddData(-pos.y() * M_2_FT); // 1 - x position
-      boost_streamer.AddData(pos.x() * M_2_FT);  // 2 - y position
-      boost_streamer.AddData(pos.z() * M_2_FT);  // 3 - z position
+      boost_streamer.AddData(pos.x() * M_2_FT); // 1
+      boost_streamer.AddData(-pos.y() * M_2_FT); // 2
+      boost_streamer.AddData(-pos.z() * M_2_FT); // 3
 
       // Eyepoint position
       ChVector<> eyepoint_global = my_vehicle.GetPointLocation(driver_eyepoint);
 
       boost_streamer.AddData(
-          eyepoint_global.x()); // 4 - eyepoint pos x - global
+          -eyepoint_global.y() * M_2_FT); // 4
       boost_streamer.AddData(
-          eyepoint_global.y()); // 5 - eyepoint pos y - global
+          eyepoint_global.x() * M_2_FT); // 5
       boost_streamer.AddData(
-          eyepoint_global.z()); // 6 - eyepoint pos z - global
+          eyepoint_global.z() * M_2_FT); // 6
 
-      // Chassis orientation
+      // Eyepoint orientation
       auto eu_rot = Q_to_Euler123(rot);
 
-      boost_streamer.AddData(eu_rot.z() * RADS_2_DEG);  // 7 - x rotation, yaw
-      boost_streamer.AddData(-eu_rot.y() * RADS_2_DEG); // 8 - y rotation, pitch
-      boost_streamer.AddData(eu_rot.x() * RADS_2_DEG);  // 9 - z rotation, roll
+      boost_streamer.AddData(eu_rot.z() * RADS_2_DEG);  // 7 - yaw
+      boost_streamer.AddData(-eu_rot.y() * RADS_2_DEG); // 8 - pitch
+      boost_streamer.AddData(eu_rot.x() * RADS_2_DEG);  // 9 - roll
 
       // Chassis angular velocity
       auto ang_vel = my_vehicle.GetChassis()->GetBody()->GetWvel_loc();
@@ -315,20 +316,17 @@ int main(int argc, char *argv[]) {
       auto ang_vel_y_filtered = ang_vel_y.Add(ang_vel.y());
       auto ang_vel_z_filtered = ang_vel_z.Add(ang_vel.z());
 
-      boost_streamer.AddData(ang_vel_x_filtered *
-                             RADS_2_DEG); // 10 - x ang vel of chassis
-      boost_streamer.AddData(-ang_vel_y_filtered *
-                             RADS_2_DEG); // 11 - y ang vel of chassis
-      boost_streamer.AddData(-ang_vel_z_filtered *
-                             RADS_2_DEG); // 12 - z ang vel of chassis
+      boost_streamer.AddData(ang_vel_x_filtered * RADS_2_DEG); // 10
+      boost_streamer.AddData(-ang_vel_y_filtered * RADS_2_DEG); // 11
+      boost_streamer.AddData(-ang_vel_z_filtered * RADS_2_DEG); // 12
 
       // Chassis velocity
       auto vel =
           my_vehicle.GetChassis()->GetBody()->GetFrame_REF_to_abs().GetPos_dt();
 
-      boost_streamer.AddData(-vel.y() * M_2_FT); // 10 - x velocity
-      boost_streamer.AddData(vel.x() * M_2_FT);  // 11 - y velocity
-      boost_streamer.AddData(vel.z() * M_2_FT);  // 12 - z velocity
+      boost_streamer.AddData(-vel.y() * M_2_FT); // 13
+      boost_streamer.AddData(vel.x() * M_2_FT);  // 14
+      boost_streamer.AddData(vel.z() * M_2_FT);  // 15
 
       // Eyepoint velocity
       ChVector<> eyepoint_velocity =
@@ -340,12 +338,9 @@ int main(int argc, char *argv[]) {
       auto eyepoint_velocity_z_filtered =
           eyepoint_vel_z.Add(eyepoint_velocity.z());
 
-      boost_streamer.AddData(
-          eyepoint_velocity_x_filtered); // 13 - eyepoint vel x - global
-      boost_streamer.AddData(
-          eyepoint_velocity_y_filtered); // 14 - eyepoint vel y - global
-      boost_streamer.AddData(
-          eyepoint_velocity_z_filtered); // 15 - eyepoint vel z - global
+      boost_streamer.AddData(eyepoint_velocity_x_filtered * M_2_FT); // 16
+      boost_streamer.AddData(-eyepoint_velocity_y_filtered * M_2_FT); // 17
+      boost_streamer.AddData(-eyepoint_velocity_z_filtered * M_2_FT); // 18
 
       // Chassis local acceleration
       auto acc_local = my_vehicle.GetPointAcceleration(
@@ -354,12 +349,9 @@ int main(int argc, char *argv[]) {
       auto acc_loc_y_filtered = acc_y.Add(acc_local.y());
       auto acc_loc_z_filtered = acc_z.Add(acc_local.z());
 
-      boost_streamer.AddData(acc_loc_x_filtered *
-                             M_2_FT); // 10 - x acceleration (local frame)
-      boost_streamer.AddData(-acc_loc_y_filtered *
-                             M_2_FT); // 11 - y acceleration (local frame)
-      boost_streamer.AddData(-acc_loc_z_filtered *
-                             M_2_FT); // 12 - z acceleration (local frame)
+      boost_streamer.AddData(acc_loc_x_filtered * M_2_FT); // 19
+      boost_streamer.AddData(-acc_loc_y_filtered * M_2_FT); // 20
+      boost_streamer.AddData(-acc_loc_z_filtered * M_2_FT); // 21
 
       // Eyepoint specific force
       ChVector<> eye_acc = my_vehicle.GetPointAcceleration(driver_eyepoint);
@@ -367,9 +359,9 @@ int main(int argc, char *argv[]) {
       auto eye_acc_y_filtered = eyepoint_acc_y.Add(eye_acc.y());
       auto eye_acc_z_filtered = eyepoint_acc_z.Add(eye_acc.z());
 
-      boost_streamer.AddData(eye_acc_x_filtered); //
-      boost_streamer.AddData(eye_acc_y_filtered); //
-      boost_streamer.AddData(eye_acc_z_filtered); //
+      boost_streamer.AddData(eye_acc_x_filtered / G_2_MPSS); // 22
+      boost_streamer.AddData(eye_acc_y_filtered / G_2_MPSS); // 23
+      boost_streamer.AddData(eye_acc_z_filtered / G_2_MPSS); // 24
 
       // wheel center locations
       auto wheel_LF_state = my_vehicle.GetWheel(0, LEFT)->GetState();
@@ -378,21 +370,21 @@ int main(int argc, char *argv[]) {
       auto wheel_RR_state = my_vehicle.GetWheel(1, RIGHT)->GetState();
 
       boost_streamer.AddData(
-          wheel_RF_state.pos.x()); // 22 - RF wheel center pos x - global
+          wheel_RF_state.pos.x()); // 25 - RF wheel center pos x - global
       boost_streamer.AddData(
-          wheel_RF_state.pos.y()); // 23 - RF wheel center pos y - global
+          wheel_RF_state.pos.y()); // 26 - RF wheel center pos y - global
       boost_streamer.AddData(
-          wheel_RF_state.pos.x()); // 24 - LF wheel center pos x - global
+          wheel_RF_state.pos.x()); // 27 - LF wheel center pos x - global
       boost_streamer.AddData(
-          wheel_LF_state.pos.y()); // 25 - LF wheel center pos y - global
+          wheel_LF_state.pos.y()); // 28 - LF wheel center pos y - global
       boost_streamer.AddData(
-          wheel_RR_state.pos.x()); // 26 - RR wheel center pos x - global
+          wheel_RR_state.pos.x()); // 29 - RR wheel center pos x - global
       boost_streamer.AddData(
-          wheel_RR_state.pos.y()); // 27 - RR wheel center pos y - global
+          wheel_RR_state.pos.y()); // 30 - RR wheel center pos y - global
       boost_streamer.AddData(
-          wheel_LR_state.pos.x()); // 28 - LR wheel center pos x - global
+          wheel_LR_state.pos.x()); // 31 - LR wheel center pos x - global
       boost_streamer.AddData(
-          wheel_LR_state.pos.y()); // 29 - LR wheel center pos y - global
+          wheel_LR_state.pos.y()); // 32 - LR wheel center pos y - global
 
       // wheel rotational velocity
       auto lf_omega_filtered = lf_wheel_vel.Add(wheel_RF_state.omega);
@@ -401,26 +393,26 @@ int main(int argc, char *argv[]) {
       auto rr_omega_filtered = rr_wheel_vel.Add(wheel_LR_state.omega);
 
       boost_streamer.AddData(
-          lf_omega_filtered); // 30 - RF wheel rot vel - in rad/s
+          lf_omega_filtered); // 33 - RF wheel rot vel - in rad/s
       boost_streamer.AddData(
-          rf_omega_filtered); // 31 - LF wheel rot vel - in rad/s
+          rf_omega_filtered); // 34 - LF wheel rot vel - in rad/s
       boost_streamer.AddData(
-          lr_omega_filtered); // 32 - RR wheel rot vel - in rad/s
+          lr_omega_filtered); // 35 - RR wheel rot vel - in rad/s
       boost_streamer.AddData(
-          rr_omega_filtered); // 33 - LR wheel rot vel - in rad/s
+          rr_omega_filtered); // 36 - LR wheel rot vel - in rad/s
 
       boost_streamer.AddData(
-          my_vehicle.GetTransmission()->GetCurrentGear()); // 34 - current gear
+          my_vehicle.GetTransmission()->GetCurrentGear()); // 37 - current gear
 
       boost_streamer.AddData(
-          (float)(my_vehicle.GetSpeed() * MS_2_MPH)); // 35 - speed (m/s)
+          (float)(my_vehicle.GetSpeed() * MS_2_MPH)); // 38 - speed (m/s)
 
       boost_streamer.AddData(my_vehicle.GetEngine()->GetMotorSpeed() *
-                             RADS_2_RPM); // 36 - current RPM
+                             RADS_2_RPM); // 39 - current RPM
 
       boost_streamer.AddData(
           my_vehicle.GetEngine()
-              ->GetOutputMotorshaftTorque()); // 37 - Engine Torque - in N-m
+              ->GetOutputMotorshaftTorque()); // 40 - Engine Torque - in N-m
 
       // Send the data
       boost_streamer.Synchronize();
