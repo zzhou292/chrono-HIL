@@ -2,7 +2,7 @@
 
 Chrono::HIL is an open-source, chrono-based, large-scale, and high-performance traffic simulation middleware with human-in-the-loop driving simulation support. This middleware framework is authored and continuously maintained by Jason Zh Zhou (zzhou292@wisc.edu), currently a PhD student at the University of Wisconsin-Madison.
 
-The software framework aims to provide an open-source solution to driving simulator implementation with large-sacle and high-fidelity vehicle dynamics simulation and interfaces to precise vehicle control. The features of the middleware structure are as follows:
+The middleware framework aims to provide an open-source solution to driving simulator implementation with large-sacle and high-fidelity vehicle dynamics simulation and interfaces to precise vehicle control. The features of the middleware structure are as follows:
 
 * Multi-Fidelity Vehicle Dynamics Modelling with collision with the terrain.
 * High-Performance Vehicle Dynamics parrallel computing functionalities to support large-scale traffic.
