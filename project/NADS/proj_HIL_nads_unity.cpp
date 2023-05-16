@@ -86,10 +86,12 @@ int main(int argc, char *argv[]) {
 
   std::string vehicle_filename =
       vehicle::GetDataFile("audi/json/audi_Vehicle.json");
-  std::string powertrain_filename =
-      vehicle::GetDataFile("audi/json/audi_SimpleMapPowertrain.json");
+  std::string engine_filename =
+      vehicle::GetDataFile("audi/json/audi_EngineSimpleMap.json");
+  std::string transmission_filename = vehicle::GetDataFile(
+      "audi/json/audi_AutomaticTransmissionSimpleMap.json");
   std::string tire_filename =
-      vehicle::GetDataFile("audi/json/audi_Pac02Tire.json");
+      vehicle::GetDataFile("audi/json/audi_TMeasyTire.json");
 
   // --------------
   // Create systems
@@ -100,7 +102,10 @@ int main(int argc, char *argv[]) {
   auto ego_chassis = my_vehicle.GetChassis();
   my_vehicle.Initialize(ChCoordsys<>(initLoc, initRot));
   my_vehicle.GetChassis()->SetFixed(false);
-  auto powertrain = ReadPowertrainJSON(powertrain_filename);
+  auto engine = ReadEngineJSON(engine_filename);
+  auto transmission = ReadTransmissionJSON(transmission_filename);
+  auto powertrain =
+      chrono_types::make_shared<ChPowertrainAssembly>(engine, transmission);
   my_vehicle.InitializePowertrain(powertrain);
   my_vehicle.SetChassisVisualizationType(VisualizationType::MESH);
   my_vehicle.SetSuspensionVisualizationType(VisualizationType::MESH);
