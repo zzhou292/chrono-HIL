@@ -225,9 +225,9 @@ int main(int argc, char *argv[]) {
   ChRunningAverage eyepoint_vel_y(100);
   ChRunningAverage eyepoint_vel_z(100);
 
-  ChRunningAverage eyepoint_acc_x(100);
-  ChRunningAverage eyepoint_acc_y(100);
-  ChRunningAverage eyepoint_acc_z(100);
+  ChRunningAverage eyepoint_acc_x(200);
+  ChRunningAverage eyepoint_acc_y(200);
+  ChRunningAverage eyepoint_acc_z(200);
 
   ChRunningAverage lf_wheel_vel(200);
   ChRunningAverage rf_wheel_vel(200);
@@ -289,19 +289,16 @@ int main(int argc, char *argv[]) {
       boost_streamer.AddData((float)time); // 0 - time
 
       // Chassis location
-      boost_streamer.AddData(pos.x() * M_2_FT); // 1
+      boost_streamer.AddData(pos.x() * M_2_FT);  // 1
       boost_streamer.AddData(-pos.y() * M_2_FT); // 2
       boost_streamer.AddData(-pos.z() * M_2_FT); // 3
 
       // Eyepoint position
       ChVector<> eyepoint_global = my_vehicle.GetPointLocation(driver_eyepoint);
 
-      boost_streamer.AddData(
-          -eyepoint_global.y() * M_2_FT); // 4
-      boost_streamer.AddData(
-          eyepoint_global.x() * M_2_FT); // 5
-      boost_streamer.AddData(
-          eyepoint_global.z() * M_2_FT); // 6
+      boost_streamer.AddData(-eyepoint_global.y() * M_2_FT); // 4
+      boost_streamer.AddData(eyepoint_global.x() * M_2_FT);  // 5
+      boost_streamer.AddData(eyepoint_global.z() * M_2_FT);  // 6
 
       // Eyepoint orientation
       auto eu_rot = Q_to_Euler123(rot);
@@ -316,7 +313,7 @@ int main(int argc, char *argv[]) {
       auto ang_vel_y_filtered = ang_vel_y.Add(ang_vel.y());
       auto ang_vel_z_filtered = ang_vel_z.Add(ang_vel.z());
 
-      boost_streamer.AddData(ang_vel_x_filtered * RADS_2_DEG); // 10
+      boost_streamer.AddData(ang_vel_x_filtered * RADS_2_DEG);  // 10
       boost_streamer.AddData(-ang_vel_y_filtered * RADS_2_DEG); // 11
       boost_streamer.AddData(-ang_vel_z_filtered * RADS_2_DEG); // 12
 
@@ -338,7 +335,7 @@ int main(int argc, char *argv[]) {
       auto eyepoint_velocity_z_filtered =
           eyepoint_vel_z.Add(eyepoint_velocity.z());
 
-      boost_streamer.AddData(eyepoint_velocity_x_filtered * M_2_FT); // 16
+      boost_streamer.AddData(eyepoint_velocity_x_filtered * M_2_FT);  // 16
       boost_streamer.AddData(-eyepoint_velocity_y_filtered * M_2_FT); // 17
       boost_streamer.AddData(-eyepoint_velocity_z_filtered * M_2_FT); // 18
 
@@ -349,15 +346,33 @@ int main(int argc, char *argv[]) {
       auto acc_loc_y_filtered = acc_y.Add(acc_local.y());
       auto acc_loc_z_filtered = acc_z.Add(acc_local.z());
 
-      boost_streamer.AddData(acc_loc_x_filtered * M_2_FT); // 19
+      boost_streamer.AddData(acc_loc_x_filtered * M_2_FT);  // 19
       boost_streamer.AddData(-acc_loc_y_filtered * M_2_FT); // 20
       boost_streamer.AddData(-acc_loc_z_filtered * M_2_FT); // 21
 
       // Eyepoint specific force
-      ChVector<> eye_acc = my_vehicle.GetPointAcceleration(driver_eyepoint);
-      auto eye_acc_x_filtered = eyepoint_acc_x.Add(eye_acc.x());
-      auto eye_acc_y_filtered = eyepoint_acc_y.Add(eye_acc.y());
-      auto eye_acc_z_filtered = eyepoint_acc_z.Add(eye_acc.z());
+      // acc w/o gravity in global frame
+      ChVector<> acc_abs = my_vehicle.GetChassis()
+                               ->GetBody()
+                               ->GetFrame_REF_to_abs()
+                               .PointAccelerationLocalToParent(driver_eyepoint);
+
+      // acc w gravity in global frame
+      ChVector<> acc_abs_g = acc_abs + ChVector<>(0.0, 0.0, -9.81);
+
+      // rotation matrix A -> from local to global
+      auto A_REF_to_abs =
+          my_vehicle.GetChassis()->GetBody()->GetFrame_REF_to_abs().GetA();
+
+      // inverse rotation matrix invA -> from global to local
+      ChMatrix33<> inv_A_REF_to_abs = A_REF_to_abs.inverse();
+
+      // local acc with gravity
+      auto acc_local_g = inv_A_REF_to_abs * acc_abs_g;
+
+      auto eye_acc_x_filtered = eyepoint_acc_x.Add(acc_local_g.x());
+      auto eye_acc_y_filtered = eyepoint_acc_y.Add(acc_local_g.y());
+      auto eye_acc_z_filtered = eyepoint_acc_z.Add(acc_local_g.z());
 
       boost_streamer.AddData(eye_acc_x_filtered / G_2_MPSS); // 22
       boost_streamer.AddData(eye_acc_y_filtered / G_2_MPSS); // 23
