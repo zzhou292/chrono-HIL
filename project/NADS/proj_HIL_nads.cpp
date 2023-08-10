@@ -38,6 +38,9 @@
 #include "chrono_hil/network/udp/ChBoostInStreamer.h"
 #include "chrono_hil/network/udp/ChBoostOutStreamer.h"
 
+#include "chrono_vehicle/ChTransmission.h"
+#include "chrono_vehicle/powertrain/ChAutomaticTransmissionSimpleMap.h"
+
 using namespace chrono;
 using namespace chrono::irrlicht;
 using namespace chrono::vehicle;
@@ -110,7 +113,8 @@ int main(int argc, char *argv[]) {
   my_vehicle.GetChassis()->SetFixed(false);
 
   auto engine = ReadEngineJSON(engine_filename);
-  auto transmission = ReadTransmissionJSON(transmission_filename);
+  std::shared_ptr<ChTransmission> transmission =
+      ReadTransmissionJSON(transmission_filename);
   auto powertrain =
       chrono_types::make_shared<ChPowertrainAssembly>(engine, transmission);
   my_vehicle.InitializePowertrain(powertrain);
@@ -265,20 +269,29 @@ int main(int argc, char *argv[]) {
     driver_inputs.m_steering = recv_data[1];
     driver_inputs.m_braking = recv_data[2];
 
+    // this might be problematic
     float gear = recv_data[3];
+    auto trans = my_vehicle.GetTransmission();
+    int gear_to_send = 0;
     if (gear == 0.0) {
-      my_vehicle.GetTransmission()->SetDriveMode(
-          ChTransmission::DriveMode::NEUTRAL);
-      driver_inputs.m_braking = 0.8;
+      driver_inputs.m_braking = 1.0;
+      driver_inputs.m_throttle = 0.0;
+
+      gear_to_send = 0;
     } else if (gear == 1.0) {
-      my_vehicle.GetTransmission()->SetDriveMode(
-          ChTransmission::DriveMode::FORWARD);
+      if (trans->GetCurrentGear() <= 0) {
+        trans->SetGear(1);
+      }
+
+      gear_to_send = trans->GetCurrentGear();
     } else if (gear == 2.0) {
-      my_vehicle.GetTransmission()->SetDriveMode(
-          ChTransmission::DriveMode::REVERSE);
+      trans->SetGear(-1);
+
+      gear_to_send = -1;
     } else if (gear == 3.0) {
-      my_vehicle.GetTransmission()->SetDriveMode(
-          ChTransmission::DriveMode::NEUTRAL);
+      driver_inputs.m_throttle = 0.0;
+
+      gear_to_send = 0;
     }
 
     // =======================
