@@ -134,9 +134,13 @@ int main(int argc, char *argv[]) {
   WheeledVehicle my_vehicle(vehicle_filename, ChContactMethod::SMC);
   auto ego_chassis = my_vehicle.GetChassis();
   if (node_id == 1) {
-    initLoc = ChVector<>(-91.788, 98.647, 0.25);
-  } else if (node_id == 2) {
     initLoc = ChVector<>(-80.788, 98.647, 0.25);
+  } else if (node_id == 2) {
+    initLoc = ChVector<>(-70.788, 98.647, 0.25);
+  } else if (node_id == 3) {
+    initLoc = ChVector<>(-60.788, 98.647, 0.25);
+  } else if (node_id == 4) {
+    initLoc = ChVector<>(-50.788, 98.647, 0.25);
   }
   my_vehicle.Initialize(ChCoordsys<>(initLoc, initRot));
   my_vehicle.GetChassis()->SetFixed(false);

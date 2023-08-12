@@ -41,6 +41,15 @@
 #include "chrono_vehicle/ChTransmission.h"
 #include "chrono_vehicle/powertrain/ChAutomaticTransmissionSimpleMap.h"
 
+#include "chrono_synchrono/SynChronoManager.h"
+#include "chrono_synchrono/SynConfig.h"
+#include "chrono_synchrono/agent/SynWheeledVehicleAgent.h"
+#include "chrono_synchrono/communication/dds/SynDDSCommunicator.h"
+#include "chrono_synchrono/utils/SynDataLoader.h"
+#include "chrono_synchrono/utils/SynLog.h"
+
+#include "chrono_thirdparty/cxxopts/ChCLI.h"
+
 using namespace chrono;
 using namespace chrono::irrlicht;
 using namespace chrono::vehicle;
@@ -48,6 +57,7 @@ using namespace chrono::vehicle::sedan;
 using namespace chrono::geometry;
 using namespace chrono::hil;
 using namespace chrono::utils;
+using namespace chrono::synchrono;
 
 const double RADS_2_RPM = 30 / CH_C_PI;
 const double RADS_2_DEG = 180 / CH_C_PI;
@@ -87,10 +97,35 @@ double tire_step_size = 1e-5;
 double t_end = 1000;
 
 // =============================================================================
-
+void AddCommandLineOptions(ChCLI &cli);
 int main(int argc, char *argv[]) {
-  GetLog() << "Copyright (c) 2017 projectchrono.org\nChrono version: "
-           << CHRONO_VERSION << "\n\n";
+
+  // ==========================================================================
+  ChCLI cli(argv[0]);
+
+  AddCommandLineOptions(cli);
+  if (!cli.Parse(argc, argv, false, false))
+    return 0;
+
+  const int node_id = cli.GetAsType<int>("node_id");
+  const int num_nodes = cli.GetAsType<int>("num_nodes");
+
+  std::cout << "id:" << node_id << std::endl;
+  std::cout << "num:" << num_nodes << std::endl;
+
+  // =============================================================================
+
+  // -----------------------
+  // Create SynChronoManager
+  // -----------------------
+  auto communicator = chrono_types::make_shared<SynDDSCommunicator>(node_id);
+  SynChronoManager syn_manager(node_id, num_nodes, communicator);
+
+  // Change SynChronoManager settings
+  float heartbeat = 0.02f;
+  syn_manager.SetHeartbeat(heartbeat);
+
+  // ========================================================================
 
   SetChronoDataPath(CHRONO_DATA_DIR);
   vehicle::SetDataPath(CHRONO_DATA_DIR + std::string("vehicle/"));
@@ -138,6 +173,14 @@ int main(int argc, char *argv[]) {
   my_vehicle.GetSystem()->AddBody(attached_body);
   attached_body->SetCollide(false);
   attached_body->SetBodyFixed(true);
+
+  // Add vehicle as an agent and initialize SynChronoManager
+  std::string zombie_filename =
+      CHRONO_DATA_DIR + std::string("synchrono/vehicle/audi.json");
+  auto agent = chrono_types::make_shared<SynWheeledVehicleAgent>(
+      &my_vehicle, zombie_filename);
+  syn_manager.AddAgent(agent);
+  syn_manager.Initialize(my_vehicle.GetSystem());
 
   // Create the terrain
   RigidTerrain terrain(my_vehicle.GetSystem());
@@ -241,7 +284,7 @@ int main(int argc, char *argv[]) {
   ChRunningAverage rr_wheel_vel(100);
 
   // simulation loop
-  while (vis->Run()) {
+  while (vis->Run() && syn_manager.IsOk()) {
     double time = my_vehicle.GetSystem()->GetChTime();
 
     ChVector<> pos = my_vehicle.GetChassis()->GetPos();
@@ -338,9 +381,9 @@ int main(int argc, char *argv[]) {
       auto vel =
           my_vehicle.GetChassis()->GetBody()->GetFrame_REF_to_abs().GetPos_dt();
 
-      boost_streamer.AddData(vel.x() * M_2_FT); // 13
-      boost_streamer.AddData(-vel.y() * M_2_FT);  // 14
-      boost_streamer.AddData(-vel.z() * M_2_FT);  // 15
+      boost_streamer.AddData(vel.x() * M_2_FT);  // 13
+      boost_streamer.AddData(-vel.y() * M_2_FT); // 14
+      boost_streamer.AddData(-vel.z() * M_2_FT); // 15
 
       // Eyepoint velocity
       ChVector<> eyepoint_velocity =
@@ -379,8 +422,10 @@ int main(int argc, char *argv[]) {
       auto local_g = inv_A_REF_to_abs * ChVector<>(0.0, 0.0, -9.81);
 
       auto eye_acc_x_filtered = eyepoint_acc_x.Add(acc_local.x() + local_g.x());
-      auto eye_acc_y_filtered = eyepoint_acc_y.Add(-acc_local.y() + local_g.y());
-      auto eye_acc_z_filtered = eyepoint_acc_z.Add(-acc_local.z() + local_g.z());
+      auto eye_acc_y_filtered =
+          eyepoint_acc_y.Add(-acc_local.y() + local_g.y());
+      auto eye_acc_z_filtered =
+          eyepoint_acc_z.Add(-acc_local.z() + local_g.z());
 
       boost_streamer.AddData(eye_acc_x_filtered / G_2_MPSS); // 22
       boost_streamer.AddData(eye_acc_y_filtered / G_2_MPSS); // 23
@@ -447,10 +492,12 @@ int main(int argc, char *argv[]) {
     // Update modules (process inputs from other modules)
     terrain.Synchronize(time);
     my_vehicle.Synchronize(time, driver_inputs, terrain);
+    syn_manager.Synchronize(time); // Synchronize between nodes
 
     // Advance simulation for one timestep for all modules
     terrain.Advance(step_size);
     my_vehicle.Advance(step_size);
+    vis->Advance(step_size);
 
     // Increment frame number
     step_number++;
@@ -470,9 +517,8 @@ int main(int argc, char *argv[]) {
           std::chrono::duration_cast<std::chrono::duration<double>>(end -
                                                                     start);
 
-      std::cout << "elapsed time = " 
-      	<< (wall_time.count()) / (time - last_time) << ", t = " 
-      	<< time << "\n";
+      std::cout << "elapsed time = " << (wall_time.count()) / (time - last_time)
+                << ", t = " << time << "\n";
       last_time = time;
       start = std::chrono::high_resolution_clock::now();
     }
@@ -481,8 +527,15 @@ int main(int argc, char *argv[]) {
       vis->BeginScene();
       vis->Render();
       vis->EndScene();
+      vis->Synchronize(time, driver_inputs);
     }
   }
-
+  syn_manager.QuitSimulation();
   return 0;
+}
+
+void AddCommandLineOptions(ChCLI &cli) {
+  // DDS Specific
+  cli.AddOption<int>("DDS", "d,node_id", "ID for this Node", "1");
+  cli.AddOption<int>("DDS", "n,num_nodes", "Number of Nodes", "2");
 }
