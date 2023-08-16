@@ -65,7 +65,7 @@ const double MS_2_MPH = 2.2369;
 const double M_2_FT = 3.28084;
 const double G_2_MPSS = 9.81;
 
-#undef USENADS
+#define USENADS
 
 #ifdef USENADS
 #define PORT_IN 9090
@@ -78,7 +78,7 @@ const double G_2_MPSS = 9.81;
 #endif
 
 bool render = true;
-ChVector<> driver_eyepoint(-0.3, 0.4, 0.98);
+ChVector<> driver_eyepoint(-0.45, 0.4, 0.98);
 
 // =============================================================================
 
@@ -262,26 +262,26 @@ int main(int argc, char *argv[]) {
   ChBoostOutStreamer boost_streamer(IP_OUT, PORT_OUT);
 
   // declare a set of moving average filter for data smoothing
-  ChRunningAverage acc_x(100);
-  ChRunningAverage acc_y(100);
-  ChRunningAverage acc_z(100);
+  ChRunningAverage acc_x(250);
+  ChRunningAverage acc_y(250);
+  ChRunningAverage acc_z(250);
 
-  ChRunningAverage ang_vel_x(100);
-  ChRunningAverage ang_vel_y(100);
-  ChRunningAverage ang_vel_z(100);
+  ChRunningAverage ang_vel_x(250);
+  ChRunningAverage ang_vel_y(250);
+  ChRunningAverage ang_vel_z(250);
 
-  ChRunningAverage eyepoint_vel_x(100);
-  ChRunningAverage eyepoint_vel_y(100);
-  ChRunningAverage eyepoint_vel_z(100);
+  ChRunningAverage eyepoint_vel_x(250);
+  ChRunningAverage eyepoint_vel_y(250);
+  ChRunningAverage eyepoint_vel_z(250);
 
-  ChRunningAverage eyepoint_acc_x(100);
-  ChRunningAverage eyepoint_acc_y(100);
-  ChRunningAverage eyepoint_acc_z(100);
+  ChRunningAverage eyepoint_acc_x(250);
+  ChRunningAverage eyepoint_acc_y(250);
+  ChRunningAverage eyepoint_acc_z(250);
 
-  ChRunningAverage lf_wheel_vel(100);
-  ChRunningAverage rf_wheel_vel(100);
-  ChRunningAverage lr_wheel_vel(100);
-  ChRunningAverage rr_wheel_vel(100);
+  ChRunningAverage lf_wheel_vel(250);
+  ChRunningAverage rf_wheel_vel(250);
+  ChRunningAverage lr_wheel_vel(250);
+  ChRunningAverage rr_wheel_vel(250);
 
   // simulation loop
   while (vis->Run() && syn_manager.IsOk()) {
@@ -494,7 +494,7 @@ int main(int argc, char *argv[]) {
     my_vehicle.Synchronize(time, driver_inputs, terrain);
     syn_manager.Synchronize(time); // Synchronize between nodes
 
-    // Advance simulation for one timestep for all modules
+    // Advance simulation for one time for all modules
     terrain.Advance(step_size);
     my_vehicle.Advance(step_size);
     vis->Advance(step_size);
@@ -517,8 +517,18 @@ int main(int argc, char *argv[]) {
           std::chrono::duration_cast<std::chrono::duration<double>>(end -
                                                                     start);
 
+<<<<<<< HEAD
       std::cout << "elapsed time = " << (wall_time.count()) / (time - last_time)
                 << ", t = " << time << "\n";
+=======
+      std::cout << "elapsed time = " 
+      	<< (wall_time.count()) / (time - last_time) 
+      	<< ", t = " << time
+      	<< ", gear = " << gear 
+      	<< ", current gear = " << trans->GetCurrentGear()
+      	<< ", rpm = " << my_vehicle.GetEngine()->GetMotorSpeed() * RADS_2_RPM 
+      	<< "\n";
+>>>>>>> feature/nads
       last_time = time;
       start = std::chrono::high_resolution_clock::now();
     }
