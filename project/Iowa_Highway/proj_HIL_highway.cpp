@@ -49,6 +49,7 @@
 
 #include "chrono/utils/ChFilters.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
+#include "chrono_hil/network/udp/ChBoostOutStreamer.h"
 
 #include <fstream>
 #include <iomanip>
@@ -67,6 +68,9 @@ using namespace chrono::vehicle;
 using namespace chrono::sensor;
 using namespace chrono::synchrono;
 using namespace chrono::hil;
+
+#define PORT_OUT 1209
+#define IP_OUT "128.104.188.63"
 
 // -----------------------------------------------------------------------------
 // rad to RPM conversion parameters
@@ -1259,6 +1263,9 @@ int main(int argc, char *argv[]) {
 
   vehicle.EnableRealtime(false);
 
+  // create boost data streaming interface
+  ChBoostOutStreamer boost_streamer(IP_OUT, PORT_OUT);
+
   while (app.GetDevice()->run()) {
     sim_time = vehicle.GetSystem()->GetChTime();
 
@@ -1475,6 +1482,14 @@ int main(int argc, char *argv[]) {
 
       t0 = high_resolution_clock::now();
     }
+
+    // Stream out data
+    boost_streamer.AddData(vehicle.GetSystem()->GetChTime());
+    boost_streamer.AddData(vehicle.GetSpeed() * MS_TO_MPH);
+    std::cout << "tp1" << std::endl;
+    boost_streamer.AddData(vehicle.GetEngine()->GetMotorSpeed() * rads2rpm);
+    boost_streamer.Synchronize();
+    std::cout << "tp2" << std::endl;
 
     // Increment frame number
     step_number++;
