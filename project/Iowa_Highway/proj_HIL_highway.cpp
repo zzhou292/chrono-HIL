@@ -1486,10 +1486,8 @@ int main(int argc, char *argv[]) {
     // Stream out data
     boost_streamer.AddData(vehicle.GetSystem()->GetChTime());
     boost_streamer.AddData(vehicle.GetSpeed() * MS_TO_MPH);
-    std::cout << "tp1" << std::endl;
     boost_streamer.AddData(vehicle.GetEngine()->GetMotorSpeed() * rads2rpm);
     boost_streamer.Synchronize();
-    std::cout << "tp2" << std::endl;
 
     // Increment frame number
     step_number++;
