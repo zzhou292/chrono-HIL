@@ -8,8 +8,7 @@
 #--------------------------------------------------------------
 
 set(DEMOS
-	test_HIL_sdlprofiler
-  test_HIL_cobra_remote
+	proj_HIL_teleoprc
 )
 
 #--------------------------------------------------------------
@@ -21,12 +20,15 @@ find_package(Chrono
              COMPONENTS SynChrono Vehicle Sensor Irrlicht
              CONFIG
 )
+find_package(SDL2 REQUIRED)
 
 # If Chrono and/or the required component(s) were not found, return now.
 if(NOT Chrono_FOUND)
   message("Could not find requirements for the SynChrono Highway Project")
   return()
 endif()
+
+
 
 
 #--------------------------------------------------------------
@@ -38,6 +40,7 @@ include_directories(
     ${CMAKE_SOURCE_DIR}
     ${SDL2_INCLUDE_DIRS}
 )
+
 
 set(EXT_LIBRARIES 
 	ChronoEngine_hil
@@ -75,7 +78,7 @@ foreach(PROGRAM ${DEMOS})
 
   add_executable(${PROGRAM}  "${PROGRAM}.cpp")
   source_group(""  FILES "${PROGRAM}.cpp")
-
+  
   target_compile_definitions(${PROGRAM} PUBLIC "CHRONO_DATA_DIR=\"${CHRONO_DATA_DIR}\"") 
   target_compile_definitions(${PROGRAM} PUBLIC "PROJECTS_DATA_DIR=\"${PROJECTS_DATA_DIR}\"") 
   target_compile_options(${PROGRAM} PUBLIC ${CHRONO_CXX_FLAGS})

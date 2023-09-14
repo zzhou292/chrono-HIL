@@ -338,9 +338,9 @@ int main(int argc, char *argv[]) {
       auto vel =
           my_vehicle.GetChassis()->GetBody()->GetFrame_REF_to_abs().GetPos_dt();
 
-      boost_streamer.AddData(vel.x() * M_2_FT); // 13
-      boost_streamer.AddData(-vel.y() * M_2_FT);  // 14
-      boost_streamer.AddData(-vel.z() * M_2_FT);  // 15
+      boost_streamer.AddData(vel.x() * M_2_FT);  // 13
+      boost_streamer.AddData(-vel.y() * M_2_FT); // 14
+      boost_streamer.AddData(-vel.z() * M_2_FT); // 15
 
       // Eyepoint velocity
       ChVector<> eyepoint_velocity =
@@ -379,8 +379,10 @@ int main(int argc, char *argv[]) {
       auto local_g = inv_A_REF_to_abs * ChVector<>(0.0, 0.0, -9.81);
 
       auto eye_acc_x_filtered = eyepoint_acc_x.Add(acc_local.x() + local_g.x());
-      auto eye_acc_y_filtered = eyepoint_acc_y.Add(-acc_local.y() + local_g.y());
-      auto eye_acc_z_filtered = eyepoint_acc_z.Add(-acc_local.z() + local_g.z());
+      auto eye_acc_y_filtered =
+          eyepoint_acc_y.Add(-acc_local.y() + local_g.y());
+      auto eye_acc_z_filtered =
+          eyepoint_acc_z.Add(-acc_local.z() + local_g.z());
 
       boost_streamer.AddData(eye_acc_x_filtered / G_2_MPSS); // 22
       boost_streamer.AddData(eye_acc_y_filtered / G_2_MPSS); // 23
@@ -470,9 +472,8 @@ int main(int argc, char *argv[]) {
           std::chrono::duration_cast<std::chrono::duration<double>>(end -
                                                                     start);
 
-      std::cout << "elapsed time = " 
-      	<< (wall_time.count()) / (time - last_time) << ", t = " 
-      	<< time << "\n";
+      std::cout << "elapsed time = " << (wall_time.count()) / (time - last_time)
+                << ", t = " << time << "\n";
       last_time = time;
       start = std::chrono::high_resolution_clock::now();
     }
