@@ -70,14 +70,18 @@ const double G_2_MPSS = 9.81;
 #ifdef USENADS
 #define PORT_IN 9090
 #define PORT_OUT 9091
+#define PORT_OUT_2 9092
 #define IP_OUT "90.0.0.125"
+#define IP_OUT_2 "90.0.0.120"
 #else
 #define PORT_IN 1209
-#define PORT_OUT 1204
+#define PORT_OUT 1210
+#define PORT_OUT_2 1211
 #define IP_OUT "127.0.0.1"
+#define IP_OUT_2 "127.0.0.1"
 #endif
 
-bool render = true;
+bool render = false;
 ChVector<> driver_eyepoint(-0.3, 0.4, 0.98);
 
 // =============================================================================
@@ -260,6 +264,11 @@ int main(int argc, char *argv[]) {
 
   // create boost data streaming interface
   ChBoostOutStreamer boost_streamer(IP_OUT, PORT_OUT);
+  ChBoostOutStreamer boost_traffic_streamer(IP_OUT_2, PORT_OUT_2);
+
+  // obtain and initiate all zombie instances
+  std::map<AgentKey, std::shared_ptr<SynAgent>> zombie_map;
+  std::map<int, std::shared_ptr<SynWheeledVehicleAgent>> id_map;
 
   // declare a set of moving average filter for data smoothing
   ChRunningAverage acc_x(100);
@@ -485,6 +494,63 @@ int main(int argc, char *argv[]) {
       // Send the data
       boost_streamer.Synchronize();
     }
+
+    if (step_number == 0) {
+      zombie_map = syn_manager.GetZombies();
+      std::cout << "zombie size: " << zombie_map.size() << std::endl;
+      std::cout << "agent size: " << syn_manager.GetAgents().size()
+                << std::endl;
+      for (std::map<AgentKey, std::shared_ptr<SynAgent>>::iterator it =
+               zombie_map.begin();
+           it != zombie_map.end(); ++it) {
+        std::shared_ptr<SynAgent> temp_ptr = it->second;
+        std::shared_ptr<SynWheeledVehicleAgent> converted_ptr =
+            std::dynamic_pointer_cast<SynWheeledVehicleAgent>(temp_ptr);
+        id_map.insert(std::make_pair(it->first.GetNodeID(), converted_ptr));
+      }
+    }
+
+    // obtain map
+    if (num_nodes > 1) {
+      if (step_number % 10 == 0) {
+        int traf_id = 1;
+        for (std::map<int, std::shared_ptr<SynWheeledVehicleAgent>>::iterator
+                 it = id_map.begin();
+             it != id_map.end(); ++it) {
+
+          ChronoVehicleInfo info;
+          info.vehicle_id = traf_id;
+          info.time_stamp = std::chrono::high_resolution_clock::now()
+                                .time_since_epoch()
+                                .count();
+
+          ChVector<double> chassis_pos = it->second->GetZombiePos();
+          ChVector<double> chassis_rot =
+              it->second->GetZombieRot().Q_to_Euler123();
+
+          // converting chassis
+          info.position[0] = chassis_pos.x() * M_2_FT;
+          info.position[1] = -chassis_pos.y() * M_2_FT;
+          info.position[2] = -chassis_pos.z() * M_2_FT;
+
+          info.orientation[0] = chassis_rot.x();
+          info.orientation[1] = -chassis_rot.y();
+          info.orientation[2] = -chassis_rot.z();
+
+          info.steering_angle =
+              driver_inputs.m_steering * double(30.0 / 180.0) * CH_C_PI * 2;
+          info.wheel_rotations[0] = 0.0;
+          info.wheel_rotations[1] = 0.0;
+          info.wheel_rotations[2] = 0.0;
+          info.wheel_rotations[3] = 0.0;
+
+          boost_traffic_streamer.AddVehicleStruct(info);
+          traf_id++;
+        }
+        boost_traffic_streamer.Synchronize();
+      }
+    }
+
     // =======================
     // end data stream out section
     // =======================
