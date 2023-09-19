@@ -97,7 +97,7 @@ int main(int argc, char *argv[]) {
     // data in
     in_streamer.Synchronize();
 
-    recv_data = in_streamer.GetRecvData();
+    //recv_data = in_streamer.GetRecvData();
     // for (int i = 0; i < recv_data.size(); i++) {
     //   std::cout << recv_data[i] << ",";
     // }

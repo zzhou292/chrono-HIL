@@ -40,14 +40,53 @@ void ChBoostOutStreamer::AddData(float data_in) {
   m_stream_data.push_back(data_in);
 }
 
-void ChBoostOutStreamer::Synchronize() {
+void ChBoostOutStreamer::AddVector(ChVector<float> data_in){
+  m_stream_data.push_back(data_in.x());
+  m_stream_data.push_back(data_in.y());
+  m_stream_data.push_back(data_in.z());
+}
 
-  boost::system::error_code err;
-  auto sent = m_socket->send_to(
-      boost::asio::buffer(m_stream_data.data(),
-                          sizeof(float) * m_stream_data.size()),
-      *m_remote_endpoint, 0, err);
-  m_stream_data.clear();
+void ChBoostOutStreamer::AddLongLongData(long long data_in){
+  m_long_long_stream_data.push_back(data_in);
+}
+
+void ChBoostOutStreamer::AddLongLongVector(ChVector<long long> data_in){
+  m_long_long_stream_data.push_back(data_in.x());
+  m_long_long_stream_data.push_back(data_in.y());
+  m_long_long_stream_data.push_back(data_in.z());
+} 
+
+
+void ChBoostOutStreamer::AddChronoVehicleInfo(ChronoVehicleInfo data_in){
+  m_vehicle_data.push_back(data_in);
+}
+
+void ChBoostOutStreamer::Synchronize() {
+  if(m_stream_data.size()!=0){
+    boost::system::error_code err;
+    auto sent = m_socket->send_to(
+    boost::asio::buffer(m_stream_data.data(),
+                            sizeof(float) * m_stream_data.size()),
+        *m_remote_endpoint, 0, err);
+    m_stream_data.clear();
+  }else if(m_long_long_stream_data.size()!=0){
+      boost::system::error_code err;
+      auto sent = m_socket->send_to(
+          boost::asio::buffer(m_long_long_stream_data.data(),
+                              sizeof(long long) * m_long_long_stream_data.size()),
+          *m_remote_endpoint, 0, err);
+      m_long_long_stream_data.clear();
+  }else{
+    for(int i = 0; i < m_vehicle_data.size(); i++){
+      boost::system::error_code err;
+        auto sent = m_socket->send_to(
+            boost::asio::buffer(&m_vehicle_data[i],
+                                sizeof(ChronoVehicleInfo)),
+            *m_remote_endpoint, 0, err);
+    }
+    m_vehicle_data.clear();
+  }
+
 }
 
 } // namespace hil

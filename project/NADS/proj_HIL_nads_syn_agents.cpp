@@ -65,7 +65,7 @@ const double MS_2_MPH = 2.2369;
 const double M_2_FT = 3.28084;
 const double G_2_MPSS = 9.81;
 
-bool render = true;
+bool render = false;
 ChVector<> driver_eyepoint(-0.3, 0.4, 0.98);
 
 // =============================================================================
@@ -229,24 +229,6 @@ int main(int argc, char *argv[]) {
   terrain_body->SetCollide(false);
   my_vehicle.GetSystem()->Add(terrain_body);
 
-  // ------------------------
-  // Create a Irrlicht vis
-  // ------------------------
-  ChVector<> trackPoint(0.0, 0.0, 1.75);
-  int render_step = 20;
-  auto vis = chrono_types::make_shared<ChWheeledVehicleVisualSystemIrrlicht>();
-  vis->SetWindowTitle("NADS");
-  vis->SetChaseCamera(trackPoint, 6.0, 0.5);
-  vis->Initialize();
-  vis->AddLightDirectional();
-  vis->AddSkyBox();
-  vis->AddLogo();
-  vis->AttachVehicle(&my_vehicle);
-
-  // ------------------------
-  // Create the driver system
-  // ------------------------
-
   // ---------------
   // Simulation loop
   // ---------------
@@ -256,15 +238,10 @@ int main(int argc, char *argv[]) {
 
   my_vehicle.EnableRealtime(false);
 
-  ChRealtimeCumulative realtime_timer;
-  std::chrono::high_resolution_clock::time_point start =
-      std::chrono::high_resolution_clock::now();
-  double last_time = 0;
-
   DriverInputs driver_inputs = {0, 0, 0};
 
   // simulation loop
-  while (vis->Run() && syn_manager.IsOk()) {
+  while (syn_manager.IsOk()) {
     double time = my_vehicle.GetSystem()->GetChTime();
 
     ChVector<> pos = my_vehicle.GetChassis()->GetPos();
@@ -295,43 +272,15 @@ int main(int argc, char *argv[]) {
     syn_manager.Synchronize(time); // Synchronize between nodes
     terrain.Synchronize(time);
     my_vehicle.Synchronize(time, driver_inputs, terrain);
-    vis->Synchronize(time, driver_inputs);
 
     // Advance simulation for one timestep for all modules
     terrain.Advance(step_size);
     my_vehicle.Advance(step_size);
     driver.Advance(step_size);
-    vis->Advance(step_size);
 
     // Increment frame number
     step_number++;
 
-    if (step_number == 0) {
-      realtime_timer.Reset();
-    }
-
-    if (step_number % 10 == 0) {
-      realtime_timer.Spin(time);
-    }
-
-    if (step_number % 500 == 0) {
-      std::chrono::high_resolution_clock::time_point end =
-          std::chrono::high_resolution_clock::now();
-      std::chrono::duration<double> wall_time =
-          std::chrono::duration_cast<std::chrono::duration<double>>(end -
-                                                                    start);
-
-      std::cout << "elapsed time = " << (wall_time.count()) / (time - last_time)
-                << ", t = " << time << "\n";
-      last_time = time;
-      start = std::chrono::high_resolution_clock::now();
-    }
-
-    if (render == true && step_number % render_step == 0) {
-      vis->BeginScene();
-      vis->Render();
-      vis->EndScene();
-    }
   }
   syn_manager.QuitSimulation();
   return 0;

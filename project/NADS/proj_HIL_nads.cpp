@@ -12,6 +12,8 @@
 // Authors: Jason Zhou
 // =============================================================================
 
+
+#include <chrono>
 #include "chrono/core/ChStream.h"
 #include "chrono/utils/ChFilters.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
@@ -30,6 +32,7 @@
 #include "chrono_vehicle/utils/ChUtilsJSON.h"
 #include "chrono_vehicle/wheeled_vehicle/ChWheeledVehicleVisualSystemIrrlicht.h"
 #include "chrono_vehicle/wheeled_vehicle/vehicle/WheeledVehicle.h"
+
 
 #include "chrono_models/vehicle/sedan/Sedan.h"
 
@@ -65,19 +68,23 @@ const double MS_2_MPH = 2.2369;
 const double M_2_FT = 3.28084;
 const double G_2_MPSS = 9.81;
 
-#define USENADS
+#undef USENADS
 
 #ifdef USENADS
 #define PORT_IN 9090
 #define PORT_OUT 9091
+#define PORT_OUT_2 9092
 #define IP_OUT "90.0.0.125"
+#define IP_OUT_2 "90.0.0.120"
 #else
 #define PORT_IN 1209
 #define PORT_OUT 1204
+#define PORT_OUT_2 9092
 #define IP_OUT "127.0.0.1"
+#define IP_OUT_2 "127.0.0.1"
 #endif
 
-bool render = true;
+bool render = false;
 ChVector<> driver_eyepoint(-0.45, 0.4, 0.98);
 
 // =============================================================================
@@ -91,7 +98,7 @@ ChContactMethod contact_method = ChContactMethod::SMC;
 
 // Simulation step sizes
 double step_size = 1e-3;
-double tire_step_size = 1e-5;
+double tire_step_size = 1e-6;
 
 // Simulation end time
 double t_end = 1000;
@@ -195,9 +202,7 @@ int main(int argc, char *argv[]) {
 
   patch = terrain.AddPatch(patch_mat, CSYSNORM,
                            std::string(STRINGIFY(HIL_DATA_DIR)) +
-                               "/Environments/nads/newnads/terrain.obj");
-
-  patch->SetColor(ChColor(0.8f, 0.8f, 0.5f));
+                               "/Environments/nads/newnads/terrain.obj",true,0,false);
 
   terrain.Initialize();
 
@@ -260,6 +265,11 @@ int main(int argc, char *argv[]) {
 
   // create boost data streaming interface
   ChBoostOutStreamer boost_streamer(IP_OUT, PORT_OUT);
+  ChBoostOutStreamer boost_traffic_streamer(IP_OUT_2, PORT_OUT_2);
+
+    // obtain and initiate all zombie instances
+    std::map<AgentKey, std::shared_ptr<SynAgent>> zombie_map;
+    std::map<int, std::shared_ptr<SynWheeledVehicleAgent>> id_map;
 
   // declare a set of moving average filter for data smoothing
   ChRunningAverage acc_x(250);
@@ -285,6 +295,8 @@ int main(int argc, char *argv[]) {
 
   // simulation loop
   while (vis->Run() && syn_manager.IsOk()) {
+    auto now = std::chrono::high_resolution_clock::now();
+    auto dds_time_stamp = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
     double time = my_vehicle.GetSystem()->GetChTime();
 
     ChVector<> pos = my_vehicle.GetChassis()->GetPos();
@@ -485,6 +497,77 @@ int main(int argc, char *argv[]) {
       // Send the data
       boost_streamer.Synchronize();
     }
+
+    if (step_number == 0) {
+        zombie_map = syn_manager.GetZombies();
+        std::cout << "zombie size: " << zombie_map.size() << std::endl;
+        std::cout << "agent size: " << syn_manager.GetAgents().size()
+                    << std::endl;
+        for (std::map<AgentKey, std::shared_ptr<SynAgent>>::iterator it =
+                zombie_map.begin();
+            it != zombie_map.end(); ++it) {
+            std::shared_ptr<SynAgent> temp_ptr = it->second;
+            std::shared_ptr<SynWheeledVehicleAgent> converted_ptr =
+                std::dynamic_pointer_cast<SynWheeledVehicleAgent>(temp_ptr);
+            id_map.insert(std::make_pair(it->first.GetNodeID(), converted_ptr));
+        }
+    }
+
+    // obtain map
+    if(num_nodes>1){
+        if(step_number%16 == 0){
+            int traf_id = 1;
+            for (std::map<int, std::shared_ptr<SynWheeledVehicleAgent>>::iterator it =
+                    id_map.begin();
+                it != id_map.end(); ++it){
+
+                ChronoVehicleInfo info;
+                info.vehicle_id = traf_id;
+                info.time_stamp = dds_time_stamp;
+                
+                ChVector<double> chassis_pos = it->second->GetZombiePos();
+                ChVector<double> chassis_rot = it->second->GetZombieRot().Q_to_Euler123();
+                
+                // converting chassis
+                info.position[0] = -chassis_pos.y()*M_2_FT;//chassis_pos.x()*M_2_FT;
+                info.position[1] = chassis_pos.x()*M_2_FT;//-chassis_pos.y()*M_2_FT;
+                info.position[2] = chassis_pos.z()*M_2_FT;//-chassis_pos.z()*M_2_FT;
+
+                info.orientation[0] = CH_C_PI-chassis_rot.x();//chassis_rot.x();
+                info.orientation[1] = -chassis_rot.y();//-chassis_rot.y();
+                info.orientation[2] = CH_C_PI/2.0+chassis_rot.z();//-chassis_rot.z();
+
+                info.steering_angle = driver_inputs.m_steering * double(30.0/180.0) * CH_C_PI * 2;
+                info.wheel_rotations[0] = 0.0;
+                info.wheel_rotations[1] = 0.0;
+                info.wheel_rotations[2] = 0.0;
+                info.wheel_rotations[3] = 0.0;
+
+                boost_traffic_streamer.AddChronoVehicleInfo(info);
+/*
+                for(int j = 0; j < 4; j++){
+                    ChVector<long long> wheel_pos = it->second->GetZombieWheelPos(j);
+                    ChVector<long long> wheel_rot = it->second->GetZombieWheelRot(j).Q_to_Euler123();
+                    
+                    // converting wheels
+                    
+                    wheel_rot.y() = -wheel_rot.y();
+                    wheel_rot.z() = -wheel_rot.z();
+                    
+                    boost_traffic_streamer.AddLongLongVector(wheel_pos);
+                    boost_traffic_streamer.AddLongLongVector(wheel_rot);
+                }
+                */
+                
+                traf_id++;
+                
+                //std::cout << info.vehicle_id <<", "<< info.time_stamp << ", " << info.position[0]<<", "<<info.position[1] << ", " << info.position[2] << ", " << info.orientation[0] << ", "<<info.orientation[1] << ", "<<info.orientation[2] << ", " << info.steering_angle << ", " << info.wheel_rotations[0] << std::endl;
+            }
+            boost_traffic_streamer.Synchronize();
+        }
+    }
+
+
     // =======================
     // end data stream out section
     // =======================
@@ -506,9 +589,9 @@ int main(int argc, char *argv[]) {
       realtime_timer.Reset();
     }
 
-    if (step_number % 10 == 0) {
+    //if (step_number % 10 == 0) {
       realtime_timer.Spin(time);
-    }
+    //}
 
     if (step_number % 500 == 0) {
       std::chrono::high_resolution_clock::time_point end =
@@ -516,19 +599,13 @@ int main(int argc, char *argv[]) {
       std::chrono::duration<double> wall_time =
           std::chrono::duration_cast<std::chrono::duration<double>>(end -
                                                                     start);
-
-<<<<<<< HEAD
-      std::cout << "elapsed time = " << (wall_time.count()) / (time - last_time)
-                << ", t = " << time << "\n";
-=======
       std::cout << "elapsed time = " 
       	<< (wall_time.count()) / (time - last_time) 
       	<< ", t = " << time
       	<< ", gear = " << gear 
-      	<< ", current gear = " << trans->GetCurrentGear()
-      	<< ", rpm = " << my_vehicle.GetEngine()->GetMotorSpeed() * RADS_2_RPM 
+      	//<< ", Sp Frc Z = " << (eye_acc_z_filtered / G_2_MPSS)
       	<< "\n";
->>>>>>> feature/nads
+
       last_time = time;
       start = std::chrono::high_resolution_clock::now();
     }
