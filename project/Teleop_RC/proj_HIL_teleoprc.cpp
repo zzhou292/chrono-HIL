@@ -40,12 +40,18 @@
 #include "chrono_sensor/filters/ChFilterVisualize.h"
 #include "chrono_sensor/sensors/ChCameraSensor.h"
 
+#include "chrono/assets/ChTriangleMeshShape.h"
+#include "chrono/physics/ChBodyEasy.h"
+#include "chrono/physics/ChInertiaUtils.h"
+#include "chrono/utils/ChUtilsGeometry.h"
+
 using namespace chrono;
 using namespace chrono::irrlicht;
 using namespace chrono::vehicle;
 using namespace chrono::vehicle::rccar;
 using namespace chrono::hil;
 using namespace chrono::sensor;
+using namespace chrono::geometry;
 
 // =============================================================================
 
@@ -99,6 +105,9 @@ double debug_step_size = 1.0 / 1; // FPS = 1
 // POV-Ray output
 bool povray_output = false;
 
+void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
+              std::vector<ChVector<>> &cone_pos);
+
 // =============================================================================
 
 int main(int argc, char *argv[]) {
@@ -143,8 +152,8 @@ int main(int argc, char *argv[]) {
   switch (terrain_model) {
   case RigidTerrain::PatchType::BOX:
     patch = terrain.AddPatch(patch_mat, CSYSNORM, terrainLength, terrainWidth);
-    patch->SetTexture(vehicle::GetDataFile("terrain/textures/tile4.jpg"), 200,
-                      200);
+    patch->SetTexture(vehicle::GetDataFile("terrain/textures/tile4.jpg"), 20,
+                      20);
     break;
   case RigidTerrain::PatchType::HEIGHT_MAP:
     patch = terrain.AddPatch(
@@ -174,6 +183,34 @@ int main(int argc, char *argv[]) {
   vis->AddLogo();
   vis->AttachVehicle(&my_rccar.GetVehicle());
 
+  // -----------------------
+  // Adding cone objects
+  // -----------------------
+
+  // Create obstacles
+  std::vector<std::string> cone_meshfile = {
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj"  //
+  };
+  std::vector<ChVector<>> cone_pos = {
+      ChVector<>(6.5, -0.3, 0.005),  ChVector<>(6.5, 0.70, 0.005),
+      ChVector<>(6.0, -0.35, 0.005), ChVector<>(6.0, 0.65, 0.005),
+      ChVector<>(5.5, -0.4, 0.005),  ChVector<>(5.5, 0.6, 0.005),
+      ChVector<>(5.0, -0.45, 0.005), ChVector<>(5.0, 0.55, 0.005),
+      ChVector<>(4.5, -0.5, 0.005),  ChVector<>(4.5, 0.5, 0.005), //
+      ChVector<>(4.0, -0.5, 0.005),  ChVector<>(4.0, 0.5, 0.005), //
+      ChVector<>(3.5, -0.5, 0.005),  ChVector<>(3.5, 0.5, 0.005), //
+      ChVector<>(3.0, -0.5, 0.005),  ChVector<>(3.0, 0.5, 0.005)  //
+  };
+
+  addCones((*my_rccar.GetSystem()), cone_meshfile, cone_pos);
+
   // ---------------------------------------------
   // Create a sensor manager and add a point light
   // ---------------------------------------------
@@ -202,9 +239,28 @@ int main(int argc, char *argv[]) {
       1); // fov, lag, exposure
   cam->SetName("Camera Sensor");
   cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
-      1280, 720, "Driver View", false));
+      1280, 720, "Driver View - front", false));
   cam->SetLag(0.05f);
   manager->AddSensor(cam);
+
+  // ------------------------------------------------
+  // Create a back-view camera and add it to the sensor manager
+  // ------------------------------------------------
+
+  auto cam2 = chrono_types::make_shared<ChCameraSensor>(
+      my_rccar.GetVehicle().GetChassisBody(), // body camera is attached to
+      25,                                     // update rate in Hz
+      chrono::ChFrame<double>(
+          {-0.1, 0, 0.07}, Q_from_AngAxis(CH_C_PI, {0, 0, 1})), // offset pose
+      1280,                                                     // image width
+      720,                                                      // image height
+      CH_C_PI_4,
+      1); // fov, lag, exposure
+  cam2->SetName("Camera Sensor - back");
+  cam2->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
+      1280, 720, "Driver View - back", false));
+  cam2->SetLag(0.05f);
+  manager->AddSensor(cam2);
 
   // -----------------
   // Initialize output
@@ -260,7 +316,7 @@ int main(int argc, char *argv[]) {
   while (true) {
     double time = my_rccar.GetSystem()->GetChTime();
 
-    std::cout << cam->GetLag() << std::endl;
+    // std::cout << cam->GetLag() << std::endl;
     if (step_number == 5000) {
       cam->SetLag(0.08f);
     }
@@ -326,4 +382,46 @@ int main(int argc, char *argv[]) {
   }
 
   return 0;
+}
+
+void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
+              std::vector<ChVector<>> &cone_pos) {
+  SetChronoDataPath(CHRONO_DATA_DIR);
+  std::vector<std::shared_ptr<ChBodyAuxRef>> cone;
+  double cone_density = 900;
+  std::shared_ptr<ChMaterialSurface> rock_mat =
+      ChMaterialSurface::DefaultMaterial(sys.GetContactMethod());
+
+  for (int i = 0; i < cone_files.size(); i++) {
+    auto mesh = ChTriangleMeshConnected::CreateFromWavefrontFile(
+        GetChronoDataFile(cone_files[i]), false, true);
+
+    double mass;
+    ChVector<> cog;
+    ChMatrix33<> inertia;
+    mesh->ComputeMassProperties(true, mass, cog, inertia);
+    ChMatrix33<> principal_inertia_rot;
+    ChVector<> principal_I;
+    ChInertiaUtils::PrincipalInertia(inertia, principal_I,
+                                     principal_inertia_rot);
+
+    auto body = chrono_types::make_shared<ChBodyAuxRef>();
+    sys.Add(body);
+    body->SetBodyFixed(true);
+    body->SetFrame_REF_to_abs(ChFrame<>(ChVector<>(cone_pos[i]), QUNIT));
+    body->SetFrame_COG_to_REF(ChFrame<>(cog, principal_inertia_rot));
+    body->SetMass(mass * cone_density);
+    body->SetInertiaXX(cone_density * principal_I);
+
+    body->GetCollisionModel()->ClearModel();
+    body->GetCollisionModel()->AddTriangleMesh(rock_mat, mesh, false, false,
+                                               VNULL, ChMatrix33<>(1), 0.005);
+    body->GetCollisionModel()->BuildModel();
+    body->SetCollide(true);
+
+    auto mesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+    mesh_shape->SetMesh(mesh);
+    mesh_shape->SetBackfaceCull(true);
+    body->AddVisualShape(mesh_shape);
+  }
 }

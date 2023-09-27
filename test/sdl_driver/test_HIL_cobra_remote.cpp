@@ -20,7 +20,7 @@ using namespace chrono::vehicle;
 using namespace chrono::hil;
 
 #define PORT_OUT 1209
-#define IP_OUT "10.140.224.134"
+#define IP_OUT "10.141.147.137"
 
 // This program shows how to work with joysticks using SDL2.
 // This example shows how to do it by manually polling the joystick
@@ -57,7 +57,7 @@ int main() {
 
     boost_streamer.Synchronize();
 
-    usleep(10000);
+    usleep(100000);
 
     if (SDLDriver.Synchronize() == 1) {
       break;
