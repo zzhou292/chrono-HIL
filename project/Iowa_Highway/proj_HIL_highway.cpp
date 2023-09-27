@@ -178,7 +178,6 @@ bool save_driver = true;
 double tsave = 1e-2;
 // path where the output is saved
 std::string output_file_path = "./output.csv";
-std::string dummy_button_path = "./buttoninfo.csv";
 std::stringstream buffer;
 std::stringstream button_buffer;
 std::ofstream filestream;
@@ -200,34 +199,10 @@ ChQuaternion<> mirror_wingright_rot = {1.0, 0.0, 0.0, 0.0};
 ChVector<> arrived_sign_pos = {0.0, 0.0, 0.0};
 ChQuaternion<> arrived_sign_rot = {1.0, 0.0, 0.0, 0.0};
 
-// benchmarking
-bool benchmark = false;
-
-// Dummy vehicle offset
-float dummy_audi_z_offset = 0.25;
-float dummy_patrol_z_offset = 0.5;
 using namespace std::chrono;
 
 // Define all lead vehicles
-int num_dummy = 0;   // number of dummy vehicles
-int num_dynamic = 0; // number of dynamic vehicles
 int lead_count = 0;
-// Dummies
-std::vector<ChVector<>> dummy_pos;
-std::vector<float> dummy_cruise_speed;
-std::vector<int> dummy_lane; // 0 for inner, 1 for outer
-// 0 for no control(constant speed), 1 for distance control, 2 for time control
-std::vector<int> dummy_control;
-// time control variables
-std::vector<std::vector<float>> dummy_control_x;
-std::vector<std::vector<float>> dummy_control_y;
-std::vector<int>
-    dummy_time_mode; // 0 if dist mode or this field is N/A, 1 means using sim
-                     // time, 2 means using wall time (real time)
-std::vector<double>
-    dummy_dist; // since dummy vehicle do not have a tracker, we need to track
-                // the distance of the dummy vehicle
-std::vector<ChVector<>> dummy_prev_pos;
 
 // Dynamic Leaders
 std::vector<ChVector<>> dynamic_pos;
@@ -278,12 +253,6 @@ void AddTerrain(ChSystem *chsystem);
 void AddRoadway(ChSystem *chsystem);
 // buildings in the environment
 void AddBuildings(ChSystem *chsystem);
-
-// helper function to update dummy vehicles
-void UpdateDummy(std::shared_ptr<ChBodyAuxRef> dummy_vehicle,
-                 std::shared_ptr<ChBezierCurve> curve, float dummy_speed,
-                 float step_size, float z_offset, ChBezierCurveTracker tracker,
-                 double &dummy_dist, ChVector<> &dummy_prev_pos);
 
 // compute desired speed for dynamic vehicles
 // based on json defined, time-dependent, piecewise speed data
@@ -435,167 +404,95 @@ void ReadParameterFiles() {
 
       if (d.HasMember(entry_name.c_str())) {
         std::cout << "lead_count:" << lead_count << std::endl;
-        if (d[entry_name.c_str()]["is_dummy"].GetInt() == 0) {
-          dynamic_pos.push_back(
-              vehicle::ReadVectorJSON(d[entry_name.c_str()]["initial_pos"]));
-          dynamic_cruise_speed.push_back(
-              d[entry_name.c_str()]["cruise_speed"].GetDouble());
-          dynamic_lane.push_back(d[entry_name.c_str()]["lane"].GetInt());
-          num_dynamic++;
 
-          // read speed control
-          if (d[entry_name.c_str()].HasMember("time_speed_control")) {
-            dynamic_control.push_back(2);
-            std::vector<float> temp_time;
-            std::vector<float> temp_speed;
+        dynamic_pos.push_back(
+            vehicle::ReadVectorJSON(d[entry_name.c_str()]["initial_pos"]));
+        dynamic_cruise_speed.push_back(
+            d[entry_name.c_str()]["cruise_speed"].GetDouble());
+        dynamic_lane.push_back(d[entry_name.c_str()]["lane"].GetInt());
 
-            auto marr = d[entry_name.c_str()]["time_speed_control"].GetArray();
-            for (int i = 0; i < marr[0].Size(); i++) {
-              for (int j = 0; j < marr[1].Size(); j++) {
-                if (i == 0) {
-                  temp_time.push_back(marr[i][j].GetDouble());
-                } else if (i == 1) {
-                  temp_speed.push_back(marr[i][j].GetDouble());
-                }
+        // read speed control
+        if (d[entry_name.c_str()].HasMember("time_speed_control")) {
+          dynamic_control.push_back(2);
+          std::vector<float> temp_time;
+          std::vector<float> temp_speed;
+
+          auto marr = d[entry_name.c_str()]["time_speed_control"].GetArray();
+          for (int i = 0; i < marr[0].Size(); i++) {
+            for (int j = 0; j < marr[1].Size(); j++) {
+              if (i == 0) {
+                temp_time.push_back(marr[i][j].GetDouble());
+              } else if (i == 1) {
+                temp_speed.push_back(marr[i][j].GetDouble());
               }
             }
-            dynamic_control_x.push_back(temp_time);
-            dynamic_control_y.push_back(temp_speed);
-
-            // update the dummy_time_mode
-            if (d[entry_name.c_str()].HasMember("time_mode")) {
-              dynamic_time_mode.push_back(
-                  d[entry_name.c_str()]["time_mode"].GetInt());
-            } else {
-              dynamic_time_mode.push_back(1);
-            }
-          } else if ((d[entry_name.c_str()].HasMember("dist_speed_control"))) {
-            dynamic_control.push_back(1);
-            std::vector<float> temp_dist;
-            std::vector<float> temp_speed;
-
-            auto marr = d[entry_name.c_str()]["dist_speed_control"].GetArray();
-            for (int i = 0; i < marr[0].Size(); i++) {
-              for (int j = 0; j < marr[1].Size(); j++) {
-                if (i == 0) {
-                  temp_dist.push_back(marr[i][j].GetDouble());
-                } else if (i == 1) {
-                  temp_speed.push_back(marr[i][j].GetDouble());
-                }
-              }
-            }
-            dynamic_control_x.push_back(temp_dist);
-            dynamic_control_y.push_back(temp_speed);
-
-            // update the dummy_time_mode
-            dynamic_time_mode.push_back(0);
-          } else {
-            std::vector<float> empty_vec_x;
-            std::vector<float> empty_vec_y;
-            dynamic_control_x.push_back(empty_vec_x);
-            dynamic_control_y.push_back(empty_vec_y);
-            dynamic_control.push_back(0);
-
-            dynamic_time_mode.push_back(0);
           }
+          dynamic_control_x.push_back(temp_time);
+          dynamic_control_y.push_back(temp_speed);
 
-          if (d[entry_name.c_str()].HasMember("LeaderDriverParam")) {
-            std::vector<std::vector<double>> temp_leaderParam;
-            auto marr = d[entry_name.c_str()]["LeaderDriverParam"].GetArray();
-            int msize0 = marr.Size();
-            int msize1 = marr[0].Size();
-            assert(msize1 == 6);
-            temp_leaderParam.resize(msize0);
-            // printf("ARRAY DIM = %i \n", msize);
-            for (auto it = marr.begin(); it != marr.end(); ++it) {
-              auto i = std::distance(marr.begin(), it);
-              temp_leaderParam[i].resize(msize1);
-              for (int j = 0; j < marr[i].Size(); j++) {
-                temp_leaderParam[i][j] = marr[i][j].GetDouble();
+          // update the dummy_time_mode
+          if (d[entry_name.c_str()].HasMember("time_mode")) {
+            dynamic_time_mode.push_back(
+                d[entry_name.c_str()]["time_mode"].GetInt());
+          } else {
+            dynamic_time_mode.push_back(1);
+          }
+        } else if ((d[entry_name.c_str()].HasMember("dist_speed_control"))) {
+          dynamic_control.push_back(1);
+          std::vector<float> temp_dist;
+          std::vector<float> temp_speed;
+
+          auto marr = d[entry_name.c_str()]["dist_speed_control"].GetArray();
+          for (int i = 0; i < marr[0].Size(); i++) {
+            for (int j = 0; j < marr[1].Size(); j++) {
+              if (i == 0) {
+                temp_dist.push_back(marr[i][j].GetDouble());
+              } else if (i == 1) {
+                temp_speed.push_back(marr[i][j].GetDouble());
               }
             }
-            leaderParam.push_back(temp_leaderParam);
-          } else {
-            std::vector<std::vector<double>> temp_leaderParam;
-            temp_leaderParam.resize(1);
-            temp_leaderParam[0] = {0.5, 1.5, 55.0, 5.0, 628.3, 0.0};
-            leaderParam.push_back(temp_leaderParam);
           }
+          dynamic_control_x.push_back(temp_dist);
+          dynamic_control_y.push_back(temp_speed);
 
+          // update the dummy_time_mode
+          dynamic_time_mode.push_back(0);
         } else {
-          dummy_pos.push_back(
-              vehicle::ReadVectorJSON(d[entry_name.c_str()]["initial_pos"]));
-          dummy_cruise_speed.push_back(
-              d[entry_name.c_str()]["cruise_speed"].GetDouble());
-          dummy_lane.push_back(d[entry_name.c_str()]["lane"].GetInt());
-          num_dummy++;
+          std::vector<float> empty_vec_x;
+          std::vector<float> empty_vec_y;
+          dynamic_control_x.push_back(empty_vec_x);
+          dynamic_control_y.push_back(empty_vec_y);
+          dynamic_control.push_back(0);
 
-          // read speed control
-          if (d[entry_name.c_str()].HasMember("time_speed_control")) {
-            dummy_control.push_back(2);
-            std::vector<float> temp_time;
-            std::vector<float> temp_speed;
-
-            auto marr = d[entry_name.c_str()]["time_speed_control"].GetArray();
-            for (int i = 0; i < marr[0].Size(); i++) {
-              for (int j = 0; j < marr[1].Size(); j++) {
-                if (i == 0) {
-                  temp_time.push_back(marr[i][j].GetDouble());
-                } else if (i == 1) {
-                  temp_speed.push_back(marr[i][j].GetDouble());
-                }
-              }
-            }
-            dummy_control_x.push_back(temp_time);
-            dummy_control_y.push_back(temp_speed);
-            dummy_dist.push_back(0.0);
-            dummy_prev_pos.push_back(dummy_pos[dummy_pos.size() - 1]);
-
-            // update the dummy_time_mode
-            if (d[entry_name.c_str()].HasMember("time_mode")) {
-              dummy_time_mode.push_back(
-                  d[entry_name.c_str()]["time_mode"].GetInt());
-            } else {
-              dummy_time_mode.push_back(1);
-            }
-          } else if ((d[entry_name.c_str()].HasMember("dist_speed_control"))) {
-            dummy_control.push_back(1);
-            std::vector<float> temp_dist;
-            std::vector<float> temp_speed;
-
-            auto marr = d[entry_name.c_str()]["dist_speed_control"].GetArray();
-            for (int i = 0; i < marr[0].Size(); i++) {
-              for (int j = 0; j < marr[1].Size(); j++) {
-                if (i == 0) {
-                  temp_dist.push_back(marr[i][j].GetDouble());
-                } else if (i == 1) {
-                  temp_speed.push_back(marr[i][j].GetDouble());
-                }
-              }
-            }
-            dummy_control_x.push_back(temp_dist);
-            dummy_control_y.push_back(temp_speed);
-            dummy_dist.push_back(0.0);
-            dummy_prev_pos.push_back(dummy_pos[dummy_pos.size() - 1]);
-
-            dummy_time_mode.push_back(0);
-
-          } else {
-            std::vector<float> empty_vec_x;
-            std::vector<float> empty_vec_y;
-            dummy_control_x.push_back(empty_vec_x);
-            dummy_control_y.push_back(empty_vec_y);
-            dummy_control.push_back(0);
-            dummy_dist.push_back(0.0);
-            dummy_prev_pos.push_back(dummy_pos[dummy_pos.size() - 1]);
-
-            dummy_time_mode.push_back(0);
-          }
+          dynamic_time_mode.push_back(0);
         }
-        lead_count++;
+
+        if (d[entry_name.c_str()].HasMember("LeaderDriverParam")) {
+          std::vector<std::vector<double>> temp_leaderParam;
+          auto marr = d[entry_name.c_str()]["LeaderDriverParam"].GetArray();
+          int msize0 = marr.Size();
+          int msize1 = marr[0].Size();
+          assert(msize1 == 6);
+          temp_leaderParam.resize(msize0);
+          // printf("ARRAY DIM = %i \n", msize);
+          for (auto it = marr.begin(); it != marr.end(); ++it) {
+            auto i = std::distance(marr.begin(), it);
+            temp_leaderParam[i].resize(msize1);
+            for (int j = 0; j < marr[i].Size(); j++) {
+              temp_leaderParam[i][j] = marr[i][j].GetDouble();
+            }
+          }
+          leaderParam.push_back(temp_leaderParam);
+        } else {
+          std::vector<std::vector<double>> temp_leaderParam;
+          temp_leaderParam.resize(1);
+          temp_leaderParam[0] = {0.5, 1.5, 55.0, 5.0, 628.3, 0.0};
+          leaderParam.push_back(temp_leaderParam);
+        }
       } else {
         break;
       }
+      lead_count++;
     }
   }
 }
@@ -620,8 +517,6 @@ void AddCommandLineOptions(ChCLI &cli) {
                       "Replay human driver inputs from file", "false");
 
   cli.AddOption<bool>("Simulation", "birdseye", "Enable birds eye camera",
-                      "false");
-  cli.AddOption<bool>("Simulation", "benchmark", "Benchmark the simulation",
                       "false");
 
   cli.AddOption<std::string>("Simulation", "scenario_params",
@@ -677,8 +572,6 @@ int main(int argc, char *argv[]) {
   bool lbj_joystick = cli.GetAsType<bool>("lbj");
 
   std::cout << "disable_joystick=" << disable_joystick << std::endl;
-  //  = cli.GetAsType<bool>("record");
-  //  = cli.GetAsType<bool>("replay");
 
   scenario_parameters = demo_data_path + "/Environments/Iowa/parameters/" +
                         cli.GetAsType<std::string>("scenario_params");
@@ -692,13 +585,6 @@ int main(int argc, char *argv[]) {
   std::cout << "Lead params:" << lead_parameters << "\n";
 
   ReadParameterFiles();
-
-  benchmark = cli.GetAsType<bool>("benchmark");
-  if (benchmark) {
-    disable_joystick = true;
-    lbj_joystick = false;
-    t_end = cli.GetAsType<double>("end_time");
-  }
 
   SetChronoDataPath(CHRONO_DATA_DIR);
   vehicle::SetDataPath(CHRONO_DATA_DIR + std::string("vehicle/"));
@@ -745,10 +631,7 @@ int main(int argc, char *argv[]) {
 
   output_file_path =
       "./output_" + cli.GetAsType<std::string>("filename") + ".csv ";
-  dummy_button_path =
-      "./buttoninfo_" + cli.GetAsType<std::string>("filename") + ".csv ";
   filestream = std::ofstream(output_file_path);
-  buttonstream = std::ofstream(dummy_button_path);
 
   // Create and initialize the tires
   for (auto &axle : vehicle.GetAxles()) {
@@ -831,40 +714,6 @@ int main(int argc, char *argv[]) {
   rwm_mirror_shape->SetMutable(false);
   vehicle.GetChassisBody()->AddVisualShape(
       rwm_mirror_shape, ChFrame<>(mirror_wingright_pos, mirror_wingright_rot));
-
-  // Add leader vehicles
-  std::vector<std::shared_ptr<WheeledVehicle>> lead_vehicles;
-  for (int i = 0; i < num_dynamic; i++) {
-    auto lead_vehicle = chrono_types::make_shared<WheeledVehicle>(
-        vehicle.GetSystem(), vehicle_filename);
-
-    auto lead_engine = ReadEngineJSON(engine_filename);
-    auto lead_transmission = ReadTransmissionJSON(transmission_filename);
-    auto lead_powertrain = chrono_types::make_shared<ChPowertrainAssembly>(
-        lead_engine, lead_transmission);
-
-    lead_vehicle->InitializePowertrain(lead_powertrain);
-
-    // lead_vehicle->Initialize(ChCoordsys<>(dynamic_pos[i] +
-    // initRot.Rotate(ChVector<>(lead_heading * (i + 1), 0, 0)), initRot));
-    lead_vehicle->Initialize(ChCoordsys<>(dynamic_pos[i], initRot));
-    lead_vehicle->GetChassis()->SetFixed(false);
-    lead_vehicle->SetChassisVisualizationType(chassis_vis_type);
-    lead_vehicle->SetSuspensionVisualizationType(suspension_vis_type);
-    lead_vehicle->SetSteeringVisualizationType(steering_vis_type);
-    lead_vehicle->SetWheelVisualizationType(wheel_vis_type);
-    lead_vehicle->InitializePowertrain(lead_powertrain);
-
-    // Create and initialize the tires
-    for (auto &axle : lead_vehicle->GetAxles()) {
-      for (auto &wheel : axle->GetWheels()) {
-        auto tire = ReadTireJSON(tire_file);
-        lead_vehicle->InitializeTire(tire, wheel, tire_vis_type);
-      }
-    }
-
-    lead_vehicles.push_back(lead_vehicle);
-  }
 
   // Create the terrain
   RigidTerrain terrain(vehicle.GetSystem());
@@ -1035,25 +884,11 @@ int main(int argc, char *argv[]) {
     driver_inputs.m_throttle = SDLDriver.GetThrottle();
     driver_inputs.m_braking = SDLDriver.GetBraking();
 
-    if (step_number % int(1 / step_size) == 0 && !benchmark) {
-      if (lead_count != 0) {
-        auto ld_speed = lead_vehicles[0]->GetSpeed() * MS_TO_MPH;
-        auto ig_speed = vehicle.GetSpeed() * MS_TO_MPH;
-        auto wall_time = high_resolution_clock::now();
-        printf("Sim Time=%f, \tWall Time=%f, \tExtra Time=%f, \tLD_Speed "
-               "mph=%f, \tIG_Speed mph=%f\n",
-               sim_time,
-               duration_cast<duration<double>>(wall_time - t0).count(),
-               extra_time, ld_speed, ig_speed);
-      } else {
-        auto ig_speed = vehicle.GetSpeed() * MS_TO_MPH;
-        auto wall_time = high_resolution_clock::now();
-        printf(
-            "Sim Time=%f, \tWall Time=%f, \tExtra Time=%f, \tIG_Speed mph=%f\n",
-            sim_time, duration_cast<duration<double>>(wall_time - t0).count(),
-            extra_time, ig_speed);
-      }
-    }
+    auto ig_speed = vehicle.GetSpeed() * MS_TO_MPH;
+    auto wall_time = high_resolution_clock::now();
+    printf("Sim Time=%f, \tWall Time=%f, \tExtra Time=%f, \tIG_Speed mph=%f\n",
+           sim_time, duration_cast<duration<double>>(wall_time - t0).count(),
+           extra_time, ig_speed);
 
     // update current vehicle speed
     cur_follower_speed = vehicle.GetSpeed();
@@ -1073,9 +908,6 @@ int main(int argc, char *argv[]) {
 
     terrain.Advance(step);
     vehicle.Advance(step);
-
-    auto t2 = high_resolution_clock::now();
-    float wall_time = duration_cast<duration<double>>(t2 - t0).count();
 
     // Update the sensor manager
     if (render) {
@@ -1099,7 +931,7 @@ int main(int argc, char *argv[]) {
     // Increment frame number
     step_number++;
 
-    if (step_number % 5 == 0 && !benchmark && enable_realtime) {
+    if (step_number % 5 == 0 && enable_realtime) {
       auto tt0 = high_resolution_clock::now();
       realtime_timer.Spin(sim_time);
       auto tt1 = high_resolution_clock::now();
