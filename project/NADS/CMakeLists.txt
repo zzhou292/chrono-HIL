@@ -10,6 +10,7 @@
 set(DEMOS
 	proj_HIL_nads
   proj_HIL_nads_ctr
+  proj_HIL_nads_syn_agents
   #proj_HIL_nads_unity
 )
 

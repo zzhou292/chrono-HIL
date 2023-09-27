@@ -41,6 +41,15 @@
 #include "chrono_vehicle/ChTransmission.h"
 #include "chrono_vehicle/powertrain/ChAutomaticTransmissionSimpleMap.h"
 
+#include "chrono_synchrono/SynChronoManager.h"
+#include "chrono_synchrono/SynConfig.h"
+#include "chrono_synchrono/agent/SynWheeledVehicleAgent.h"
+#include "chrono_synchrono/communication/dds/SynDDSCommunicator.h"
+#include "chrono_synchrono/utils/SynDataLoader.h"
+#include "chrono_synchrono/utils/SynLog.h"
+
+#include "chrono_thirdparty/cxxopts/ChCLI.h"
+
 using namespace chrono;
 using namespace chrono::irrlicht;
 using namespace chrono::vehicle;
@@ -48,6 +57,7 @@ using namespace chrono::vehicle::sedan;
 using namespace chrono::geometry;
 using namespace chrono::hil;
 using namespace chrono::utils;
+using namespace chrono::synchrono;
 
 const double RADS_2_RPM = 30 / CH_C_PI;
 const double RADS_2_DEG = 180 / CH_C_PI;
@@ -60,14 +70,18 @@ const double G_2_MPSS = 9.81;
 #ifdef USENADS
 #define PORT_IN 9090
 #define PORT_OUT 9091
+#define PORT_OUT_2 9092
 #define IP_OUT "90.0.0.125"
+#define IP_OUT_2 "90.0.0.120"
 #else
 #define PORT_IN 1209
-#define PORT_OUT 1204
+#define PORT_OUT 1210
+#define PORT_OUT_2 1211
 #define IP_OUT "127.0.0.1"
+#define IP_OUT_2 "127.0.0.1"
 #endif
 
-bool render = true;
+bool render = false;
 ChVector<> driver_eyepoint(-0.3, 0.4, 0.98);
 
 // =============================================================================
@@ -87,10 +101,35 @@ double tire_step_size = 1e-5;
 double t_end = 1000;
 
 // =============================================================================
-
+void AddCommandLineOptions(ChCLI &cli);
 int main(int argc, char *argv[]) {
-  GetLog() << "Copyright (c) 2017 projectchrono.org\nChrono version: "
-           << CHRONO_VERSION << "\n\n";
+
+  // ==========================================================================
+  ChCLI cli(argv[0]);
+
+  AddCommandLineOptions(cli);
+  if (!cli.Parse(argc, argv, false, false))
+    return 0;
+
+  const int node_id = cli.GetAsType<int>("node_id");
+  const int num_nodes = cli.GetAsType<int>("num_nodes");
+
+  std::cout << "id:" << node_id << std::endl;
+  std::cout << "num:" << num_nodes << std::endl;
+
+  // =============================================================================
+
+  // -----------------------
+  // Create SynChronoManager
+  // -----------------------
+  auto communicator = chrono_types::make_shared<SynDDSCommunicator>(node_id);
+  SynChronoManager syn_manager(node_id, num_nodes, communicator);
+
+  // Change SynChronoManager settings
+  float heartbeat = 0.02f;
+  syn_manager.SetHeartbeat(heartbeat);
+
+  // ========================================================================
 
   SetChronoDataPath(CHRONO_DATA_DIR);
   vehicle::SetDataPath(CHRONO_DATA_DIR + std::string("vehicle/"));
@@ -138,6 +177,14 @@ int main(int argc, char *argv[]) {
   my_vehicle.GetSystem()->AddBody(attached_body);
   attached_body->SetCollide(false);
   attached_body->SetBodyFixed(true);
+
+  // Add vehicle as an agent and initialize SynChronoManager
+  std::string zombie_filename =
+      CHRONO_DATA_DIR + std::string("synchrono/vehicle/audi.json");
+  auto agent = chrono_types::make_shared<SynWheeledVehicleAgent>(
+      &my_vehicle, zombie_filename);
+  syn_manager.AddAgent(agent);
+  syn_manager.Initialize(my_vehicle.GetSystem());
 
   // Create the terrain
   RigidTerrain terrain(my_vehicle.GetSystem());
@@ -217,6 +264,11 @@ int main(int argc, char *argv[]) {
 
   // create boost data streaming interface
   ChBoostOutStreamer boost_streamer(IP_OUT, PORT_OUT);
+  ChBoostOutStreamer boost_traffic_streamer(IP_OUT_2, PORT_OUT_2);
+
+  // obtain and initiate all zombie instances
+  std::map<AgentKey, std::shared_ptr<SynAgent>> zombie_map;
+  std::map<int, std::shared_ptr<SynWheeledVehicleAgent>> id_map;
 
   // declare a set of moving average filter for data smoothing
   ChRunningAverage acc_x(100);
@@ -241,7 +293,7 @@ int main(int argc, char *argv[]) {
   ChRunningAverage rr_wheel_vel(100);
 
   // simulation loop
-  while (vis->Run()) {
+  while (vis->Run() && syn_manager.IsOk()) {
     double time = my_vehicle.GetSystem()->GetChTime();
 
     ChVector<> pos = my_vehicle.GetChassis()->GetPos();
@@ -338,9 +390,9 @@ int main(int argc, char *argv[]) {
       auto vel =
           my_vehicle.GetChassis()->GetBody()->GetFrame_REF_to_abs().GetPos_dt();
 
-      boost_streamer.AddData(vel.x() * M_2_FT); // 13
-      boost_streamer.AddData(-vel.y() * M_2_FT);  // 14
-      boost_streamer.AddData(-vel.z() * M_2_FT);  // 15
+      boost_streamer.AddData(vel.x() * M_2_FT);  // 13
+      boost_streamer.AddData(-vel.y() * M_2_FT); // 14
+      boost_streamer.AddData(-vel.z() * M_2_FT); // 15
 
       // Eyepoint velocity
       ChVector<> eyepoint_velocity =
@@ -379,8 +431,10 @@ int main(int argc, char *argv[]) {
       auto local_g = inv_A_REF_to_abs * ChVector<>(0.0, 0.0, -9.81);
 
       auto eye_acc_x_filtered = eyepoint_acc_x.Add(acc_local.x() + local_g.x());
-      auto eye_acc_y_filtered = eyepoint_acc_y.Add(-acc_local.y() + local_g.y());
-      auto eye_acc_z_filtered = eyepoint_acc_z.Add(-acc_local.z() + local_g.z());
+      auto eye_acc_y_filtered =
+          eyepoint_acc_y.Add(-acc_local.y() + local_g.y());
+      auto eye_acc_z_filtered =
+          eyepoint_acc_z.Add(-acc_local.z() + local_g.z());
 
       boost_streamer.AddData(eye_acc_x_filtered / G_2_MPSS); // 22
       boost_streamer.AddData(eye_acc_y_filtered / G_2_MPSS); // 23
@@ -440,6 +494,63 @@ int main(int argc, char *argv[]) {
       // Send the data
       boost_streamer.Synchronize();
     }
+
+    if (step_number == 0) {
+      zombie_map = syn_manager.GetZombies();
+      std::cout << "zombie size: " << zombie_map.size() << std::endl;
+      std::cout << "agent size: " << syn_manager.GetAgents().size()
+                << std::endl;
+      for (std::map<AgentKey, std::shared_ptr<SynAgent>>::iterator it =
+               zombie_map.begin();
+           it != zombie_map.end(); ++it) {
+        std::shared_ptr<SynAgent> temp_ptr = it->second;
+        std::shared_ptr<SynWheeledVehicleAgent> converted_ptr =
+            std::dynamic_pointer_cast<SynWheeledVehicleAgent>(temp_ptr);
+        id_map.insert(std::make_pair(it->first.GetNodeID(), converted_ptr));
+      }
+    }
+
+    // obtain map
+    if (num_nodes > 1) {
+      if (step_number % 10 == 0) {
+        int traf_id = 1;
+        for (std::map<int, std::shared_ptr<SynWheeledVehicleAgent>>::iterator
+                 it = id_map.begin();
+             it != id_map.end(); ++it) {
+
+          ChronoVehicleInfo info;
+          info.vehicle_id = traf_id;
+          info.time_stamp = std::chrono::high_resolution_clock::now()
+                                .time_since_epoch()
+                                .count();
+
+          ChVector<double> chassis_pos = it->second->GetZombiePos();
+          ChVector<double> chassis_rot =
+              it->second->GetZombieRot().Q_to_Euler123();
+
+          // converting chassis
+          info.position[0] = chassis_pos.x() * M_2_FT;
+          info.position[1] = -chassis_pos.y() * M_2_FT;
+          info.position[2] = -chassis_pos.z() * M_2_FT;
+
+          info.orientation[0] = chassis_rot.x();
+          info.orientation[1] = -chassis_rot.y();
+          info.orientation[2] = -chassis_rot.z();
+
+          info.steering_angle =
+              driver_inputs.m_steering * double(30.0 / 180.0) * CH_C_PI * 2;
+          info.wheel_rotations[0] = 0.0;
+          info.wheel_rotations[1] = 0.0;
+          info.wheel_rotations[2] = 0.0;
+          info.wheel_rotations[3] = 0.0;
+
+          boost_traffic_streamer.AddVehicleStruct(info);
+          traf_id++;
+        }
+        boost_traffic_streamer.Synchronize();
+      }
+    }
+
     // =======================
     // end data stream out section
     // =======================
@@ -447,10 +558,12 @@ int main(int argc, char *argv[]) {
     // Update modules (process inputs from other modules)
     terrain.Synchronize(time);
     my_vehicle.Synchronize(time, driver_inputs, terrain);
+    syn_manager.Synchronize(time); // Synchronize between nodes
 
     // Advance simulation for one timestep for all modules
     terrain.Advance(step_size);
     my_vehicle.Advance(step_size);
+    vis->Advance(step_size);
 
     // Increment frame number
     step_number++;
@@ -470,9 +583,8 @@ int main(int argc, char *argv[]) {
           std::chrono::duration_cast<std::chrono::duration<double>>(end -
                                                                     start);
 
-      std::cout << "elapsed time = " 
-      	<< (wall_time.count()) / (time - last_time) << ", t = " 
-      	<< time << "\n";
+      std::cout << "elapsed time = " << (wall_time.count()) / (time - last_time)
+                << ", t = " << time << "\n";
       last_time = time;
       start = std::chrono::high_resolution_clock::now();
     }
@@ -481,8 +593,15 @@ int main(int argc, char *argv[]) {
       vis->BeginScene();
       vis->Render();
       vis->EndScene();
+      vis->Synchronize(time, driver_inputs);
     }
   }
-
+  syn_manager.QuitSimulation();
   return 0;
+}
+
+void AddCommandLineOptions(ChCLI &cli) {
+  // DDS Specific
+  cli.AddOption<int>("DDS", "d,node_id", "ID for this Node", "1");
+  cli.AddOption<int>("DDS", "n,num_nodes", "Number of Nodes", "2");
 }
