@@ -29,6 +29,8 @@
 #include "chrono_vehicle/driver/ChInteractiveDriverIRR.h"
 #include "chrono_vehicle/terrain/RigidTerrain.h"
 
+#include "chrono_hil/driver/ChSDLInterface.h"
+
 #include <irrlicht.h>
 #include <limits>
 #include <time.h>
@@ -158,16 +160,6 @@ bool sensor_save = false;
 // Visualize sensor data
 bool sensor_vis = true;
 
-/// Speedometer image data
-irr::core::position2d<irr::s32> sm_center(219, 215);
-irr::core::position2d<irr::s32> rpm_center(609, 215);
-irr::core::position2d<irr::s32> gr_center(388, 23);
-irr::core::position2d<irr::s32> auto_center(358, 338);
-irr::core::position2d<irr::s32> cur_left(950, 70);
-irr::core::position2d<irr::s32> end_left(950, 190);
-irr::core::position2d<irr::s32> eta_left(950, 310);
-double sm_needle = 140;
-
 std::string demo_data_path = std::string(STRINGIFY(HIL_DATA_DIR));
 
 // Driver parameters
@@ -276,26 +268,7 @@ double eta_dist = 3.6; // eta counter distance
 float start_sim_time;
 float start_wall_time;
 
-// use keyboard?
-bool keyboard_control = false;
-
-// Texture variables
-irr::video::ITexture *texture_DASH;
-irr::video::ITexture *texture_GEAR1;
-irr::video::ITexture *texture_GEAR2;
-irr::video::ITexture *texture_GEAR3;
-irr::video::ITexture *texture_GEAR4;
-irr::video::ITexture *texture_GEAR5;
-irr::video::ITexture *texture_GEAR6;
-irr::video::ITexture *texture_AUTO;
-irr::video::ITexture *texture_COLON;
-irr::video::ITexture *texture_NUMERICAL[10];
-
 // =============================================================================
-
-// button callback placeholder
-void CustomButtonCallback();
-void DummyButtonCallback_r_3();
 
 // distribution of trees near the road
 void AddTrees(ChSystem *chsystem);
@@ -305,17 +278,6 @@ void AddTerrain(ChSystem *chsystem);
 void AddRoadway(ChSystem *chsystem);
 // buildings in the environment
 void AddBuildings(ChSystem *chsystem);
-
-// load textures for dashboard
-void IrrDashLoadTextures(ChWheeledVehicleVisualSystemIrrlicht &app);
-// update irrlicht dashboard inside simulation loop
-void IrrDashUpdate(
-    double sim_time, int step_number,
-    std::chrono::time_point<std::chrono::high_resolution_clock> t0,
-    ChWheeledVehicleVisualSystemIrrlicht &app, ChWheeledVehicle &vehicle,
-    std::shared_ptr<chrono::vehicle::ChChassis> ego_chassis,
-    DriverMode driver_mode, float &IG_dist, ChVector<> &IG_prev_pos,
-    bool &IG_started_driving);
 
 // helper function to update dummy vehicles
 void UpdateDummy(std::shared_ptr<ChBodyAuxRef> dummy_vehicle,
@@ -680,8 +642,6 @@ void AddCommandLineOptions(ChCLI &cli) {
                      std::to_string(image_width));
   cli.AddOption<int>("Simulation", "image_height", "y resolution",
                      std::to_string(image_height));
-  cli.AddOption<bool>("Simulation", "use_keyboard", "Use Keyboard for control",
-                      "false");
   cli.AddOption<bool>(
       "Simulation", "enable_realtime",
       "Use a cumulative realtimer to sync sim_time and wall_time every 0.01s",
@@ -700,7 +660,6 @@ int main(int argc, char *argv[]) {
   step_size = cli.GetAsType<double>("step_size");
   t_end = cli.GetAsType<double>("end_time");
   enable_realtime = cli.GetAsType<bool>("enable_realtime");
-  keyboard_control = cli.GetAsType<bool>("use_keyboard");
 
   // parse image resolution
   image_height = cli.GetAsType<int>("image_height");
@@ -959,216 +918,6 @@ int main(int argc, char *argv[]) {
   // Add buildings away from the road to break up the horizon
   AddBuildings(vehicle.GetSystem());
 
-  // ======================================================================
-  // Add dummy vehicles
-  // Note that dummy vhicles are placed on the inner lane of the outer loop
-  // ======================================================================
-  std::vector<ChBezierCurveTracker>
-      tracker_vec; // bezier curve tracker for dummy's path following
-                   // functionality
-  std::vector<ChVector<>> dummy_start;
-
-  // tracker objects initialization
-  for (int i = 0; i < num_dummy; i++) {
-    if (dummy_lane[i] == 0) {
-      ChBezierCurveTracker tracker(inner_path);
-      tracker_vec.push_back(tracker);
-    } else {
-      ChBezierCurveTracker tracker(outer_path);
-      tracker_vec.push_back(tracker);
-    }
-  }
-
-  // start location initialization
-  for (int i = 0; i < num_dummy; i++) {
-    dummy_start.push_back(ChVector<>(0, 0, 0));
-    tracker_vec[i].calcClosestPoint(dummy_pos[i], dummy_start[i]);
-  }
-
-  // vector which stores dummy vehicles
-  std::vector<std::shared_ptr<ChBodyAuxRef>> dummies;
-
-  // declare universal dummy mesh for multiple dummy objects
-  // full nissan patrol mesh
-  std::string suv_mesh_name = "/vehicles/Nissan_Patrol/FullPatrol.obj";
-  auto suv_mmesh = chrono_types::make_shared<ChTriangleMeshConnected>();
-  suv_mmesh->LoadWavefrontMesh(demo_data_path + suv_mesh_name, false, true);
-  suv_mmesh->RepairDuplicateVertexes(1e-9);
-
-  auto suv_trimesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
-  suv_trimesh_shape->SetMesh(suv_mmesh);
-  suv_trimesh_shape->SetMutable(false);
-
-  // full audi mesh
-  std::string audi_mesh_name = "/vehicles/audi/Full_Audi.obj";
-  auto audi_mmesh = chrono_types::make_shared<ChTriangleMeshConnected>();
-  audi_mmesh->LoadWavefrontMesh(demo_data_path + audi_mesh_name, false, true);
-  audi_mmesh->RepairDuplicateVertexes(1e-9);
-
-  auto audi_trimesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
-  audi_trimesh_shape->SetMesh(audi_mmesh);
-  audi_trimesh_shape->SetMutable(false);
-
-  for (int i = 0; i < num_dummy; i++) {
-    std::string mesh_name;
-    float dummy_z_offset;
-    if (i % 2 == 0) {
-      // if the index%2 == 0, we initialize the dummy as a Nissan Patrol
-      auto dummy = chrono_types::make_shared<ChBodyAuxRef>();
-      dummy->SetCollide(false);
-      dummy->SetPos(dummy_start[i] + ChVector<>(0, 0, dummy_patrol_z_offset));
-      dummy->SetBodyFixed(true);
-      dummy->AddVisualShape(suv_trimesh_shape);
-      vehicle.GetSystem()->AddBody(dummy);
-      dummies.push_back(dummy);
-    } else if (i % 2 == 1) {
-      // if the index%2 == 1, we initialize the dummy as an audi
-      auto dummy = chrono_types::make_shared<ChBodyAuxRef>();
-      dummy->SetCollide(false);
-      dummy->SetPos(dummy_start[i] + ChVector<>(0, 0, dummy_audi_z_offset));
-      dummy->SetBodyFixed(true);
-      dummy->AddVisualShape(audi_trimesh_shape);
-      vehicle.GetSystem()->AddBody(dummy);
-      dummies.push_back(dummy);
-    }
-  }
-
-  // -----------------
-  // Initialize output
-  // -----------------
-
-  // Create the driver system
-  // ------------------------
-
-  // ChWheeledVehicleVisualSystemIrrlicht app(
-  //     &vehicle, L"  ", irr::core::dimension2d<irr::u32>(1360, 420));
-  ChWheeledVehicleVisualSystemIrrlicht app;
-  app.SetWindowTitle("proj_HIL_highway");
-  app.SetWindowSize(1360, 420);
-  app.Initialize();
-  app.AttachVehicle(&vehicle);
-  /*
-  SPEEDOMETER: we want to use the irrlicht app to display the speedometer, but
-  calling endscene would update the entire (massive) scenario. In order to do
-  so, we first have to clean app the Irrlichr app. Once we delete the node, we
-  remove all cached meshes and textures. The order is important, otherwise
-  meshes are re-cached!!
-  */
-  // irr::scene::ISceneNode *mnode = app.GetContainer();
-  // mnode->remove();
-  irr::scene::IMeshCache *cache =
-      app.GetDevice()->getSceneManager()->getMeshCache();
-  cache->clear();
-  app.GetVideoDriver()->removeAllTextures();
-#ifdef CHRONO_IRRKLANG
-  GetLog() << "USING IRRKLANG"
-           << "\n\n";
-  ChCSLSoundEngine soundEng(&vehicle);
-#endif
-
-  // Create the interactive driver system
-  // ChCSLDriver driver(vehicle);
-  // driver = chrono_types::make_shared<ChCSLDriver>(vehicle);
-  auto IGdriver = chrono_types::make_shared<ChInteractiveDriverIRR>(app);
-  IGdriver->SetButtonCallback(r_1, &CustomButtonCallback);
-  IGdriver->SetButtonCallback(r_3, &DummyButtonCallback_r_3);
-
-  if (keyboard_control) {
-    IGdriver->SetInputMode(ChInteractiveDriverIRR::InputMode::KEYBOARD);
-  } else {
-    IGdriver->SetInputMode(ChInteractiveDriverIRR::InputMode::JOYSTICK);
-    std::cout << "joystick config: " << joystick_filename << std::endl;
-    IGdriver->SetJoystickConfigFile(joystick_filename);
-  }
-
-  IGdriver->Initialize();
-
-  std::string steering_controller_file_IG =
-      demo_data_path + "/Environments/Iowa/Driver/SteeringController_IG.json";
-  std::string steering_controller_file_IG_nl =
-      demo_data_path +
-      "/Environments/Iowa/Driver/SteeringController_IG_nl.json";
-  std::string steering_controller_file_LD =
-      demo_data_path + "/Environments/Iowa/Driver/SteeringController_LD.json";
-
-  std::string speed_controller_file_IG =
-      demo_data_path + "/Environments/Iowa/Driver/SpeedController_IG.json";
-  std::string speed_controller_file_IG_nl =
-      demo_data_path + "/Environments/Iowa/Driver/SpeedController_IG_nl.json";
-  std::string speed_controller_file_LD =
-      demo_data_path + "/Environments/Iowa/Driver/SpeedController_LD.json";
-
-  std::cout << "lead_count: " << lead_count << std::endl;
-  // lead_count
-  std::shared_ptr<ChNSFFollowerDriver> PFdriver;
-  if (lead_count == 0) {
-    PFdriver = chrono_types::make_shared<ChNSFFollowerDriver>(
-        vehicle, steering_controller_file_IG_nl, speed_controller_file_IG_nl,
-        outer_path, "road", cruise_speed * MPH_TO_MS, followerParam);
-  } else {
-    PFdriver = chrono_types::make_shared<ChNSFFollowerDriver>(
-        vehicle, steering_controller_file_IG, speed_controller_file_IG,
-        outer_path, "road", cruise_speed * MPH_TO_MS, lead_vehicles[0],
-        followerParam);
-  }
-
-  PFdriver->Initialize();
-
-  PF_driver_ptr = PFdriver;
-
-  // we call the callback explicitly to start the timer
-  CustomButtonCallback();
-  DummyButtonCallback_r_3();
-
-  if (!disable_joystick) {
-    driver_mode = HUMAN;
-  } else {
-    driver_mode = AUTONOMOUS;
-    std::cout << "Using path follower driver\n";
-  }
-
-  // Leader Driver
-  std::vector<std::shared_ptr<ChNSFLeaderDriver>> lead_PFdrivers;
-  for (int i = 0; i < num_dynamic; i++) {
-    if (dynamic_lane[i] == 0) {
-      auto lead_PFdriver = chrono_types::make_shared<ChNSFLeaderDriver>(
-          *lead_vehicles[i], steering_controller_file_LD,
-          speed_controller_file_LD, inner_path, "road",
-          dynamic_cruise_speed[i] * MPH_TO_MS, leaderParam[i]);
-      lead_PFdriver->Initialize();
-      lead_PFdrivers.push_back(lead_PFdriver);
-    } else {
-      auto lead_PFdriver = chrono_types::make_shared<ChNSFLeaderDriver>(
-          *lead_vehicles[i], steering_controller_file_LD,
-          speed_controller_file_LD, outer_path, "road",
-          dynamic_cruise_speed[i] * MPH_TO_MS, leaderParam[i]);
-      lead_PFdriver->Initialize();
-      lead_PFdrivers.push_back(lead_PFdriver);
-    }
-  }
-
-  if (save_driver) {
-    filestream << "csv comments: " << cli.GetAsType<std::string>("csv_comments")
-               << " \n";
-
-    if (lead_count != 0) {
-      filestream << "tstamp,time,wallTime,isManual,Steering,Throttle,Braking,x["
-                    "m],y[m],speed[mph],"
-                    "acceleration[m/s^2],"
-                    "dist[m],dist_projected[m],IG_mile[mile],IG_lane[0-inner/"
-                    "1-outer/-1-invalid],LD_x[m],"
-                    "LD_y[m],LD_speed[mph],"
-                    "LD_acc[m/s^2],LD_mile[mile]\n";
-    } else {
-      filestream << "tstamp,time,wallTime,isManual,Steering,Throttle,Braking,x["
-                    "m],y[m],speed[mph],"
-                    "acceleration[m/s^2],"
-                    "IG_mile[mile],IG_lane[0-inner/1-outer/-1-invalid]\n";
-    }
-
-    buttonstream << "start recording buttons pressed \n";
-  }
-
   // ---------------
   // Simulation loop
   // ---------------
@@ -1244,6 +993,15 @@ int main(int argc, char *argv[]) {
   // add sensor to the manager
   manager->AddSensor(cam2);
 
+  ChSDLInterface SDLDriver;
+  // Set the time response for steering and throttle keyboard inputs.
+
+  SDLDriver.Initialize();
+
+  std::string joystick_file =
+      (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
+  SDLDriver.SetJoystickConfigFile(joystick_file);
+
   // ---------------
   // Simulate system
   // ---------------
@@ -1259,14 +1017,12 @@ int main(int argc, char *argv[]) {
   auto t0 = high_resolution_clock::now();
   ChRealtimeCumulative realtime_timer;
 
-  IrrDashLoadTextures(app);
-
   vehicle.EnableRealtime(false);
 
   // create boost data streaming interface
   ChBoostOutStreamer boost_streamer(IP_OUT, PORT_OUT);
 
-  while (app.GetDevice()->run()) {
+  while (true) {
     sim_time = vehicle.GetSystem()->GetChTime();
 
     // End simulation
@@ -1275,17 +1031,10 @@ int main(int argc, char *argv[]) {
 
     // Collect output data from modules (for inter-module communication)
     DriverInputs driver_inputs;
-    if (driver_mode == AUTONOMOUS)
-      driver_inputs = PFdriver->GetInputs();
-    else {
-      driver_inputs = IGdriver->GetInputs();
-    }
+    driver_inputs.m_steering = SDLDriver.GetSteering();
+    driver_inputs.m_throttle = SDLDriver.GetThrottle();
+    driver_inputs.m_braking = SDLDriver.GetBraking();
 
-    // printf("Driver inputs: %f,%f,%f\n",
-    // driver_inputs.m_throttle, driver_inputs.m_braking,
-    //        driver_inputs.m_steering);
-    // driver_inputs.m_throttle = 0;
-    // driver_inputs.m_steering *= -1;
     if (step_number % int(1 / step_size) == 0 && !benchmark) {
       if (lead_count != 0) {
         auto ld_speed = lead_vehicles[0]->GetSpeed() * MS_TO_MPH;
@@ -1309,166 +1058,24 @@ int main(int argc, char *argv[]) {
     // update current vehicle speed
     cur_follower_speed = vehicle.GetSpeed();
 
-    // Update modules (process inputs from other modules)
-    if (driver_mode == AUTONOMOUS)
-      PFdriver->Synchronize(sim_time, step_size);
-    else
-      IGdriver->Synchronize(sim_time);
+    if (SDLDriver.Synchronize() == 1) {
+      break;
+    }
 
     terrain.Synchronize(sim_time);
     vehicle.Synchronize(sim_time, driver_inputs, terrain);
 
-    app.Synchronize(sim_time, driver_inputs);
 #ifdef CHRONO_IRRKLANG
     soundEng.Synchronize(sim_time);
 #endif
     // Advance simulation for one timestep for all modules
     double step = step_size;
 
-    if (driver_mode == AUTONOMOUS)
-      PFdriver->Advance(step);
-    else
-      IGdriver->Advance(step);
-
     terrain.Advance(step);
     vehicle.Advance(step);
 
-    app.Advance(step_size);
-
     auto t2 = high_resolution_clock::now();
     float wall_time = duration_cast<duration<double>>(t2 - t0).count();
-
-    // dummy update
-    for (int i = 0; i < num_dummy; i++) {
-      float temp_z_offset;
-      if (i % 2 == 0) {
-        temp_z_offset = dummy_patrol_z_offset;
-      } else if (i % 2 == 1) {
-        temp_z_offset = dummy_audi_z_offset;
-      }
-
-      if (dummy_lane[i] == 0) {
-        // when in inner lane
-        if (dummy_control[i] == 0) {
-          // if dummy doesn't have any control, we just use cruise speed setting
-          // always
-          UpdateDummy(dummies[i], inner_path, dummy_cruise_speed[i], step_size,
-                      temp_z_offset, tracker_vec[i], dummy_dist[i],
-                      dummy_prev_pos[i]);
-        } else if (dummy_control[i] == 1) {
-          float target_speed;
-          target_speed =
-              ControlFindSpeed_x_y(dummy_control_x[i], dummy_control_y[i],
-                                   dummy_dist[i], dummy_cruise_speed[i]);
-          target_speed = target_speed * MPH_TO_MS;
-          UpdateDummy(dummies[i], inner_path, target_speed, step_size,
-                      temp_z_offset, tracker_vec[i], dummy_dist[i],
-                      dummy_prev_pos[i]);
-        } else {
-          float target_speed;
-          if (dummy_time_mode[i] == 1) {
-            target_speed =
-                ControlFindSpeed_x_y(dummy_control_x[i], dummy_control_y[i],
-                                     sim_time, dummy_cruise_speed[i]);
-          } else if (dummy_time_mode[i] == 2) {
-            target_speed =
-                ControlFindSpeed_x_y(dummy_control_x[i], dummy_control_y[i],
-                                     wall_time, dummy_cruise_speed[i]);
-          } else if (dummy_time_mode[i] == 3) {
-            target_speed = ControlFindSpeed_x_y(
-                dummy_control_x[i], dummy_control_y[i],
-                sim_time - start_sim_time, dummy_cruise_speed[i]);
-          } else if (dummy_time_mode[i] == 4) {
-            target_speed = ControlFindSpeed_x_y(
-                dummy_control_x[i], dummy_control_y[i],
-                wall_time - start_wall_time, dummy_cruise_speed[i]);
-          }
-
-          target_speed = target_speed * MPH_TO_MS;
-          // if dummy has a control parameter setting, we adjust speed based on
-          // given data
-          UpdateDummy(dummies[i], inner_path, target_speed, step_size,
-                      temp_z_offset, tracker_vec[i], dummy_dist[i],
-                      dummy_prev_pos[i]);
-        }
-
-      } else {
-        // when in outer lane
-        if (dummy_control[i] == 0) {
-          // if dummy doesn't have any control, we just use cruise speed setting
-          // always
-          UpdateDummy(dummies[i], outer_path, dummy_cruise_speed[i], step_size,
-                      temp_z_offset, tracker_vec[i], dummy_dist[i],
-                      dummy_prev_pos[i]);
-        } else if (dummy_control[i] == 1) {
-          float target_speed;
-          target_speed =
-              ControlFindSpeed_x_y(dummy_control_x[i], dummy_control_y[i],
-                                   dummy_dist[i], dummy_cruise_speed[i]);
-          target_speed = target_speed * MPH_TO_MS;
-          UpdateDummy(dummies[i], outer_path, target_speed, step_size,
-                      temp_z_offset, tracker_vec[i], dummy_dist[i],
-                      dummy_prev_pos[i]);
-        } else {
-          float target_speed;
-          if (dummy_time_mode[i] == 1) {
-            target_speed =
-                ControlFindSpeed_x_y(dummy_control_x[i], dummy_control_y[i],
-                                     sim_time, dummy_cruise_speed[i]);
-          } else if (dummy_time_mode[i] == 2) {
-            target_speed =
-                ControlFindSpeed_x_y(dummy_control_x[i], dummy_control_y[i],
-                                     wall_time, dummy_cruise_speed[i]);
-          }
-          target_speed = target_speed * MPH_TO_MS;
-          UpdateDummy(dummies[i], outer_path, target_speed, step_size,
-                      temp_z_offset, tracker_vec[i], dummy_dist[i],
-                      dummy_prev_pos[i]);
-        }
-      }
-    }
-
-    for (int i = 0; i < num_dynamic; i++) {
-      // set speed control
-      if (dynamic_control[i] == 2) {
-        float target_speed;
-        if (dynamic_time_mode[i] == 1) {
-          target_speed =
-              ControlFindSpeed_x_y(dynamic_control_x[i], dynamic_control_y[i],
-                                   sim_time, dynamic_cruise_speed[i]);
-        } else if (dynamic_time_mode[i] == 2) {
-          target_speed =
-              ControlFindSpeed_x_y(dynamic_control_x[i], dynamic_control_y[i],
-                                   wall_time, dynamic_cruise_speed[i]);
-        } else if (dynamic_time_mode[i] == 3) {
-          target_speed = ControlFindSpeed_x_y(
-              dynamic_control_x[i], dynamic_control_y[i],
-              sim_time - start_sim_time, dynamic_cruise_speed[i]);
-        } else if (dynamic_time_mode[i] == 4) {
-          target_speed = ControlFindSpeed_x_y(
-              dynamic_control_x[i], dynamic_control_y[i],
-              wall_time - start_wall_time, dynamic_cruise_speed[i]);
-        }
-        lead_PFdrivers[i]->SetCruiseSpeed(target_speed * MPH_TO_MS);
-      } else if (dynamic_control[i] == 1) {
-        float target_speed;
-        target_speed = ControlFindSpeed_x_y(
-            dynamic_control_x[i], dynamic_control_y[i],
-            lead_PFdrivers[i]->Get_Dist(), dynamic_cruise_speed[i]);
-
-        lead_PFdrivers[i]->SetCruiseSpeed(target_speed * MPH_TO_MS);
-      }
-      DriverInputs lead_driver_inputs = lead_PFdrivers[i]->GetInputs();
-      lead_PFdrivers[i]->Synchronize(sim_time);
-      lead_vehicles[i]->Synchronize(sim_time, lead_driver_inputs, terrain);
-      lead_PFdrivers[i]->Advance(step);
-      lead_vehicles[i]->Advance(step);
-    }
-
-    if (step_number % 20 == 0) {
-      IrrDashUpdate(sim_time, step_number, t0, app, vehicle, ego_chassis,
-                    driver_mode, IG_dist, IG_prev_pos, IG_started_driving);
-    }
 
     // Update the sensor manager
     if (render) {
@@ -1499,132 +1106,11 @@ int main(int argc, char *argv[]) {
       extra_time += duration_cast<duration<double>>(tt1 - tt0).count();
     }
 
-    ChBezierCurveTracker lane_0_tracker(lane_0_path);
-    ChBezierCurveTracker lane_1_tracker(lane_1_path);
-
-    if (save_driver) {
-      if (step_number % int(tsave / step_size) == 0) {
-        buffer << std::fixed << std::setprecision(3);
-
-        time_t my_time = time(NULL);
-        buffer << strtok(ctime(&my_time), "\n");
-        buffer << ",";
-        buffer << std::to_string(sim_time) + ",";
-        buffer << std::to_string(wall_time) << ",";
-        ChDriver *currDriver;
-        bool isManual;
-        if (driver_mode == HUMAN) {
-          currDriver = IGdriver.get();
-          isManual = true;
-        } else {
-          currDriver = PFdriver.get();
-          isManual = false;
-        }
-
-        buffer << isManual << ",";
-        buffer << currDriver->GetSteering() << ",";
-        buffer << currDriver->GetThrottle() << ",";
-        buffer << currDriver->GetBraking() << ",";
-        buffer << ego_chassis->GetPos().x() << ",";
-        buffer << ego_chassis->GetPos().y() << ",";
-        buffer << ego_chassis->GetSpeed() * MS_TO_MPH << ",";
-        buffer << ego_chassis->GetBody()
-                      ->GetFrame_REF_to_abs()
-                      .GetPos_dtdt()
-                      .Length()
-               << ",";
-
-        if (lead_count != 0) {
-          // Obtain lead vehicle chassis
-          auto lead_chassis =
-              lead_vehicles[lead_vehicles.size() - 1]->GetChassis();
-          double dist =
-              (ego_chassis->GetPos() - lead_vehicles[0]->GetChassis()->GetPos())
-                  .Length() -
-              AUDI_LENGTH;
-          buffer << dist << ","; // Distance bumper-to-bumber
-          ChVector<> dist_v =
-              lead_vehicles[0]->GetChassis()->GetPos() - ego_chassis->GetPos();
-          ChVector<> car_xaxis =
-              ChMatrix33<>(ego_chassis->GetRot()).Get_A_Xaxis();
-          double proj_dist = (dist_v ^ car_xaxis) - AUDI_LENGTH;
-          buffer << proj_dist << ","; // Projected distance bumper-to-bumber
-        }
-
-        // output mile marker
-        buffer << IG_dist * M_TO_MILE << ",";
-
-        ChVector<> lane_0_target;
-        ChVector<> lane_1_target;
-
-        lane_0_tracker.calcClosestPoint(ego_chassis->GetPos(), lane_0_target);
-        lane_1_tracker.calcClosestPoint(ego_chassis->GetPos(), lane_1_target);
-
-        ChVector<> chassis_pos = ego_chassis->GetPos();
-        float dist_0 = (lane_0_target.x() - chassis_pos.x()) *
-                           (lane_0_target.x() - chassis_pos.x()) +
-                       (lane_0_target.y() - chassis_pos.y()) *
-                           (lane_0_target.y() - chassis_pos.y());
-
-        float dist_1 = (lane_1_target.x() - chassis_pos.x()) *
-                           (lane_1_target.x() - chassis_pos.x()) +
-                       (lane_1_target.y() - chassis_pos.y()) *
-                           (lane_1_target.y() - chassis_pos.y());
-
-        int lane_num = -2;
-        float min_dist;
-        if (dist_0 < dist_1) {
-          lane_num = 0;
-          min_dist = dist_0;
-        } else {
-          lane_num = 1;
-          min_dist = dist_1;
-        }
-
-        if (min_dist > 5) {
-          lane_num = -1;
-        }
-
-        // output IG vehicle lane number
-        buffer << lane_num << ",";
-
-        // the last lead vehicle data
-        if (lead_count != 0) {
-          // Obtain lead vehicle chassis
-          auto lead_chassis =
-              lead_vehicles[lead_vehicles.size() - 1]->GetChassis();
-          buffer << lead_chassis->GetPos().x() << ",";
-          buffer << lead_chassis->GetPos().y() << ",";
-          buffer << lead_chassis->GetSpeed() * MS_TO_MPH << ",";
-          buffer << lead_chassis->GetBody()
-                        ->GetFrame_REF_to_abs()
-                        .GetPos_dtdt()
-                        .Length()
-                 << ","; // output mile marker
-          buffer << lead_PFdrivers[lead_PFdrivers.size() - 1]->Get_Dist();
-        }
-
-        buffer << "\n";
-      }
-    }
+    auto t1 = high_resolution_clock::now();
+    duration<double> time_span = duration_cast<duration<double>>(t1 - t0);
+    std::cout << "Simulation Time: " << sim_time
+              << ", Wall Time: " << time_span.count() << std::endl;
   }
-
-  if (save_driver) {
-    printf("Writing to output file...=%i", buffer.tellp());
-    filestream << buffer.rdbuf();
-    buffer.str("");
-
-    printf("Writing to button file...=%i", button_buffer.tellp());
-    buttonstream << button_buffer.rdbuf();
-    buttonstream.flush();
-    button_buffer.str("");
-  }
-
-  auto t1 = high_resolution_clock::now();
-  duration<double> time_span = duration_cast<duration<double>>(t1 - t0);
-  std::cout << "Simulation Time: " << t_end
-            << ", Wall Time: " << time_span.count() << std::endl;
-
   return 0;
 }
 
@@ -1958,68 +1444,6 @@ void AddTerrain(ChSystem *chsystem) {
   chsystem->Add(terrain_body);
 }
 
-// Wheel button callback to switch between driving modes
-void CustomButtonCallback() {
-  // We use an "anti bounce":
-  static auto last_invoked =
-      std::chrono::system_clock::now().time_since_epoch();
-  auto current_invoke = std::chrono::system_clock::now().time_since_epoch();
-  if (std::chrono::duration_cast<std::chrono::seconds>(current_invoke -
-                                                       last_invoked)
-          .count() > 3.0) {
-    std::cout << "Button Callback Invoked \n";
-    if (driver_mode == HUMAN) {
-      driver_mode = AUTONOMOUS;
-      PF_driver_ptr->Set_TheroSpeed(cur_follower_speed);
-    } else {
-      driver_mode = HUMAN;
-    }
-    // last, update the last call
-    last_invoked = current_invoke;
-  } else
-    std::cout << "Callback Not Invoked, call was too close to the last one \n";
-}
-
-// Update dummy vehicles based on bazier curve and speed
-void UpdateDummy(std::shared_ptr<ChBodyAuxRef> dummy_vehicle,
-                 std::shared_ptr<ChBezierCurve> curve, float dummy_speed,
-                 float step_size, float z_offset, ChBezierCurveTracker tracker,
-                 double &dummy_dist, ChVector<> &dummy_prev_pos) {
-  // sentinel point fo the current dummy vehicle position
-  ChVector<> sen = dummy_vehicle->GetPos();
-  ChVector<> prev_pos = sen;
-
-  ChVector<> target;
-  ChFrame<> frame;
-  double curv;
-
-  // obtain the tangent direction on the cloest bezier curve
-  tracker.calcClosestPoint(sen, frame, curv);
-  ChVector<> vel_dir =
-      -frame.TransformDirectionLocalToParent(ChVector<>(1, 0, 0));
-  // normalize velocity vector
-  vel_dir.Normalize();
-
-  // proceed vehicle by time_step*vel_dir, calculate the closest target point on
-  // the bezier curve
-  tracker.calcClosestPoint(sen + (vel_dir * dummy_speed * step_size), target);
-
-  target = target + ChVector<>(0, 0, z_offset);
-
-  // compute angle
-  float angle = atan2(vel_dir[1], vel_dir[0]);
-
-  // finally update dummy vehicle position and rotated direction
-  dummy_vehicle->SetRot(Q_from_Euler123(ChVector<>(0, 0, angle)));
-  dummy_vehicle->SetPos(target);
-
-  // update distance and previous position
-  dummy_dist =
-      dummy_dist +
-      ((dummy_vehicle->GetPos() - dummy_prev_pos).Length()) * M_TO_MILE;
-  dummy_prev_pos = dummy_vehicle->GetPos();
-}
-
 float ControlFindSpeed_x_y(std::vector<float> time_vec,
                            std::vector<float> speed_vec, float time,
                            float default_speed) {
@@ -2037,305 +1461,4 @@ float ControlFindSpeed_x_y(std::vector<float> time_vec,
   } else {
     return speed_vec[target_idx - 1];
   }
-}
-
-// dummy button call function
-// this section of the code should be optimized !
-// Wheel botton callback to record button press without any functionalities
-void DummyButtonCallback_r_3() {
-  static auto last_invoked_dummy_1 =
-      std::chrono::system_clock::now().time_since_epoch();
-  auto current_invoke_dummy_1 =
-      std::chrono::system_clock::now().time_since_epoch();
-
-  if (std::chrono::duration_cast<std::chrono::seconds>(current_invoke_dummy_1 -
-                                                       last_invoked_dummy_1)
-          .count() > 1.0) {
-    std::cout << "Button dummy r_3 Callback Invoked: " << std::endl;
-    time_t my_time = time(NULL);
-    button_buffer << "button dummy r_3 pressed; time: ";
-    button_buffer << ctime(&my_time);
-  }
-
-  last_invoked_dummy_1 = current_invoke_dummy_1;
-}
-
-// load irr dashboard textures
-void IrrDashLoadTextures(ChWheeledVehicleVisualSystemIrrlicht &app) {
-  texture_DASH = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/dash_4_4.jpg").c_str());
-  texture_GEAR1 = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/GEAR1.png").c_str());
-  texture_GEAR2 = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/GEAR2.png").c_str());
-  texture_GEAR3 = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/GEAR3.png").c_str());
-  texture_GEAR4 = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/GEAR4.png").c_str());
-  texture_GEAR5 = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/GEAR5.png").c_str());
-  texture_GEAR6 = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/GEAR6.png").c_str());
-  texture_AUTO = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/auto.png").c_str());
-  texture_COLON = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/numerical/colon.png").c_str());
-  texture_NUMERICAL[0] = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/numerical/0.png").c_str());
-  texture_NUMERICAL[1] = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/numerical/1.png").c_str());
-  texture_NUMERICAL[2] = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/numerical/2.png").c_str());
-  texture_NUMERICAL[3] = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/numerical/3.png").c_str());
-  texture_NUMERICAL[4] = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/numerical/4.png").c_str());
-  texture_NUMERICAL[5] = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/numerical/5.png").c_str());
-  texture_NUMERICAL[6] = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/numerical/6.png").c_str());
-  texture_NUMERICAL[7] = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/numerical/7.png").c_str());
-  texture_NUMERICAL[8] = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/numerical/8.png").c_str());
-  texture_NUMERICAL[9] = app.GetDevice()->getVideoDriver()->getTexture(
-      (demo_data_path + "/miscellaneous/numerical/9.png").c_str());
-}
-
-void IrrDashUpdate(
-    double sim_time, int step_number,
-    std::chrono::time_point<std::chrono::high_resolution_clock> t0,
-    ChWheeledVehicleVisualSystemIrrlicht &app, ChWheeledVehicle &vehicle,
-    std::shared_ptr<chrono::vehicle::ChChassis> ego_chassis,
-    DriverMode driver_mode, float &IG_dist, ChVector<> &IG_prev_pos,
-    bool &IG_started_driving) {
-  app.GetDevice()->getVideoDriver()->beginScene();
-  /// irrlicht::tools::drawSegment(app.GetVideoDriver(), v1, v2,
-  /// video::SColor(255, 80, 0, 0), false);
-  app.GetDevice()->getVideoDriver()->draw2DImage(
-      texture_DASH, irr::core::position2d<irr::s32>(0, 0));
-
-  int curr_gear = vehicle.GetTransmission()->GetCurrentGear();
-
-  switch (curr_gear) {
-  case 1:
-    app.GetDevice()->getVideoDriver()->draw2DImage(texture_GEAR1, gr_center);
-    break;
-
-  case 2:
-    app.GetDevice()->getVideoDriver()->draw2DImage(texture_GEAR2, gr_center);
-    break;
-
-  case 3:
-    app.GetDevice()->getVideoDriver()->draw2DImage(texture_GEAR3, gr_center);
-    break;
-
-  case 4:
-    app.GetDevice()->getVideoDriver()->draw2DImage(texture_GEAR4, gr_center);
-    break;
-
-  case 5:
-    app.GetDevice()->getVideoDriver()->draw2DImage(texture_GEAR5, gr_center);
-    break;
-
-  case 6:
-    app.GetDevice()->getVideoDriver()->draw2DImage(texture_GEAR6, gr_center);
-    break;
-
-  default:
-    break;
-  }
-
-  double speed_mph = vehicle.GetSpeed() * MS_TO_MPH;
-  double theta = ((265 / 130) * speed_mph) * (CH_C_PI / 180);
-  app.GetDevice()->getVideoDriver()->draw2DLine(
-      sm_center + irr::core::position2d<irr::s32>(-sm_needle * sin(theta),
-                                                  sm_needle * cos(theta)),
-      sm_center, irr::video::SColor(255, 255, 0, 0));
-
-  double engine_rpm = vehicle.GetEngine()->GetMotorSpeed() * rads2rpm;
-  double alpha = ((265.0 / 6500.0) * engine_rpm) * (CH_C_PI / 180);
-  app.GetDevice()->getVideoDriver()->draw2DLine(
-      rpm_center + irr::core::position2d<irr::s32>(-sm_needle * sin(alpha),
-                                                   sm_needle * cos(alpha)),
-      rpm_center, irr::video::SColor(255, 255, 0, 0));
-
-  if (driver_mode == AUTONOMOUS) {
-    app.GetDevice()->getVideoDriver()->draw2DImage(texture_AUTO, auto_center);
-  }
-
-  // display current time
-  time_t curr_time = time(NULL);
-  struct tm *tmp = localtime(&curr_time);
-
-  int h = tmp->tm_hour;
-  int m = tmp->tm_min;
-  int s = tmp->tm_sec;
-
-  std::vector<int> display_cur_int;
-  display_cur_int.push_back(h / 10);
-  display_cur_int.push_back(h % 10);
-  display_cur_int.push_back(m / 10);
-  display_cur_int.push_back(m % 10);
-  display_cur_int.push_back(s / 10);
-  display_cur_int.push_back(s % 10);
-
-  for (int i = 0; i < display_cur_int.size() + 2; i++) {
-    irr::core::position2d<irr::s32> offset(50, 0);
-    irr::core::position2d<irr::s32> colon_offset1(25, 0);
-    irr::core::position2d<irr::s32> colon_offset2(25, 0);
-
-    if (i < 2) {
-      app.GetDevice()->getVideoDriver()->draw2DImage(
-          texture_NUMERICAL[display_cur_int[i]], cur_left + offset * i);
-    } else if (i == 2) {
-      app.GetDevice()->getVideoDriver()->draw2DImage(texture_COLON,
-                                                     cur_left + offset * i);
-    } else if (i < 5) {
-      app.GetDevice()->getVideoDriver()->draw2DImage(
-          texture_NUMERICAL[display_cur_int[i - 1]],
-          cur_left + offset * (i - 1) + colon_offset1);
-    } else if (i == 5) {
-      app.GetDevice()->getVideoDriver()->draw2DImage(
-          texture_COLON, cur_left + offset * (i - 1) + colon_offset1);
-    } else if (i <= 7) {
-      app.GetDevice()->getVideoDriver()->draw2DImage(
-          texture_NUMERICAL[display_cur_int[i - 2]],
-          cur_left + offset * (i - 2) + colon_offset1 + colon_offset2);
-    }
-  }
-
-  static int end_s;
-  static int end_m;
-  static int end_h;
-
-  if (vehicle.GetSpeed() >= 0.5 && IG_started_driving == false) {
-    start_sim_time = sim_time;
-    auto t1_temp = high_resolution_clock::now();
-    start_wall_time += duration_cast<duration<double>>(t1_temp - t0).count();
-
-    time_t curr_time = time(NULL);
-    struct tm *tmp = localtime(&curr_time);
-
-    int temp_h = tmp->tm_hour;
-    int temp_m = tmp->tm_min;
-    int temp_s = tmp->tm_sec;
-
-    end_s = s;
-    end_m = m + meet_time;
-    end_h = h;
-
-    if (end_s >= 60) {
-      end_s = end_s - 60;
-      end_m = end_m + 1;
-    }
-    if (end_m >= 60) {
-      end_m = end_m - 60;
-      end_h = end_h + 1;
-    }
-    if (end_h >= 23) {
-      end_h = end_h % 24;
-    }
-
-    IG_started_driving = true;
-  }
-
-  if (IG_started_driving == true) {
-    std::vector<int> display_end_int;
-    display_end_int.push_back(end_h / 10);
-    display_end_int.push_back(end_h % 10);
-    display_end_int.push_back(end_m / 10);
-    display_end_int.push_back(end_m % 10);
-    display_end_int.push_back(end_s / 10);
-    display_end_int.push_back(end_s % 10);
-
-    for (int i = 0; i < display_end_int.size() + 2; i++) {
-      irr::core::position2d<irr::s32> offset(50, 0);
-      irr::core::position2d<irr::s32> colon_offset1(25, 0);
-      irr::core::position2d<irr::s32> colon_offset2(25, 0);
-
-      if (i < 2) {
-        app.GetDevice()->getVideoDriver()->draw2DImage(
-            texture_NUMERICAL[display_end_int[i]], end_left + offset * i);
-      } else if (i == 2) {
-        app.GetDevice()->getVideoDriver()->draw2DImage(texture_COLON,
-                                                       end_left + offset * i);
-      } else if (i < 5) {
-        app.GetDevice()->getVideoDriver()->draw2DImage(
-            texture_NUMERICAL[display_end_int[i - 1]],
-            end_left + offset * (i - 1) + colon_offset1);
-      } else if (i == 5) {
-        app.GetDevice()->getVideoDriver()->draw2DImage(
-            texture_COLON, end_left + offset * (i - 1) + colon_offset1);
-      } else if (i <= 7) {
-        app.GetDevice()->getVideoDriver()->draw2DImage(
-            texture_NUMERICAL[display_end_int[i - 2]],
-            end_left + offset * (i - 2) + colon_offset1 + colon_offset2);
-      }
-    }
-  }
-
-  // compute and display ETA
-
-  static int sec_remaining = 0;
-
-  if (step_number == 0) {
-    IG_prev_pos = ego_chassis->GetPos();
-  }
-
-  IG_dist = IG_dist + (ego_chassis->GetPos() - IG_prev_pos).Length();
-  IG_prev_pos = ego_chassis->GetPos();
-
-  if (step_number % 50 == 0) {
-    float remaining = eta_dist * MILE_TO_M - IG_dist;
-    float avg_speed = IG_speed_avg.Add(ego_chassis->GetSpeed());
-    sec_remaining = remaining / avg_speed;
-  }
-
-  // panic algorithm
-  // if below 0, set to 0
-  // if above max, set to 0
-
-  if (sec_remaining < 0 || sec_remaining > 356518) {
-    sec_remaining = 0;
-  }
-
-  int eta_h = sec_remaining / 3600;
-  int eta_m = (sec_remaining % 3600) / 60;
-  int eta_s = sec_remaining % 60;
-
-  std::vector<int> display_eta_int;
-  display_eta_int.push_back(eta_h / 10);
-  display_eta_int.push_back(eta_h % 10);
-  display_eta_int.push_back(eta_m / 10);
-  display_eta_int.push_back(eta_m % 10);
-  display_eta_int.push_back(eta_s / 10);
-  display_eta_int.push_back(eta_s % 10);
-
-  for (int i = 0; i < display_eta_int.size() + 2; i++) {
-    irr::core::position2d<irr::s32> offset(50, 0);
-    irr::core::position2d<irr::s32> colon_offset1(25, 0);
-    irr::core::position2d<irr::s32> colon_offset2(25, 0);
-
-    if (i < 2) {
-      app.GetDevice()->getVideoDriver()->draw2DImage(
-          texture_NUMERICAL[display_eta_int[i]], eta_left + offset * i);
-    } else if (i == 2) {
-      app.GetDevice()->getVideoDriver()->draw2DImage(texture_COLON,
-                                                     eta_left + offset * i);
-    } else if (i < 5) {
-      app.GetDevice()->getVideoDriver()->draw2DImage(
-          texture_NUMERICAL[display_eta_int[i - 1]],
-          eta_left + offset * (i - 1) + colon_offset1);
-    } else if (i == 5) {
-      app.GetDevice()->getVideoDriver()->draw2DImage(
-          texture_COLON, eta_left + offset * (i - 1) + colon_offset1);
-    } else if (i <= 7) {
-      app.GetDevice()->getVideoDriver()->draw2DImage(
-          texture_NUMERICAL[display_eta_int[i - 2]],
-          eta_left + offset * (i - 2) + colon_offset1 + colon_offset2);
-    }
-  }
-
-  app.GetDevice()->getVideoDriver()->endScene();
 }
