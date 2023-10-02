@@ -29,7 +29,11 @@
 #include "chrono_vehicle/driver/ChInteractiveDriverIRR.h"
 #include "chrono_vehicle/terrain/RigidTerrain.h"
 
+#include "chrono_hil/ROM/driver/ChROM_IDMFollower.h"
+#include "chrono_hil/ROM/driver/ChROM_PathFollowerDriver.h"
+#include "chrono_hil/ROM/veh/Ch_8DOF_vehicle.h"
 #include "chrono_hil/driver/ChSDLInterface.h"
+#include "chrono_hil/timer/ChRealtimeCumulative.h"
 
 #include <irrlicht.h>
 #include <limits>
@@ -176,12 +180,6 @@ int correct_ratio = 200;
 bool save_driver = true;
 // time interval between data savings
 double tsave = 1e-2;
-// path where the output is saved
-std::string output_file_path = "./output.csv";
-std::stringstream buffer;
-std::stringstream button_buffer;
-std::ofstream filestream;
-std::ofstream buttonstream;
 
 // Fog parameters
 bool fog_enabled = false;
@@ -213,15 +211,8 @@ std::vector<int> dynamic_control;
 // time control variables
 std::vector<std::vector<float>> dynamic_control_x;
 std::vector<std::vector<float>> dynamic_control_y;
-std::vector<int>
-    dynamic_time_mode; // 0 if dist mode or this field is N/A, 1 means using sim
-                       // time, 2 means using wall time (real time)
 
 std::vector<std::vector<std::vector<double>>> leaderParam;
-
-// Comment section in csv output
-std::string csv_comments;
-std::string filename;
 
 // Joystick file
 std::string joystick_filename;
@@ -429,42 +420,6 @@ void ReadParameterFiles() {
           }
           dynamic_control_x.push_back(temp_time);
           dynamic_control_y.push_back(temp_speed);
-
-          // update the dummy_time_mode
-          if (d[entry_name.c_str()].HasMember("time_mode")) {
-            dynamic_time_mode.push_back(
-                d[entry_name.c_str()]["time_mode"].GetInt());
-          } else {
-            dynamic_time_mode.push_back(1);
-          }
-        } else if ((d[entry_name.c_str()].HasMember("dist_speed_control"))) {
-          dynamic_control.push_back(1);
-          std::vector<float> temp_dist;
-          std::vector<float> temp_speed;
-
-          auto marr = d[entry_name.c_str()]["dist_speed_control"].GetArray();
-          for (int i = 0; i < marr[0].Size(); i++) {
-            for (int j = 0; j < marr[1].Size(); j++) {
-              if (i == 0) {
-                temp_dist.push_back(marr[i][j].GetDouble());
-              } else if (i == 1) {
-                temp_speed.push_back(marr[i][j].GetDouble());
-              }
-            }
-          }
-          dynamic_control_x.push_back(temp_dist);
-          dynamic_control_y.push_back(temp_speed);
-
-          // update the dummy_time_mode
-          dynamic_time_mode.push_back(0);
-        } else {
-          std::vector<float> empty_vec_x;
-          std::vector<float> empty_vec_y;
-          dynamic_control_x.push_back(empty_vec_x);
-          dynamic_control_y.push_back(empty_vec_y);
-          dynamic_control.push_back(0);
-
-          dynamic_time_mode.push_back(0);
         }
 
         if (d[entry_name.c_str()].HasMember("LeaderDriverParam")) {
@@ -528,11 +483,6 @@ void AddCommandLineOptions(ChCLI &cli) {
   cli.AddOption<std::string>("Simulation", "lead_params",
                              "Path to lead configuration file",
                              lead_parameters);
-
-  cli.AddOption<std::string>("Simulation", "filename", "Output Filenames",
-                             filename);
-  cli.AddOption<std::string>("Simulation", "csv_comments",
-                             "CSV output comments", csv_comments);
   cli.AddOption<int>("Simulation", "image_width", "x resolution",
                      std::to_string(image_width));
   cli.AddOption<int>("Simulation", "image_height", "y resolution",
@@ -628,10 +578,6 @@ int main(int argc, char *argv[]) {
       chrono_types::make_shared<ChPowertrainAssembly>(engine, transmission);
 
   vehicle.InitializePowertrain(powertrain);
-
-  output_file_path =
-      "./output_" + cli.GetAsType<std::string>("filename") + ".csv ";
-  filestream = std::ofstream(output_file_path);
 
   // Create and initialize the tires
   for (auto &axle : vehicle.GetAxles()) {
@@ -767,6 +713,42 @@ int main(int argc, char *argv[]) {
   // Add buildings away from the road to break up the horizon
   AddBuildings(vehicle.GetSystem());
 
+  // Add lead vehicles
+  std::string rom_json =
+      std::string(STRINGIFY(HIL_DATA_DIR)) + "/rom/audi/audi_rom.json";
+  float init_height = 0.20;
+  std::vector<std::shared_ptr<Ch_8DOF_vehicle>> lead_vec;
+  std::vector<std::shared_ptr<ChROM_PathFollowerDriver>> driver_vec;
+
+  for (int i = 0; i < lead_count; i++) {
+    std::shared_ptr<Ch_8DOF_vehicle> rom_veh =
+        chrono_types::make_shared<Ch_8DOF_vehicle>(rom_json, init_height,
+                                                   step_size, true);
+
+    rom_veh->SetInitPos(dynamic_pos[i]);
+    rom_veh->SetInitRot(-CH_C_PI_2);
+    rom_veh->Initialize(vehicle.GetSystem());
+    lead_vec.push_back(rom_veh);
+
+    std::string path_file;
+    std::shared_ptr<ChBezierCurve> path;
+    if (dynamic_lane[i] == 0) {
+      path_file = STRINGIFY(HIL_DATA_DIR) +
+                  std::string("/Environments/Iowa/Driver/OnInnerLane.txt");
+      path = ChBezierCurve::read(path_file, true);
+    } else if (dynamic_lane[i] == 1) {
+      path_file = STRINGIFY(HIL_DATA_DIR) +
+                  std::string("/Environments/Iowa/Driver/OnOuterLane.txt");
+      path = ChBezierCurve::read(path_file, true);
+    }
+
+    std::shared_ptr<ChROM_PathFollowerDriver> driver =
+        chrono_types::make_shared<ChROM_PathFollowerDriver>(
+            lead_vec[i], path, dynamic_cruise_speed[i], 15.0, 0.15, 0.0, 0.0,
+            0.3, 0.0, 0.0);
+    driver_vec.push_back(driver);
+  }
+
   // ---------------
   // Simulation loop
   // ---------------
@@ -899,6 +881,15 @@ int main(int argc, char *argv[]) {
 
     terrain.Synchronize(sim_time);
     vehicle.Synchronize(sim_time, driver_inputs, terrain);
+    for (int i = 0; i < lead_count; i++) {
+      float target_spd =
+          ControlFindSpeed_x_y(dynamic_control_x[i], dynamic_control_y[i],
+                               sim_time, dynamic_cruise_speed[i]);
+      driver_vec[i]->SetCruiseSpeed(target_spd);
+      driver_vec[i]->Advance(step_size);
+      DriverInputs lead_inputs = driver_vec[i]->GetDriverInput();
+      lead_vec[i]->Advance(sim_time, lead_inputs);
+    }
 
 #ifdef CHRONO_IRRKLANG
     soundEng.Synchronize(sim_time);
