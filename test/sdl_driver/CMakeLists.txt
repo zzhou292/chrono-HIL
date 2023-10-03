@@ -10,6 +10,7 @@
 set(DEMOS
 	test_HIL_sdlprofiler
   test_HIL_cobra_remote
+  test_HIL_rc_remote
 )
 
 #--------------------------------------------------------------

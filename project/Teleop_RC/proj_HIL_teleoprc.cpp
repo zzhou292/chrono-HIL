@@ -33,7 +33,6 @@
 
 #include "chrono_thirdparty/filesystem/path.h"
 
-#include "chrono_hil/driver/ChSDLInterface.h"
 #include "chrono_hil/timer/ChRealtimeCumulative.h"
 
 #include "chrono_sensor/ChSensorManager.h"
@@ -44,6 +43,9 @@
 #include "chrono/physics/ChBodyEasy.h"
 #include "chrono/physics/ChInertiaUtils.h"
 #include "chrono/utils/ChUtilsGeometry.h"
+#include "chrono_hil/network/udp/ChBoostInStreamer.h"
+#include "chrono_hil/network/udp/ChBoostOutStreamer.h"
+
 
 using namespace chrono;
 using namespace chrono::irrlicht;
@@ -230,16 +232,16 @@ int main(int argc, char *argv[]) {
 
   auto cam = chrono_types::make_shared<ChCameraSensor>(
       my_rccar.GetVehicle().GetChassisBody(), // body camera is attached to
-      25,                                     // update rate in Hz
+      30,                                     // update rate in Hz
       chrono::ChFrame<double>({-0.05, 0, 0.07},
                               Q_from_AngAxis(0, {0, 1, 0})), // offset pose
-      1280,                                                  // image width
-      720,                                                   // image height
+      1920,                                                  // image width
+      1080,                                                  // image height
       CH_C_PI_4,
       1); // fov, lag, exposure
   cam->SetName("Camera Sensor");
   cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
-      1280, 720, "Driver View - front", false));
+      1920, 1080, "Driver View - front", false));
   cam->SetLag(0.05f);
   manager->AddSensor(cam);
 
@@ -249,16 +251,16 @@ int main(int argc, char *argv[]) {
 
   auto cam2 = chrono_types::make_shared<ChCameraSensor>(
       my_rccar.GetVehicle().GetChassisBody(), // body camera is attached to
-      25,                                     // update rate in Hz
+      30,                                     // update rate in Hz
       chrono::ChFrame<double>(
           {-0.1, 0, 0.07}, Q_from_AngAxis(CH_C_PI, {0, 0, 1})), // offset pose
-      1280,                                                     // image width
-      720,                                                      // image height
+      1920,                                                     // image width
+      1080,                                                     // image height
       CH_C_PI_4,
-      1); // fov, lag, exposure
+      2); // fov, lag, exposure
   cam2->SetName("Camera Sensor - back");
   cam2->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
-      1280, 720, "Driver View - back", false));
+      1920, 1080, "Driver View - back", false));
   cam2->SetLag(0.05f);
   manager->AddSensor(cam2);
 
@@ -281,14 +283,7 @@ int main(int argc, char *argv[]) {
   // ------------------------
   // Create the driver system
   // ------------------------
-  ChSDLInterface SDLDriver;
-  // Set the time response for steering and throttle keyboard inputs.
-
-  SDLDriver.Initialize();
-
-  std::string joystick_file =
-      (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
-  SDLDriver.SetJoystickConfigFile(joystick_file);
+  ChBoostInStreamer in_streamer(1214, 3);
 
   // ---------------
   // Simulation loop
@@ -313,14 +308,21 @@ int main(int argc, char *argv[]) {
 
   ChRealtimeCumulative realtime_timer;
 
+  DriverInputs driver_inputs;
+
   while (true) {
     double time = my_rccar.GetSystem()->GetChTime();
 
-    // std::cout << cam->GetLag() << std::endl;
-    if (step_number == 5000) {
-      cam->SetLag(0.08f);
-    }
+    if(step_number%50==0){
+      in_streamer.Synchronize();
 
+      std::vector<float> recv_data = in_streamer.GetRecvData();
+
+      driver_inputs.m_steering = recv_data[0];
+      driver_inputs.m_throttle = recv_data[1];
+      driver_inputs.m_braking = recv_data[2];
+    }
+  
     manager->Update();
 
     if (step_number == 0) {
@@ -354,12 +356,6 @@ int main(int argc, char *argv[]) {
       my_rccar.DebugLog(OUT_SPRINGS | OUT_SHOCKS | OUT_CONSTRAINTS);
     }
 
-    // get the controls for this time step
-    // Driver inputs
-    DriverInputs driver_inputs;
-    driver_inputs.m_steering = SDLDriver.GetSteering();
-    driver_inputs.m_throttle = SDLDriver.GetThrottle();
-    driver_inputs.m_braking = SDLDriver.GetBraking();
 
     // Update modules (process inputs from other modules)
     terrain.Synchronize(time);
@@ -375,10 +371,6 @@ int main(int argc, char *argv[]) {
     step_number++;
 
     realtime_timer.Spin(time);
-
-    if (SDLDriver.Synchronize() == 1) {
-      break;
-    }
   }
 
   return 0;
