@@ -914,9 +914,32 @@ int main(int argc, char *argv[]) {
     }
 
     // Stream out data
-    boost_streamer.AddData(vehicle.GetSystem()->GetChTime());
-    boost_streamer.AddData(vehicle.GetSpeed() * MS_TO_MPH);
-    boost_streamer.AddData(vehicle.GetEngine()->GetMotorSpeed() * rads2rpm);
+    boost_streamer.AddData(vehicle.GetSystem()->GetChTime()); // sim time
+    boost_streamer.AddData(vehicle.GetSpeed() * MS_TO_MPH);   // vehicle speed
+    boost_streamer.AddData(vehicle.GetEngine()->GetMotorSpeed() *
+                           rads2rpm);                           // RPM
+    boost_streamer.AddData(vehicle.GetChassis()->GetPos().x()); // vehicle x pos
+    boost_streamer.AddData(vehicle.GetChassis()->GetPos().y()); // vehicle y pos
+    boost_streamer.AddData(driver_inputs.m_throttle);           // throttle data
+    boost_streamer.AddData(driver_inputs.m_braking);            // brake data
+    boost_streamer.AddData(driver_inputs.m_steering);           // steering data
+
+    if (lead_count != 0) {
+      // if lead count isn't 0, treat it as lead vehicle
+      boost_streamer.AddData(lead_vec[0]->GetPos().x()); // lead vehicle x pos
+      boost_streamer.AddData(lead_vec[0]->GetPos().y()); // lead vehicle y pos
+      boost_streamer.AddData(
+          lead_vec[0]->GetVel().x()); // lead vehicle x velocity
+      boost_streamer.AddData(
+          lead_vec[0]->GetVel().y()); // lead vehicle y velocity
+      boost_streamer.AddData(lead_vec[0]->GetDriverInputs().m_throttle);
+      // lead vehicle throttle data
+      boost_streamer.AddData(lead_vec[0]->GetDriverInputs().m_braking);
+      // lead vehicle braking data
+      boost_streamer.AddData(lead_vec[0]->GetDriverInputs().m_steering);
+      // lead vehicle steering data
+    }
+
     boost_streamer.Synchronize();
 
     // Increment frame number
