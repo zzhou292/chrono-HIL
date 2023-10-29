@@ -17,7 +17,6 @@
 #include "chrono/utils/ChUtilsInputOutput.h"
 #include <chrono>
 
-
 #include "chrono/utils/ChFilters.h"
 
 #include "chrono_vehicle/driver/ChPathFollowerDriver.h"
@@ -50,7 +49,28 @@
 #include "chrono_synchrono/utils/SynDataLoader.h"
 #include "chrono_synchrono/utils/SynLog.h"
 
+#include "chrono_sensor/ChSensorManager.h"
+#include "chrono_sensor/filters/ChFilterAccess.h"
+#include "chrono_sensor/filters/ChFilterLidarNoise.h"
+#include "chrono_sensor/filters/ChFilterLidarReduce.h"
+#include "chrono_sensor/filters/ChFilterPCfromDepth.h"
+#include "chrono_sensor/filters/ChFilterSave.h"
+#include "chrono_sensor/filters/ChFilterSavePtCloud.h"
+#include "chrono_sensor/filters/ChFilterVisualize.h"
+#include "chrono_sensor/filters/ChFilterVisualizePointCloud.h"
+#include "chrono_sensor/sensors/ChCameraSensor.h"
+#include "chrono_sensor/sensors/ChLidarSensor.h"
+
 #include "chrono_thirdparty/cxxopts/ChCLI.h"
+
+// Quality of Service
+#include <fastdds/dds/domain/qos/DomainParticipantQos.hpp>
+#include <fastdds/rtps/transport/UDPv4TransportDescriptor.h>
+#include <fastdds/rtps/transport/UDPv6TransportDescriptor.h>
+
+using namespace eprosima::fastdds::dds;
+using namespace eprosima::fastdds::rtps;
+using namespace eprosima::fastrtps::rtps;
 
 using namespace chrono;
 using namespace chrono::irrlicht;
@@ -60,6 +80,7 @@ using namespace chrono::geometry;
 using namespace chrono::hil;
 using namespace chrono::utils;
 using namespace chrono::synchrono;
+using namespace chrono::sensor;
 
 const double RADS_2_RPM = 30 / CH_C_PI;
 const double RADS_2_DEG = 180 / CH_C_PI;
@@ -83,7 +104,7 @@ const double G_2_MPSS = 9.81;
 #define IP_OUT_2 "127.0.0.1"
 #endif
 
-bool render = false;
+bool render = true;
 ChVector<> driver_eyepoint(-0.45, 0.4, 0.98);
 
 // =============================================================================
@@ -115,6 +136,8 @@ int main(int argc, char *argv[]) {
 
   const int node_id = cli.GetAsType<int>("node_id");
   const int num_nodes = cli.GetAsType<int>("num_nodes");
+  const std::vector<std::string> ip_list =
+      cli.GetAsType<std::vector<std::string>>("ip");
 
   std::cout << "id:" << node_id << std::endl;
   std::cout << "num:" << num_nodes << std::endl;
@@ -124,7 +147,23 @@ int main(int argc, char *argv[]) {
   // -----------------------
   // Create SynChronoManager
   // -----------------------
-  auto communicator = chrono_types::make_shared<SynDDSCommunicator>(node_id);
+  // Use UDP4
+  DomainParticipantQos qos;
+  qos.name("/syn/node/" + std::to_string(node_id) + ".0");
+  qos.transport().user_transports.push_back(
+      std::make_shared<UDPv4TransportDescriptor>());
+
+  qos.transport().use_builtin_transports = false;
+  qos.wire_protocol().builtin.avoid_builtin_multicast = false;
+
+  // Set the initialPeersList
+  for (const auto &ip : ip_list) {
+    Locator_t locator;
+    locator.kind = LOCATOR_KIND_UDPv4;
+    IPLocator::setIPv4(locator, ip);
+    qos.wire_protocol().builtin.initialPeersList.push_back(locator);
+  }
+  auto communicator = chrono_types::make_shared<SynDDSCommunicator>(qos);
   SynChronoManager syn_manager(node_id, num_nodes, communicator);
 
   // Change SynChronoManager settings
@@ -240,6 +279,65 @@ int main(int argc, char *argv[]) {
   vis->AddLogo();
   vis->AttachVehicle(&my_vehicle);
 
+  // ---------------------------------
+  // Add sensor manager and simulation
+  // ---------------------------------
+
+  auto manager =
+      chrono_types::make_shared<ChSensorManager>(my_vehicle.GetSystem());
+  Background b;
+  b.mode = BackgroundMode::ENVIRONMENT_MAP; // GRADIENT
+  b.env_tex =
+      std::string(STRINGIFY(HIL_DATA_DIR)) + ("/Environments/sky_2_4k.hdr");
+  manager->scene->SetBackground(b);
+  float brightness = 1.5f;
+  manager->scene->AddPointLight({0, 0, 10000},
+                                {brightness, brightness, brightness}, 100000);
+  manager->scene->SetAmbientLight({.1, .1, .1});
+  manager->scene->SetSceneEpsilon(1e-3);
+  manager->scene->EnableDynamicOrigin(true);
+  manager->scene->SetOriginOffsetThreshold(500.f);
+
+  // camera at driver's eye location for Audi
+  auto driver_cam = chrono_types::make_shared<ChCameraSensor>(
+      my_vehicle.GetChassisBody(), // body camera is attached to
+      30,                          // update rate in Hz
+      chrono::ChFrame<double>({0.54, .381, 1.04},
+                              Q_from_AngAxis(0, {0, 1, 0})), // offset pose
+      1280,                                                  // image width
+      720,                                                   // image height
+      3.14 / 1.5,                                            // fov
+      2);
+
+  driver_cam->SetName("DriverCam");
+  driver_cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
+      1280, 720, "Camera1", false));
+  driver_cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
+  manager->AddSensor(driver_cam);
+
+  int horizontal_samples = 512;
+  int vertical_samples = 128;
+
+  auto lidar = chrono_types::make_shared<ChLidarSensor>(
+      my_vehicle.GetChassisBody(), // body lidar is attached to
+      15,                          // scanning rate in Hz
+      chrono::ChFrame<double>({0.54, .381, 1.04},
+                              Q_from_AngAxis(0, {0, 1, 0})), // offset pose
+      horizontal_samples,   // number of horizontal samples
+      vertical_samples,     // number of vertical channels
+      (float)(2 * CH_C_PI), // horizontal field of view
+      (float)CH_C_PI / 12, (float)-CH_C_PI / 6, 100.0f // vertical field of view
+  );
+  lidar->SetName("Lidar Sensor 1");
+  lidar->PushFilter(chrono_types::make_shared<ChFilterDIAccess>());
+  lidar->PushFilter(chrono_types::make_shared<ChFilterPCfromDepth>());
+
+  // Renders the raw lidar data
+  lidar->PushFilter(chrono_types::make_shared<ChFilterVisualizePointCloud>(
+      640, 480, 2, "Lidar Point Cloud"));
+
+  manager->AddSensor(lidar);
+
   // ------------------------
   // Create the driver system
   // ------------------------
@@ -311,7 +409,6 @@ int main(int argc, char *argv[]) {
 
     attached_body->SetPos(pos);
     attached_body->SetRot(y_0_rot);
-
 #ifndef USENADS
     // End simulation
     if (time >= t_end)
@@ -501,7 +598,6 @@ int main(int argc, char *argv[]) {
     }
 
     if (step_number == 0) {
-<<<<<<< HEAD
       zombie_map = syn_manager.GetZombies();
       std::cout << "zombie size: " << zombie_map.size() << std::endl;
       std::cout << "agent size: " << syn_manager.GetAgents().size()
@@ -582,114 +678,64 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    == == == = zombie_map = syn_manager.GetZombies();
-    std::cout << "zombie size: " << zombie_map.size() << std::endl;
-    std::cout << "agent size: " << syn_manager.GetAgents().size() << std::endl;
-    for (std::map<AgentKey, std::shared_ptr<SynAgent>>::iterator it =
-             zombie_map.begin();
-         it != zombie_map.end(); ++it) {
-      std::shared_ptr<SynAgent> temp_ptr = it->second;
-      std::shared_ptr<SynWheeledVehicleAgent> converted_ptr =
-          std::dynamic_pointer_cast<SynWheeledVehicleAgent>(temp_ptr);
-      id_map.insert(std::make_pair(it->first.GetNodeID(), converted_ptr));
+    // =======================
+    // end data stream out section
+    // =======================
+
+    // Update modules (process inputs from other modules)
+    terrain.Synchronize(time);
+    my_vehicle.Synchronize(time, driver_inputs, terrain);
+    syn_manager.Synchronize(time); // Synchronize between nodes
+
+    // Advance simulation for one time for all modules
+    terrain.Advance(step_size);
+    my_vehicle.Advance(step_size);
+    vis->Advance(step_size);
+
+    manager->Update();
+
+    // Increment frame number
+    step_number++;
+
+    if (step_number == 0) {
+      realtime_timer.Reset();
+    }
+
+    // if (step_number % 10 == 0) {
+    realtime_timer.Spin(time);
+    //}
+
+    if (step_number % 500 == 0) {
+      std::chrono::high_resolution_clock::time_point end =
+          std::chrono::high_resolution_clock::now();
+      std::chrono::duration<double> wall_time =
+          std::chrono::duration_cast<std::chrono::duration<double>>(end -
+                                                                    start);
+      std::cout << "elapsed time = " << (wall_time.count()) / (time - last_time)
+                << ", t = " << time << ", gear = "
+                << gear
+                //<< ", Sp Frc Z = " << (eye_acc_z_filtered / G_2_MPSS)
+                << "\n";
+
+      last_time = time;
+      start = std::chrono::high_resolution_clock::now();
+    }
+
+    if (render == true && step_number % render_step == 0) {
+      vis->BeginScene();
+      vis->Render();
+      vis->EndScene();
+      vis->Synchronize(time, driver_inputs);
     }
   }
-
-  // obtain map
-  if (num_nodes > 1) {
-    if (step_number % 10 == 0) {
-      int traf_id = 1;
-      for (std::map<int, std::shared_ptr<SynWheeledVehicleAgent>>::iterator it =
-               id_map.begin();
-           it != id_map.end(); ++it) {
-
-        ChronoVehicleInfo info;
-        info.vehicle_id = traf_id;
-        info.time_stamp = std::chrono::high_resolution_clock::now()
-                              .time_since_epoch()
-                              .count();
-
-        ChVector<double> chassis_pos = it->second->GetZombiePos();
-        ChVector<double> chassis_rot =
-            it->second->GetZombieRot().Q_to_Euler123();
-
-        // converting chassis
-        info.position[0] = chassis_pos.x() * M_2_FT;
-        info.position[1] = -chassis_pos.y() * M_2_FT;
-        info.position[2] = -chassis_pos.z() * M_2_FT;
-
-        info.orientation[0] = chassis_rot.x();
-        info.orientation[1] = -chassis_rot.y();
-        info.orientation[2] = -chassis_rot.z();
-
-        info.steering_angle =
-            driver_inputs.m_steering * double(30.0 / 180.0) * CH_C_PI * 2;
-        info.wheel_rotations[0] = 0.0;
-        info.wheel_rotations[1] = 0.0;
-        info.wheel_rotations[2] = 0.0;
-        info.wheel_rotations[3] = 0.0;
-
-        boost_traffic_streamer.AddVehicleStruct(info);
-        traf_id++;
-      }
-      boost_traffic_streamer.Synchronize();
-    }
-  }
-
->>>>>>> main
-  // =======================
-  // end data stream out section
-  // =======================
-
-  // Update modules (process inputs from other modules)
-  terrain.Synchronize(time);
-  my_vehicle.Synchronize(time, driver_inputs, terrain);
-  syn_manager.Synchronize(time); // Synchronize between nodes
-
-  // Advance simulation for one time for all modules
-  terrain.Advance(step_size);
-  my_vehicle.Advance(step_size);
-  vis->Advance(step_size);
-
-  // Increment frame number
-  step_number++;
-
-  if (step_number == 0) {
-    realtime_timer.Reset();
-  }
-
-  // if (step_number % 10 == 0) {
-  realtime_timer.Spin(time);
-  //}
-
-  if (step_number % 500 == 0) {
-    std::chrono::high_resolution_clock::time_point end =
-        std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> wall_time =
-        std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
-    std::cout << "elapsed time = " << (wall_time.count()) / (time - last_time)
-              << ", t = " << time << ", gear = "
-              << gear
-              //<< ", Sp Frc Z = " << (eye_acc_z_filtered / G_2_MPSS)
-              << "\n";
-
-    last_time = time;
-    start = std::chrono::high_resolution_clock::now();
-  }
-
-  if (render == true && step_number % render_step == 0) {
-    vis->BeginScene();
-    vis->Render();
-    vis->EndScene();
-    vis->Synchronize(time, driver_inputs);
-  }
-}
-syn_manager.QuitSimulation();
-return 0;
+  syn_manager.QuitSimulation();
+  return 0;
 }
 
 void AddCommandLineOptions(ChCLI &cli) {
   // DDS Specific
   cli.AddOption<int>("DDS", "d,node_id", "ID for this Node", "1");
   cli.AddOption<int>("DDS", "n,num_nodes", "Number of Nodes", "2");
+  cli.AddOption<std::vector<std::string>>(
+      "DDS", "ip", "IP Addresses for initialPeersList", "127.0.0.1");
 }

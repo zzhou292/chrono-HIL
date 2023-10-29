@@ -50,6 +50,15 @@
 
 #include "chrono_thirdparty/cxxopts/ChCLI.h"
 
+// Quality of Service
+#include <fastdds/dds/domain/qos/DomainParticipantQos.hpp>
+#include <fastdds/rtps/transport/UDPv4TransportDescriptor.h>
+#include <fastdds/rtps/transport/UDPv6TransportDescriptor.h>
+
+using namespace eprosima::fastdds::dds;
+using namespace eprosima::fastdds::rtps;
+using namespace eprosima::fastrtps::rtps;
+
 using namespace chrono;
 using namespace chrono::irrlicht;
 using namespace chrono::vehicle;
@@ -96,6 +105,8 @@ int main(int argc, char *argv[]) {
 
   const int node_id = cli.GetAsType<int>("node_id");
   const int num_nodes = cli.GetAsType<int>("num_nodes");
+  const std::vector<std::string> ip_list =
+      cli.GetAsType<std::vector<std::string>>("ip");
 
   std::cout << "id:" << node_id << std::endl;
   std::cout << "num:" << num_nodes << std::endl;
@@ -105,7 +116,23 @@ int main(int argc, char *argv[]) {
   // -----------------------
   // Create SynChronoManager
   // -----------------------
-  auto communicator = chrono_types::make_shared<SynDDSCommunicator>(node_id);
+  // Use UDP4
+  DomainParticipantQos qos;
+  qos.name("/syn/node/" + std::to_string(node_id) + ".0");
+  qos.transport().user_transports.push_back(
+      std::make_shared<UDPv4TransportDescriptor>());
+
+  qos.transport().use_builtin_transports = false;
+  qos.wire_protocol().builtin.avoid_builtin_multicast = false;
+
+  // Set the initialPeersList
+  for (const auto &ip : ip_list) {
+    Locator_t locator;
+    locator.kind = LOCATOR_KIND_UDPv4;
+    IPLocator::setIPv4(locator, ip);
+    qos.wire_protocol().builtin.initialPeersList.push_back(locator);
+  }
+  auto communicator = chrono_types::make_shared<SynDDSCommunicator>(qos);
   SynChronoManager syn_manager(node_id, num_nodes, communicator);
 
   // Change SynChronoManager settings
@@ -280,7 +307,6 @@ int main(int argc, char *argv[]) {
 
     // Increment frame number
     step_number++;
-
   }
   syn_manager.QuitSimulation();
   return 0;
@@ -290,4 +316,6 @@ void AddCommandLineOptions(ChCLI &cli) {
   // DDS Specific
   cli.AddOption<int>("DDS", "d,node_id", "ID for this Node", "1");
   cli.AddOption<int>("DDS", "n,num_nodes", "Number of Nodes", "2");
+  cli.AddOption<std::vector<std::string>>(
+      "DDS", "ip", "IP Addresses for initialPeersList", "127.0.0.1");
 }

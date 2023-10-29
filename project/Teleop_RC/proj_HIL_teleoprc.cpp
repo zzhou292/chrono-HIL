@@ -29,7 +29,7 @@
 #include "chrono_vehicle/terrain/RigidTerrain.h"
 #include "chrono_vehicle/wheeled_vehicle/ChWheeledVehicleVisualSystemIrrlicht.h"
 
-#include "chrono_models/vehicle/rccar/RCCar.h"
+#include "chrono_models/vehicle/artcar/ARTcar.h"
 
 #include "chrono_thirdparty/filesystem/path.h"
 
@@ -48,7 +48,7 @@
 using namespace chrono;
 using namespace chrono::irrlicht;
 using namespace chrono::vehicle;
-using namespace chrono::vehicle::rccar;
+using namespace chrono::vehicle::artcar;
 using namespace chrono::hil;
 using namespace chrono::sensor;
 using namespace chrono::geometry;
@@ -95,7 +95,7 @@ double t_end = 1000;
 double render_step_size = 1.0 / 50; // FPS = 50
 
 // Output directories
-const std::string out_dir = GetChronoOutputPath() + "RCCar";
+const std::string out_dir = GetChronoOutputPath() + "ARTCar";
 const std::string pov_dir = out_dir + "/POVRAY";
 
 // Debug logging
@@ -122,7 +122,7 @@ int main(int argc, char *argv[]) {
   // --------------
 
   // Create the Sedan vehicle, set parameters, and initialize
-  RCCar my_rccar;
+  ARTcar my_rccar;
   my_rccar.SetContactMethod(contact_method);
   my_rccar.SetChassisCollisionType(chassis_collision_type);
   my_rccar.SetChassisFixed(false);
