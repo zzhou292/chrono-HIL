@@ -8,13 +8,7 @@
 #--------------------------------------------------------------
 
 set(DEMOS
-  test_HIL_rom_bench_dis_6
-  test_HIL_rom_bench_dis_5
-  test_HIL_rom_bench_dis_4
-  test_HIL_rom_bench_dis_3
-  test_HIL_rom_bench_dis_2
-  test_HIL_rom_bench_dis
-  test_HIL_rom_bench
+	proj_HIL_teleoprc
 )
 
 #--------------------------------------------------------------
@@ -34,6 +28,9 @@ if(NOT Chrono_FOUND)
   return()
 endif()
 
+
+
+
 #--------------------------------------------------------------
 # Include paths and libraries
 #--------------------------------------------------------------
@@ -43,6 +40,7 @@ include_directories(
     ${CMAKE_SOURCE_DIR}
     ${SDL2_INCLUDE_DIRS}
 )
+
 
 set(EXT_LIBRARIES 
 	ChronoEngine_hil
@@ -80,7 +78,7 @@ foreach(PROGRAM ${DEMOS})
 
   add_executable(${PROGRAM}  "${PROGRAM}.cpp")
   source_group(""  FILES "${PROGRAM}.cpp")
-
+  
   target_compile_definitions(${PROGRAM} PUBLIC "CHRONO_DATA_DIR=\"${CHRONO_DATA_DIR}\"") 
   target_compile_definitions(${PROGRAM} PUBLIC "PROJECTS_DATA_DIR=\"${PROJECTS_DATA_DIR}\"") 
   target_compile_options(${PROGRAM} PUBLIC ${CHRONO_CXX_FLAGS})

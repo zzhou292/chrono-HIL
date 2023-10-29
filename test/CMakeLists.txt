@@ -8,7 +8,6 @@ if(ENABLE_TESTS)
   if(CHRONO_SENSOR_FOUND)
     add_subdirectory(Rom_Models)
     #add_subdirectory(ROM_parallel)
-    #add_subdirectory(ROM_Benchmark)
   endif()
   
 endif()

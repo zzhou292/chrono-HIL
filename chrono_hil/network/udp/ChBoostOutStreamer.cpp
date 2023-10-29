@@ -40,6 +40,7 @@ void ChBoostOutStreamer::AddData(float data_in) {
   m_stream_data.push_back(data_in);
 }
 
+<<<<<<< HEAD
 void ChBoostOutStreamer::AddVector(ChVector<float> data_in){
   m_stream_data.push_back(data_in.x());
   m_stream_data.push_back(data_in.y());
@@ -87,6 +88,28 @@ void ChBoostOutStreamer::Synchronize() {
     m_vehicle_data.clear();
   }
 
+=======
+void ChBoostOutStreamer::AddVehicleStruct(ChronoVehicleInfo info) {
+  m_stream_vehicle_data.push_back(info);
+}
+
+void ChBoostOutStreamer::Synchronize() {
+  if (m_stream_vehicle_data.size() != 0) {
+    boost::system::error_code err;
+    auto sent = m_socket->send_to(
+        boost::asio::buffer(m_stream_vehicle_data.data(),
+                            sizeof(long long) * m_stream_vehicle_data.size()),
+        *m_remote_endpoint, 0, err);
+    m_stream_vehicle_data.clear();
+  } else {
+    boost::system::error_code err;
+    auto sent = m_socket->send_to(
+        boost::asio::buffer(m_stream_data.data(),
+                            sizeof(float) * m_stream_data.size()),
+        *m_remote_endpoint, 0, err);
+    m_stream_data.clear();
+  }
+>>>>>>> main
 }
 
 } // namespace hil
