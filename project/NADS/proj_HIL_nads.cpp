@@ -191,12 +191,12 @@ int main(int argc, char *argv[]) {
   // Create the Sedan vehicle, set parameters, and initialize
   WheeledVehicle my_vehicle(vehicle_filename, ChContactMethod::SMC);
   auto ego_chassis = my_vehicle.GetChassis();
+  my_vehicle.SetCollisionSystemType(ChCollisionSystem::Type::BULLET);
   my_vehicle.Initialize(ChCoordsys<>(initLoc, initRot));
   my_vehicle.GetChassis()->SetFixed(false);
 
   auto engine = ReadEngineJSON(engine_filename);
-  std::shared_ptr<ChTransmission> transmission =
-      ReadTransmissionJSON(transmission_filename);
+  auto transmission = ReadTransmissionJSON(transmission_filename);
   auto powertrain =
       chrono_types::make_shared<ChPowertrainAssembly>(engine, transmission);
   my_vehicle.InitializePowertrain(powertrain);
@@ -241,38 +241,11 @@ int main(int argc, char *argv[]) {
   patch = terrain.AddPatch(patch_mat, CSYSNORM,
                            std::string(STRINGIFY(HIL_DATA_DIR)) +
                                "/Environments/nads/newnads/terrain.obj",
-                           true, 0, false);
+                           true, 0, true);
 
   terrain.Initialize();
 
   // ====================================================
-
-  // auto object_mat = ChMaterialSurface::DefaultMaterial(contact_method);
-  auto ground_mat = chrono_types::make_shared<ChMaterialSurfaceSMC>();
-
-  auto terrain_mmesh = chrono_types::make_shared<ChTriangleMeshConnected>();
-  terrain_mmesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
-                                       "/Environments/nads/newnads/terrain.obj",
-                                   false, true);
-  terrain_mmesh->Transform(chrono::ChVector<>(0, 0, 0),
-                           chrono::ChMatrix33<>(1));
-
-  auto terrain_trimesh_shape =
-      chrono_types::make_shared<ChVisualShapeTriangleMesh>();
-  terrain_trimesh_shape->SetMesh(terrain_mmesh);
-  terrain_trimesh_shape->SetName("NADS Mesh");
-  terrain_trimesh_shape->SetMutable(false);
-
-  auto terrain_mesh_body = chrono_types::make_shared<ChBody>();
-  terrain_mesh_body->SetPos(chrono::ChVector<>(-2, -2, -0.1));
-  terrain_mesh_body->AddVisualShape(terrain_trimesh_shape);
-  terrain_mesh_body->SetBodyFixed(true);
-  auto cshape = chrono_types::make_shared<ChCollisionShapeTriangleMesh>(
-      ground_mat, terrain_mmesh, true, true);
-  terrain_mesh_body->AddCollisionShape(cshape);
-  terrain_mesh_body->SetCollide(false);
-
-  my_vehicle.GetSystem()->Add(terrain_mesh_body);
 
   // ------------------------
   // Create a Irrlicht vis
@@ -399,6 +372,8 @@ int main(int argc, char *argv[]) {
   ChRunningAverage rf_wheel_vel(250);
   ChRunningAverage lr_wheel_vel(250);
   ChRunningAverage rr_wheel_vel(250);
+
+  my_vehicle.EnableRealtime(false);
 
   // simulation loop
   while (vis->Run() && syn_manager.IsOk()) {
@@ -690,12 +665,9 @@ int main(int argc, char *argv[]) {
     // =======================
     // end data stream out section
     // =======================
-
-    // Update modules (process inputs from other modules)
-    terrain.Synchronize(time);
     my_vehicle.Synchronize(time, driver_inputs, terrain);
+    terrain.Synchronize(time);
     syn_manager.Synchronize(time); // Synchronize between nodes
-
     // Advance simulation for one time for all modules
     terrain.Advance(step_size);
     my_vehicle.Advance(step_size);

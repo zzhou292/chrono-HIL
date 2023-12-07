@@ -20,7 +20,7 @@ set(DEMOS
 
 # Invoke find_package in CONFIG mode
 find_package(Chrono
-             COMPONENTS SynChrono Vehicle Sensor Irrlicht
+             COMPONENTS SynChrono Vehicle Sensor Irrlicht ROS
              CONFIG
 )
 find_package(SDL2 REQUIRED)

@@ -169,6 +169,7 @@ int main(int argc, char *argv[]) {
   } else if (node_id == 4) {
     initLoc = ChVector<>(-50.788, 98.647, 0.25);
   }
+  my_vehicle.SetCollisionSystemType(ChCollisionSystem::Type::BULLET);
   my_vehicle.Initialize(ChCoordsys<>(initLoc, initRot));
   my_vehicle.GetChassis()->SetFixed(false);
 
@@ -235,7 +236,7 @@ int main(int argc, char *argv[]) {
   patch->SetColor(ChColor(0.8f, 0.8f, 0.5f));
 
   terrain.Initialize();
-
+  std::cout << "tp1" << std::endl;
   // add vis mesh
   auto terrain_mesh = chrono_types::make_shared<ChTriangleMeshConnected>();
   terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +

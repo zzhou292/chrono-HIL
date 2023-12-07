@@ -63,7 +63,7 @@ set(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
 
 LIST(APPEND CMAKE_PREFIX_PATH "${CMAKE_INSTALL_PREFIX}/../Chrono/lib")
 find_package(Chrono
-             COMPONENTS SynChrono Vehicle Irrlicht 
+             COMPONENTS SynChrono Vehicle Irrlicht ROS
              OPTIONAL_COMPONENTS Sensor
              CONFIG)
 find_package(SDL2 REQUIRED)
