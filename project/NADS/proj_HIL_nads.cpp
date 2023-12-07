@@ -245,25 +245,34 @@ int main(int argc, char *argv[]) {
 
   terrain.Initialize();
 
-  // add vis mesh
-  auto terrain_mesh = chrono_types::make_shared<ChTriangleMeshConnected>();
-  terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
-                                      "/Environments/nads/newnads/terrain.obj",
-                                  true, true);
-  terrain_mesh->Transform(ChVector<>(0, 0, 0),
-                          ChMatrix33<>(1)); // scale to a different size
-  auto terrain_shape = chrono_types::make_shared<ChTriangleMeshShape>();
-  terrain_shape->SetMesh(terrain_mesh);
-  terrain_shape->SetName("terrain");
-  terrain_shape->SetMutable(false);
+  // ====================================================
 
-  auto terrain_body = chrono_types::make_shared<ChBody>();
-  terrain_body->SetPos({0, 0, -.01});
-  // terrain_body->SetRot(Q_from_AngX(CH_C_PI_2));
-  terrain_body->AddVisualShape(terrain_shape);
-  terrain_body->SetBodyFixed(true);
-  terrain_body->SetCollide(false);
-  my_vehicle.GetSystem()->Add(terrain_body);
+  // auto object_mat = ChMaterialSurface::DefaultMaterial(contact_method);
+  auto ground_mat = chrono_types::make_shared<ChMaterialSurfaceSMC>();
+
+  auto terrain_mmesh = chrono_types::make_shared<ChTriangleMeshConnected>();
+  terrain_mmesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
+                                       "/Environments/nads/newnads/terrain.obj",
+                                   false, true);
+  terrain_mmesh->Transform(chrono::ChVector<>(0, 0, 0),
+                           chrono::ChMatrix33<>(1));
+
+  auto terrain_trimesh_shape =
+      chrono_types::make_shared<ChVisualShapeTriangleMesh>();
+  terrain_trimesh_shape->SetMesh(terrain_mmesh);
+  terrain_trimesh_shape->SetName("NADS Mesh");
+  terrain_trimesh_shape->SetMutable(false);
+
+  auto terrain_mesh_body = chrono_types::make_shared<ChBody>();
+  terrain_mesh_body->SetPos(chrono::ChVector<>(-2, -2, -0.1));
+  terrain_mesh_body->AddVisualShape(terrain_trimesh_shape);
+  terrain_mesh_body->SetBodyFixed(true);
+  auto cshape = chrono_types::make_shared<ChCollisionShapeTriangleMesh>(
+      ground_mat, terrain_mmesh, true, true);
+  terrain_mesh_body->AddCollisionShape(cshape);
+  terrain_mesh_body->SetCollide(false);
+
+  my_vehicle.GetSystem()->Add(terrain_mesh_body);
 
   // ------------------------
   // Create a Irrlicht vis

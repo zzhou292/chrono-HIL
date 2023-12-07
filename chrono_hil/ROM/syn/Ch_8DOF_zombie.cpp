@@ -149,7 +149,7 @@ void Ch_8DOF_zombie::Initialize(ChSystem *sys) {
     chassis_mmesh->LoadWavefrontMesh(chassis_mesh, false, true);
 
     auto chassis_trimesh_shape =
-        chrono_types::make_shared<ChTriangleMeshShape>();
+        chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     chassis_trimesh_shape->SetMesh(chassis_mmesh);
     chassis_trimesh_shape->SetMutable(false);
     chassis_body->AddVisualShape(chassis_trimesh_shape);
@@ -180,7 +180,7 @@ void Ch_8DOF_zombie::Initialize(ChSystem *sys) {
         wheel_mmesh->Transform(ChVector<>(0.0, 0.0, 0.0), wheels_offset_rot[i]);
 
         auto wheel_trimesh_shape =
-            chrono_types::make_shared<ChTriangleMeshShape>();
+            chrono_types::make_shared<ChVisualShapeTriangleMesh>();
         wheel_trimesh_shape->SetMesh(wheel_mmesh);
         wheel_trimesh_shape->SetMutable(false);
 

@@ -60,7 +60,6 @@
 
 #include "chrono/physics/ChBody.h"
 
-#include "chrono/assets/ChTriangleMeshShape.h"
 #include "chrono/utils/ChUtilsGeometry.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
 
@@ -330,7 +329,8 @@ int main(int argc, char *argv[]) {
                 STRINGIFY(HIL_DATA_DIR) +
                     std::string("/Environments/HWMMV_test/trees/tree_01.obj"),
                 true, true);
-        auto trimesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+        auto trimesh_shape =
+            chrono_types::make_shared<ChVisualShapeTriangleMesh>();
         trimesh_shape->SetMesh(trimesh);
         trimesh_shape->SetName("Trees");
         trimesh_shape->SetMutable(false);
@@ -500,7 +500,7 @@ void AddObstacle1(RigidTerrain &terrain,
         STRINGIFY(HIL_DATA_DIR) +
             std::string("/Environments/HWMMV_test/cyl_bump/cyl_bump.obj"),
         true, true);
-    auto trimesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+    auto trimesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     trimesh_shape->SetMesh(trimesh);
     trimesh_shape->SetName("cyl_bump");
     trimesh_shape->SetMutable(false);
@@ -529,7 +529,7 @@ void AddObstacle1(RigidTerrain &terrain,
         STRINGIFY(HIL_DATA_DIR) +
             std::string("/Environments/HWMMV_test/cyl_bump/cyl_bump_half.obj"),
         true, true);
-    auto trimesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+    auto trimesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     trimesh_shape->SetMesh(trimesh);
     trimesh_shape->SetName("cyl_bump");
     trimesh_shape->SetMutable(false);
@@ -558,7 +558,7 @@ void AddObstacle1(RigidTerrain &terrain,
         STRINGIFY(HIL_DATA_DIR) +
             std::string("/Environments/HWMMV_test/cyl_bump/cyl_bump_half.obj"),
         true, true);
-    auto trimesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+    auto trimesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     trimesh_shape->SetMesh(trimesh);
     trimesh_shape->SetName("cyl_bump");
     trimesh_shape->SetMutable(false);
@@ -577,7 +577,7 @@ void AddObstacle2(RigidTerrain &terrain,
         STRINGIFY(HIL_DATA_DIR) +
             std::string("/Environments/HWMMV_test/cone/cone.obj"),
         true, true);
-    auto trimesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+    auto trimesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     trimesh_shape->SetMesh(trimesh);
     trimesh_shape->SetName("cone");
     trimesh_shape->SetMutable(false);
@@ -594,7 +594,7 @@ void AddObstacle3(RigidTerrain &terrain,
       STRINGIFY(HIL_DATA_DIR) +
           std::string("/Environments/HWMMV_test/hill/hill_obs.obj"),
       true, true);
-  auto trimesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+  auto trimesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   trimesh_shape->SetMesh(trimesh);
   trimesh_shape->SetName("hill");
   trimesh_shape->SetMutable(false);

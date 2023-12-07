@@ -36,14 +36,12 @@
 #include "chrono_hil/driver/ChSDLInterface.h"
 #include "chrono_hil/timer/ChRealtimeCumulative.h"
 
-#include "chrono_sensor/ChSensorManager.h"
-#include "chrono_sensor/filters/ChFilterVisualize.h"
-#include "chrono_sensor/sensors/ChCameraSensor.h"
-
-#include "chrono/assets/ChTriangleMeshShape.h"
 #include "chrono/physics/ChBodyEasy.h"
 #include "chrono/physics/ChInertiaUtils.h"
 #include "chrono/utils/ChUtilsGeometry.h"
+#include "chrono_sensor/ChSensorManager.h"
+#include "chrono_sensor/filters/ChFilterVisualize.h"
+#include "chrono_sensor/sensors/ChCameraSensor.h"
 
 using namespace chrono;
 using namespace chrono::irrlicht;
@@ -413,13 +411,7 @@ void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
     body->SetMass(mass * cone_density);
     body->SetInertiaXX(cone_density * principal_I);
 
-    body->GetCollisionModel()->ClearModel();
-    body->GetCollisionModel()->AddTriangleMesh(rock_mat, mesh, false, false,
-                                               VNULL, ChMatrix33<>(1), 0.005);
-    body->GetCollisionModel()->BuildModel();
-    body->SetCollide(true);
-
-    auto mesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+    auto mesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     mesh_shape->SetMesh(mesh);
     mesh_shape->SetBackfaceCull(true);
     body->AddVisualShape(mesh_shape);

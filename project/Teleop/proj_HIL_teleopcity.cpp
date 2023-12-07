@@ -51,6 +51,9 @@
 #include "chrono_vehicle/ChTransmission.h"
 #include "chrono_vehicle/powertrain/ChAutomaticTransmissionSimpleMap.h"
 
+#include "chrono_hil/network/udp/ChBoostInStreamer.h"
+#include "chrono_hil/network/udp/ChBoostOutStreamer.h"
+
 using namespace chrono;
 using namespace chrono::irrlicht;
 using namespace chrono::vehicle;
@@ -147,18 +150,21 @@ int main(int argc, char *argv[]) {
 
   std::shared_ptr<RigidTerrain::Patch> patch;
 
-  patch = terrain.AddPatch(patch_mat, CSYSNORM, 500, 500, 2, false, 1, false);
+  patch = terrain.AddPatch(patch_mat, CSYSNORM,
+                           std::string(STRINGIFY(HIL_DATA_DIR)) +
+                               "/Environments/nads/newnads/terrain.obj",
+                           true, 0, false);
 
   terrain.Initialize();
 
   // add vis mesh
   auto terrain_mesh = chrono_types::make_shared<ChTriangleMeshConnected>();
   terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
-                                      "/Environments/city_road/Test.obj",
+                                      "/Environments/nads/newnads/terrain.obj",
                                   true, true);
   terrain_mesh->Transform(ChVector<>(0, 0, 0),
                           ChMatrix33<>(1)); // scale to a different size
-  auto terrain_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+  auto terrain_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   terrain_shape->SetMesh(terrain_mesh);
   terrain_shape->SetName("terrain");
   terrain_shape->SetMutable(false);
@@ -175,15 +181,17 @@ int main(int argc, char *argv[]) {
   // Create a Irrlicht vis
   // ------------------------
   ChVector<> trackPoint(0.0, 0.0, 1.75);
-  int render_step = 20;
-  auto vis = chrono_types::make_shared<ChWheeledVehicleVisualSystemIrrlicht>();
-  vis->SetWindowTitle("NADS");
-  vis->SetChaseCamera(trackPoint, 6.0, 0.5);
-  vis->Initialize();
-  vis->AddLightDirectional();
-  vis->AddSkyBox();
-  vis->AddLogo();
-  vis->AttachVehicle(&my_vehicle);
+  // int render_step = 20;
+  // auto vis =
+  // chrono_types::make_shared<ChWheeledVehicleVisualSystemIrrlicht>();
+  // vis->SetWindowTitle("NADS");
+  // vis->SetWindowSize(5760, 1080);
+  // vis->SetChaseCamera(trackPoint, 6.0, 0.5);
+  // vis->Initialize();
+  // vis->AddLightDirectional();
+  // vis->AddSkyBox();
+  // vis->AddLogo();
+  // vis->AttachVehicle(&my_vehicle);
 
   // ------------------------
   // Create the driver system
@@ -194,7 +202,7 @@ int main(int argc, char *argv[]) {
   SDLDriver.Initialize();
 
   std::string joystick_file =
-      (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
+      (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G29.json");
   SDLDriver.SetJoystickConfigFile(joystick_file);
 
   // ---------------------------------
@@ -216,22 +224,23 @@ int main(int argc, char *argv[]) {
   manager->scene->EnableDynamicOrigin(true);
   manager->scene->SetOriginOffsetThreshold(500.f);
 
-  // // camera at driver's eye location for Audi
-  // auto driver_cam = chrono_types::make_shared<ChCameraSensor>(
-  //     my_vehicle.GetChassisBody(), // body camera is attached to
-  //     30,                          // update rate in Hz
-  //     chrono::ChFrame<double>({0.54, .381, 1.04},
-  //                             Q_from_AngAxis(0, {0, 1, 0})), // offset pose
-  //     1280,                                                  // image width
-  //     720,                                                   // image height
-  //     3.14 / 1.5,                                            // fov
-  //     2);
+  // camera at driver's eye location for Audi
+  auto driver_cam = chrono_types::make_shared<ChCameraSensor>(
+      my_vehicle.GetChassisBody(), // body camera is attached to
+      35,                          // update rate in Hz
+      chrono::ChFrame<double>({0.54, .381, 1.04},
+                              Q_from_AngAxis(0, {0, 1, 0})), // offset pose
+      5760,                                                  // image width
+      1080,                                                  // image height
+      3.14 / 1.5,                                            // fov
+      2);
 
-  // driver_cam->SetName("DriverCam");
-  // driver_cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
-  //     1280, 720, "Camera1", false));
-  // driver_cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
-  // manager->AddSensor(driver_cam);
+  driver_cam->SetName("DriverCam");
+  driver_cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
+      5760, 1080, "Camera1", false));
+  driver_cam->SetLag(0.2f);
+  driver_cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
+  manager->AddSensor(driver_cam);
 
   // Initialize simulation frame counters
   int step_number = 0;
@@ -242,6 +251,10 @@ int main(int argc, char *argv[]) {
   std::chrono::high_resolution_clock::time_point start =
       std::chrono::high_resolution_clock::now();
   double last_time = 0;
+
+  ChBoostInStreamer in_streamer(1214, 3);
+
+  DriverInputs driver_inputs;
 
   // simulation loop
   while (true) {
@@ -268,11 +281,16 @@ int main(int argc, char *argv[]) {
 #endif
 
     // Get driver inputs
-    DriverInputs driver_inputs;
 
-    driver_inputs.m_steering = SDLDriver.GetSteering();
-    driver_inputs.m_throttle = SDLDriver.GetThrottle();
-    driver_inputs.m_braking = SDLDriver.GetBraking();
+    if (step_number % 50 == 0) {
+      in_streamer.Synchronize();
+
+      std::vector<float> recv_data = in_streamer.GetRecvData();
+
+      driver_inputs.m_steering = recv_data[0];
+      driver_inputs.m_throttle = recv_data[1];
+      driver_inputs.m_braking = recv_data[2];
+    }
 
     // =======================
     // end data stream out section
@@ -285,7 +303,7 @@ int main(int argc, char *argv[]) {
     // Advance simulation for one time for all modules
     terrain.Advance(step_size);
     my_vehicle.Advance(step_size);
-    vis->Advance(step_size);
+    // vis->Advance(step_size);
 
     manager->Update();
 
@@ -303,12 +321,12 @@ int main(int argc, char *argv[]) {
       break;
     }
 
-    if (render == true && step_number % render_step == 0) {
-      vis->BeginScene();
-      vis->Render();
-      vis->EndScene();
-      vis->Synchronize(time, driver_inputs);
-    }
+    // if (render == true && step_number % render_step == 0) {
+    //   // vis->BeginScene();
+    //   // vis->Render();
+    //   // vis->EndScene();
+    //   // vis->Synchronize(time, driver_inputs);
+    // }
   }
   return 0;
 }

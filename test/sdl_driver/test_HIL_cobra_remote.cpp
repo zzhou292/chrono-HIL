@@ -20,7 +20,7 @@ using namespace chrono::vehicle;
 using namespace chrono::hil;
 
 #define PORT_OUT 1209
-#define IP_OUT "10.141.147.137"
+#define IP_OUT "10.141.238.198"
 
 // This program shows how to work with joysticks using SDL2.
 // This example shows how to do it by manually polling the joystick

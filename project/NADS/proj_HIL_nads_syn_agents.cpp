@@ -243,7 +243,7 @@ int main(int argc, char *argv[]) {
                                   true, true);
   terrain_mesh->Transform(ChVector<>(0, 0, 0),
                           ChMatrix33<>(1)); // scale to a different size
-  auto terrain_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+  auto terrain_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   terrain_shape->SetMesh(terrain_mesh);
   terrain_shape->SetName("terrain");
   terrain_shape->SetMutable(false);

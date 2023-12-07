@@ -806,7 +806,7 @@ int main(int argc, char *argv[]) {
       false, true);
   audi_mesh->Transform(ChVector<>(0, 0, 0),
                        ChMatrix33<>(1)); // scale to a different size
-  auto audi_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+  auto audi_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   audi_shape->SetMesh(audi_mesh);
   audi_shape->SetName("Windowless Audi");
   audi_shape->SetMutable(false);
@@ -827,7 +827,8 @@ int main(int argc, char *argv[]) {
   mirror_mat->SetMetallic(1.0f);
   mirror_mat->SetUseSpecularWorkflow(false);
 
-  auto rvw_mirror_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+  auto rvw_mirror_shape =
+      chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   rvw_mirror_shape->SetMesh(mirror_mesh);
   rvw_mirror_shape->SetName("Windowless Audi");
   rvw_mirror_shape->SetMutable(false);
@@ -844,7 +845,8 @@ int main(int argc, char *argv[]) {
   lwm_mesh->Transform(ChVector<>(0, 0, 0),
                       ChMatrix33<>(1)); // scale to a different size
 
-  auto lwm_mirror_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+  auto lwm_mirror_shape =
+      chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   lwm_mirror_shape->SetMesh(lwm_mesh);
   lwm_mirror_shape->SetName("Windowless Audi");
   lwm_mirror_shape->GetMaterials()[0] = mirror_mat;
@@ -860,7 +862,8 @@ int main(int argc, char *argv[]) {
   rwm_mesh->Transform(ChVector<>(0, 0, 0),
                       ChMatrix33<>(1)); // scale to a different size
 
-  auto rwm_mirror_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+  auto rwm_mirror_shape =
+      chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   rwm_mirror_shape->SetMesh(rwm_mesh);
   rwm_mirror_shape->SetName("Windowless Audi");
   rwm_mirror_shape->SetScale({1, .98, .98});
@@ -991,7 +994,8 @@ int main(int argc, char *argv[]) {
   suv_mmesh->LoadWavefrontMesh(demo_data_path + suv_mesh_name, false, true);
   suv_mmesh->RepairDuplicateVertexes(1e-9);
 
-  auto suv_trimesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+  auto suv_trimesh_shape =
+      chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   suv_trimesh_shape->SetMesh(suv_mmesh);
   suv_trimesh_shape->SetMutable(false);
 
@@ -1001,7 +1005,8 @@ int main(int argc, char *argv[]) {
   audi_mmesh->LoadWavefrontMesh(demo_data_path + audi_mesh_name, false, true);
   audi_mmesh->RepairDuplicateVertexes(1e-9);
 
-  auto audi_trimesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+  auto audi_trimesh_shape =
+      chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   audi_trimesh_shape->SetMesh(audi_mmesh);
   audi_trimesh_shape->SetMutable(false);
 
@@ -1664,7 +1669,8 @@ void AddTrees(ChSystem *chsystem) {
 
   for (int i = 0; i < x_count; i++) {
     for (int j = 0; j < y_count; j++) {
-      auto trimesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+      auto trimesh_shape =
+          chrono_types::make_shared<ChVisualShapeTriangleMesh>();
       trimesh_shape->SetMesh(
           tree_meshes[int(ChRandom() * tree_meshes.size() - .001)]);
       trimesh_shape->SetName("Tree");
@@ -1689,7 +1695,8 @@ void AddTrees(ChSystem *chsystem) {
 
   for (int i = 0; i < x_count; i++) {
     for (int j = 0; j < y_count; j++) {
-      auto trimesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+      auto trimesh_shape =
+          chrono_types::make_shared<ChVisualShapeTriangleMesh>();
       trimesh_shape->SetMesh(
           tree_meshes[int(ChRandom() * tree_meshes.size() - .001)]);
       trimesh_shape->SetName("Tree");
@@ -1726,7 +1733,7 @@ void AddRoadway(ChSystem *chsystem) {
                                true);
     trimesh->Transform(ChVector<>(0, 0, 0),
                        ChMatrix33<>(1)); // scale to a different size
-    auto trimesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+    auto trimesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     trimesh_shape->SetMesh(trimesh);
     trimesh_shape->SetName(environment_meshes[i]);
     trimesh_shape->SetMutable(false);
@@ -1763,7 +1770,7 @@ void AddRoadway(ChSystem *chsystem) {
     trimesh->LoadWavefrontMesh(demo_data_path + meshname, false, true);
     trimesh->Transform(ChVector<>(0, 0, 0),
                        ChMatrix33<>(1)); // scale to a different size
-    auto trimesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+    auto trimesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     trimesh_shape->SetMesh(trimesh);
     trimesh_shape->SetName(meshname);
     trimesh_shape->SetMutable(false);
@@ -1853,7 +1860,7 @@ void AddBuildings(ChSystem *chsystem) {
                                true);
     trimesh->Transform(ChVector<>(0, 0, 0),
                        ChMatrix33<>(1)); // scale to a different size
-    auto trimesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+    auto trimesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     trimesh_shape->SetMesh(trimesh);
     trimesh_shape->SetName(environment_meshes[i]);
     trimesh_shape->SetMutable(false);
@@ -1876,7 +1883,7 @@ void AddTerrain(ChSystem *chsystem) {
       true);
   terrain_mesh->Transform(ChVector<>(0, 0, 0),
                           ChMatrix33<>(1)); // scale to a different size
-  auto terrain_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+  auto terrain_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   terrain_shape->SetMesh(terrain_mesh);
   terrain_shape->SetName("terrain");
   terrain_shape->SetMutable(false);

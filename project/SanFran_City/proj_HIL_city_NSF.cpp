@@ -792,7 +792,7 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
 
               // if not road, only add visualization with new pos,rot,scale
               auto trimesh_shape =
-                  chrono_types::make_shared<ChTriangleMeshShape>();
+                  chrono_types::make_shared<ChVisualShapeTriangleMesh>();
               trimesh_shape->SetMesh(mmesh);
               trimesh_shape->SetName(mesh_name);
               trimesh_shape->SetScale(scale);
