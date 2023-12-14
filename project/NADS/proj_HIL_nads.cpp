@@ -298,12 +298,12 @@ int main(int argc, char *argv[]) {
   manager->AddSensor(driver_cam);
 
   int horizontal_samples = 512;
-  int vertical_samples = 128;
+  int vertical_samples = 256;
 
   auto lidar = chrono_types::make_shared<ChLidarSensor>(
       my_vehicle.GetChassisBody(), // body lidar is attached to
       15,                          // scanning rate in Hz
-      chrono::ChFrame<double>({0.54, .381, 1.04},
+      chrono::ChFrame<double>({0.54, .381, 2.04},
                               Q_from_AngAxis(0, {0, 1, 0})), // offset pose
       horizontal_samples,   // number of horizontal samples
       vertical_samples,     // number of vertical channels
