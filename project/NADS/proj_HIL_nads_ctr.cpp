@@ -52,7 +52,7 @@ int main(int argc, char *argv[]) {
   SDLDriver.Initialize();
 
   SDLDriver.SetJoystickConfigFile(std::string(STRINGIFY(HIL_DATA_DIR)) +
-                                  std::string("/joystick/controller_G29.json"));
+                                  std::string("/joystick/controller_G27.json"));
   SDLDriver.AddCallbackButtons(6);
   float gear =
       0.f; // 0.0 for park, 1.0 for forward, 2.0 for backward, 3.0 for neutral

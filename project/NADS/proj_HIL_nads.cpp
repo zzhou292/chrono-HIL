@@ -49,6 +49,7 @@
 #include "chrono_synchrono/utils/SynDataLoader.h"
 #include "chrono_synchrono/utils/SynLog.h"
 
+#include "chrono_ros/handlers/sensor/ChROSCameraHandler.h"
 #include "chrono_sensor/ChSensorManager.h"
 #include "chrono_sensor/filters/ChFilterAccess.h"
 #include "chrono_sensor/filters/ChFilterLidarNoise.h"
@@ -61,6 +62,11 @@
 #include "chrono_sensor/sensors/ChCameraSensor.h"
 #include "chrono_sensor/sensors/ChLidarSensor.h"
 
+#include "chrono_ros/ChROSManager.h"
+#include "chrono_ros/handlers/ChROSBodyHandler.h"
+#include "chrono_ros/handlers/ChROSClockHandler.h"
+#include "chrono_ros/handlers/ChROSTFHandler.h"
+#include "chrono_ros/handlers/sensor/ChROSLidarHandler.h"
 #include "chrono_thirdparty/cxxopts/ChCLI.h"
 
 // Quality of Service
@@ -81,6 +87,7 @@ using namespace chrono::hil;
 using namespace chrono::utils;
 using namespace chrono::synchrono;
 using namespace chrono::sensor;
+using namespace chrono::ros;
 
 const double RADS_2_RPM = 30 / CH_C_PI;
 const double RADS_2_DEG = 180 / CH_C_PI;
@@ -303,22 +310,53 @@ int main(int argc, char *argv[]) {
   auto lidar = chrono_types::make_shared<ChLidarSensor>(
       my_vehicle.GetChassisBody(), // body lidar is attached to
       15,                          // scanning rate in Hz
-      chrono::ChFrame<double>({0.54, .381, 2.04},
+      chrono::ChFrame<double>({0.54, .381, 2.64},
                               Q_from_AngAxis(0, {0, 1, 0})), // offset pose
       horizontal_samples,   // number of horizontal samples
       vertical_samples,     // number of vertical channels
       (float)(2 * CH_C_PI), // horizontal field of view
-      (float)CH_C_PI / 12, (float)-CH_C_PI / 6, 100.0f // vertical field of view
+      (float)CH_C_PI / 6, (float)-CH_C_PI / 6, 100.0f // vertical field of view
   );
-  lidar->SetName("Lidar Sensor 1");
+  lidar->SetName("Lidar");
   lidar->PushFilter(chrono_types::make_shared<ChFilterDIAccess>());
   lidar->PushFilter(chrono_types::make_shared<ChFilterPCfromDepth>());
+  lidar->PushFilter(chrono_types::make_shared<ChFilterXYZIAccess>());
 
   // Renders the raw lidar data
   lidar->PushFilter(chrono_types::make_shared<ChFilterVisualizePointCloud>(
       640, 480, 2, "Lidar Point Cloud"));
 
   manager->AddSensor(lidar);
+
+  // Create ROS Manager
+  auto ros_manager = chrono_types::make_shared<ChROSManager>();
+
+  // Create a publisher for the simulation clock
+  // The clock automatically publishes on every tick and on topic /clock
+  auto clock_handler = chrono_types::make_shared<ChROSClockHandler>();
+  ros_manager->RegisterHandler(clock_handler);
+
+  // Create the publisher for the lidar
+  auto lidar_topic_name = "~/output/lidar/data/pointcloud";
+  auto lidar_handler =
+      chrono_types::make_shared<ChROSLidarHandler>(lidar, lidar_topic_name);
+  ros_manager->RegisterHandler(lidar_handler);
+
+  // Create the publisher for the camera
+  auto camera_rate = driver_cam->GetUpdateRate() / 2;
+  auto camera_topic_name = "~/output/camera/data/image";
+  auto camera_handler = chrono_types::make_shared<ChROSCameraHandler>(
+      camera_rate, driver_cam, camera_topic_name);
+  ros_manager->RegisterHandler(camera_handler);
+
+  // Create _one_ tf handler which we'll add transforms for all the sensors to
+  auto tf_handler = chrono_types::make_shared<ChROSTFHandler>(100);
+  tf_handler->AddSensor(driver_cam);
+  tf_handler->AddSensor(lidar);
+  ros_manager->RegisterHandler(tf_handler);
+
+  // Finally, initialize the ros manager
+  ros_manager->Initialize();
 
   // ------------------------
   // Create the driver system
@@ -385,6 +423,9 @@ int main(int argc, char *argv[]) {
 
     ChVector<> pos = my_vehicle.GetChassis()->GetPos();
     ChQuaternion<> rot = my_vehicle.GetChassis()->GetRot();
+
+    if (!ros_manager->Update(time, step_size))
+      break;
 
     auto euler_rot = Q_to_Euler123(rot);
     euler_rot.x() = 0.0;
@@ -709,6 +750,7 @@ int main(int argc, char *argv[]) {
       vis->Synchronize(time, driver_inputs);
     }
   }
+
   syn_manager.QuitSimulation();
   return 0;
 }
