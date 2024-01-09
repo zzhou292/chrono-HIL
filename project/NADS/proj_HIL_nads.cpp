@@ -310,14 +310,14 @@ int main(int argc, char *argv[]) {
   auto lidar = chrono_types::make_shared<ChLidarSensor>(
       my_vehicle.GetChassisBody(), // body lidar is attached to
       15,                          // scanning rate in Hz
-      chrono::ChFrame<double>({0.54, .381, 2.64},
+      chrono::ChFrame<double>({4.0, 0.0, 0.0},
                               Q_from_AngAxis(0, {0, 1, 0})), // offset pose
       horizontal_samples,   // number of horizontal samples
       vertical_samples,     // number of vertical channels
       (float)(2 * CH_C_PI), // horizontal field of view
-      (float)CH_C_PI / 6, (float)-CH_C_PI / 6, 100.0f // vertical field of view
+      (float)CH_C_PI / 6, (float)-CH_C_PI / 720, 35.0f // vertical field of view
   );
-  lidar->SetName("Lidar");
+  lidar->SetName("LIDAR_TOP");
   lidar->PushFilter(chrono_types::make_shared<ChFilterDIAccess>());
   lidar->PushFilter(chrono_types::make_shared<ChFilterPCfromDepth>());
   lidar->PushFilter(chrono_types::make_shared<ChFilterXYZIAccess>());
@@ -337,7 +337,7 @@ int main(int argc, char *argv[]) {
   ros_manager->RegisterHandler(clock_handler);
 
   // Create the publisher for the lidar
-  auto lidar_topic_name = "~/output/lidar/data/pointcloud";
+  auto lidar_topic_name = "/LIDAR_TOP";
   auto lidar_handler =
       chrono_types::make_shared<ChROSLidarHandler>(lidar, lidar_topic_name);
   ros_manager->RegisterHandler(lidar_handler);

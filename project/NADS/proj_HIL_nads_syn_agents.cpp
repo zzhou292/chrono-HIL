@@ -212,7 +212,7 @@ int main(int argc, char *argv[]) {
   auto path = ChBezierCurve::read(path_file, true);
 
   // lead_count
-  ChPathFollowerDriver driver(my_vehicle, path, "my_path", 10);
+  ChPathFollowerDriver driver(my_vehicle, path, "my_path", 3.0);
   driver.GetSteeringController().SetLookAheadDistance(2.0);
   driver.GetSteeringController().SetGains(1.0, 0, 0);
   driver.GetSpeedController().SetGains(0.6, 0.05, 0);
