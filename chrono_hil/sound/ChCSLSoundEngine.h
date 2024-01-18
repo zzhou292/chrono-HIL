@@ -30,7 +30,7 @@
 #include "chrono_vehicle/ChApiVehicle.h"
 #include "chrono_vehicle/ChVehicle.h"
 
-#include "irrKlang.h"
+#include <irrKlang.h>
 
 using namespace chrono::vehicle;
 
@@ -58,9 +58,8 @@ public:
     // update every 0.01 sec
     if (time - last_time_played > 0.2) {
       last_time_played = time;
-      int cur_gear = thisvehicle->GetPowertrain()->GetCurrentTransmissionGear();
-      double rpm =
-          thisvehicle->GetPowertrain()->GetMotorSpeed() * 60 / CH_C_2PI;
+      int cur_gear = thisvehicle->GetTransmission()->GetCurrentGear();
+      double rpm = thisvehicle->GetEngine()->GetMotorSpeed() * 60 / CH_C_2PI;
       if (cur_gear == 1) {
         double soundspeed = rpm / (10000.); // denominator: to guess
         if (soundspeed < 0.1)
