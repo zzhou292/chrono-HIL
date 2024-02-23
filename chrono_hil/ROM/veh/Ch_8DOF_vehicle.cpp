@@ -216,7 +216,7 @@ void Ch_8DOF_vehicle::Initialize(ChSystem *sys) {
     // initializing visualization assets for chassis
     if (preload_vis_mesh == true) {
       auto chassis_trimesh_shape =
-          chrono_types::make_shared<ChTriangleMeshShape>();
+          chrono_types::make_shared<ChVisualShapeTriangleMesh>();
       chassis_trimesh_shape->SetMesh(m_chassis_trimesh);
       chassis_trimesh_shape->SetMutable(false);
 
@@ -228,7 +228,7 @@ void Ch_8DOF_vehicle::Initialize(ChSystem *sys) {
       chassis_mmesh->LoadWavefrontMesh(m_chassis_mesh, false, true);
 
       auto chassis_trimesh_shape =
-          chrono_types::make_shared<ChTriangleMeshShape>();
+          chrono_types::make_shared<ChVisualShapeTriangleMesh>();
       chassis_trimesh_shape->SetMesh(chassis_mmesh);
       chassis_trimesh_shape->SetMutable(false);
 
@@ -259,13 +259,13 @@ void Ch_8DOF_vehicle::Initialize(ChSystem *sys) {
         if (preload_vis_mesh) {
           if (i % 2 == 0) {
             auto wheel_trimesh_shape =
-                chrono_types::make_shared<ChTriangleMeshShape>();
+                chrono_types::make_shared<ChVisualShapeTriangleMesh>();
             wheel_trimesh_shape->SetMesh(m_wheel_trimesh_l);
             wheel_trimesh_shape->SetMutable(false);
             wheels_body[i]->AddVisualShape(wheel_trimesh_shape);
           } else {
             auto wheel_trimesh_shape =
-                chrono_types::make_shared<ChTriangleMeshShape>();
+                chrono_types::make_shared<ChVisualShapeTriangleMesh>();
             wheel_trimesh_shape->SetMesh(m_wheel_trimesh_r);
             wheel_trimesh_shape->SetMutable(false);
             wheels_body[i]->AddVisualShape(wheel_trimesh_shape);
@@ -281,7 +281,7 @@ void Ch_8DOF_vehicle::Initialize(ChSystem *sys) {
                                  wheels_offset_rot[i]);
 
           auto wheel_trimesh_shape =
-              chrono_types::make_shared<ChTriangleMeshShape>();
+              chrono_types::make_shared<ChVisualShapeTriangleMesh>();
           wheel_trimesh_shape->SetMesh(wheel_mmesh);
           wheel_trimesh_shape->SetMutable(false);
           wheels_body[i]->AddVisualShape(wheel_trimesh_shape);

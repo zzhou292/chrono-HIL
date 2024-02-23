@@ -29,28 +29,23 @@
 #include "chrono_vehicle/terrain/RigidTerrain.h"
 #include "chrono_vehicle/wheeled_vehicle/ChWheeledVehicleVisualSystemIrrlicht.h"
 
-#include "chrono_models/vehicle/rccar/RCCar.h"
+#include "chrono_models/vehicle/artcar/ARTcar.h"
 
 #include "chrono_thirdparty/filesystem/path.h"
 
 #include "chrono_hil/timer/ChRealtimeCumulative.h"
 
+#include "chrono/physics/ChBodyEasy.h"
+#include "chrono/physics/ChInertiaUtils.h"
+#include "chrono/utils/ChUtilsGeometry.h"
 #include "chrono_sensor/ChSensorManager.h"
 #include "chrono_sensor/filters/ChFilterVisualize.h"
 #include "chrono_sensor/sensors/ChCameraSensor.h"
 
-#include "chrono/assets/ChTriangleMeshShape.h"
-#include "chrono/physics/ChBodyEasy.h"
-#include "chrono/physics/ChInertiaUtils.h"
-#include "chrono/utils/ChUtilsGeometry.h"
-#include "chrono_hil/network/udp/ChBoostInStreamer.h"
-#include "chrono_hil/network/udp/ChBoostOutStreamer.h"
-
-
 using namespace chrono;
 using namespace chrono::irrlicht;
 using namespace chrono::vehicle;
-using namespace chrono::vehicle::rccar;
+using namespace chrono::vehicle::artcar;
 using namespace chrono::hil;
 using namespace chrono::sensor;
 using namespace chrono::geometry;
@@ -97,7 +92,7 @@ double t_end = 1000;
 double render_step_size = 1.0 / 50; // FPS = 50
 
 // Output directories
-const std::string out_dir = GetChronoOutputPath() + "RCCar";
+const std::string out_dir = GetChronoOutputPath() + "ARTCar";
 const std::string pov_dir = out_dir + "/POVRAY";
 
 // Debug logging
@@ -124,7 +119,7 @@ int main(int argc, char *argv[]) {
   // --------------
 
   // Create the Sedan vehicle, set parameters, and initialize
-  RCCar my_rccar;
+  ARTcar my_rccar;
   my_rccar.SetContactMethod(contact_method);
   my_rccar.SetChassisCollisionType(chassis_collision_type);
   my_rccar.SetChassisFixed(false);
@@ -313,7 +308,7 @@ int main(int argc, char *argv[]) {
   while (true) {
     double time = my_rccar.GetSystem()->GetChTime();
 
-    if(step_number%50==0){
+    if (step_number % 50 == 0) {
       in_streamer.Synchronize();
 
       std::vector<float> recv_data = in_streamer.GetRecvData();
@@ -322,7 +317,7 @@ int main(int argc, char *argv[]) {
       driver_inputs.m_throttle = recv_data[1];
       driver_inputs.m_braking = recv_data[2];
     }
-  
+
     manager->Update();
 
     if (step_number == 0) {
@@ -355,7 +350,6 @@ int main(int argc, char *argv[]) {
       GetLog() << "Time = " << time << "\n\n";
       my_rccar.DebugLog(OUT_SPRINGS | OUT_SHOCKS | OUT_CONSTRAINTS);
     }
-
 
     // Update modules (process inputs from other modules)
     terrain.Synchronize(time);
@@ -405,13 +399,7 @@ void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
     body->SetMass(mass * cone_density);
     body->SetInertiaXX(cone_density * principal_I);
 
-    body->GetCollisionModel()->ClearModel();
-    body->GetCollisionModel()->AddTriangleMesh(rock_mat, mesh, false, false,
-                                               VNULL, ChMatrix33<>(1), 0.005);
-    body->GetCollisionModel()->BuildModel();
-    body->SetCollide(true);
-
-    auto mesh_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+    auto mesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     mesh_shape->SetMesh(mesh);
     mesh_shape->SetBackfaceCull(true);
     body->AddVisualShape(mesh_shape);

@@ -42,7 +42,7 @@ using namespace chrono::hil;
 using boost::asio::ip::address;
 using boost::asio::ip::udp;
 
-#define PORT_IN 1210
+#define PORT_IN 1204
 #define PORT_OUT 1209
 #define IP_OUT "127.0.0.1"
 
@@ -52,7 +52,7 @@ int main(int argc, char *argv[]) {
   SDLDriver.Initialize();
 
   SDLDriver.SetJoystickConfigFile(std::string(STRINGIFY(HIL_DATA_DIR)) +
-                                  std::string("/joystick/controller_G29.json"));
+                                  std::string("/joystick/controller_G27.json"));
   SDLDriver.AddCallbackButtons(6);
   float gear =
       0.f; // 0.0 for park, 1.0 for forward, 2.0 for backward, 3.0 for neutral
@@ -97,11 +97,11 @@ int main(int argc, char *argv[]) {
     // data in
     in_streamer.Synchronize();
 
-    recv_data = in_streamer.GetRecvData();
-    // for (int i = 0; i < recv_data.size(); i++) {
-    //   std::cout << recv_data[i] << ",";
-    // }
-    // std::cout << std::endl;
+    // recv_data = in_streamer.GetRecvData();
+    //  for (int i = 0; i < recv_data.size(); i++) {
+    //    std::cout << recv_data[i] << ",";
+    //  }
+    //  std::cout << std::endl;
 
     if (SDLDriver.Synchronize() == 1) {
       break;

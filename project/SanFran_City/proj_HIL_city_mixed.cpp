@@ -423,7 +423,7 @@ int main(int argc, char *argv[]) {
         false, true);
     audi_mesh->Transform(ChVector<>(0, 0, 0),
                          ChMatrix33<>(1)); // scale to a different size
-    auto audi_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+    auto audi_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     audi_shape->SetMesh(audi_mesh);
     audi_shape->SetName("Windowless Audi");
     audi_shape->SetMutable(false);
@@ -463,7 +463,8 @@ int main(int argc, char *argv[]) {
     lwm_mesh->Transform(ChVector<>(0, 0, 0),
                         ChMatrix33<>(1)); // scale to a different size
 
-    auto lwm_mirror_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+    auto lwm_mirror_shape =
+    chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     lwm_mirror_shape->SetMesh(lwm_mesh);
     lwm_mirror_shape->SetName("Windowless Audi");
     lwm_mirror_shape->GetMaterials()[0] = mirror_mat;
@@ -904,7 +905,7 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
 
               // if not road, only add visualization with new pos,rot,scale
               auto trimesh_shape =
-                  chrono_types::make_shared<ChTriangleMeshShape>();
+                  chrono_types::make_shared<ChVisualShapeTriangleMesh>();
               trimesh_shape->SetMesh(mmesh);
               trimesh_shape->SetName(mesh_name);
               trimesh_shape->SetScale(scale);

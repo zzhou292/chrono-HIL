@@ -15,6 +15,7 @@
 #include "chrono/core/ChStream.h"
 #include "chrono/utils/ChFilters.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
+#include <chrono>
 
 #include "chrono/utils/ChFilters.h"
 
@@ -48,7 +49,34 @@
 #include "chrono_synchrono/utils/SynDataLoader.h"
 #include "chrono_synchrono/utils/SynLog.h"
 
+#include "chrono_ros/handlers/sensor/ChROSCameraHandler.h"
+#include "chrono_sensor/ChSensorManager.h"
+#include "chrono_sensor/filters/ChFilterAccess.h"
+#include "chrono_sensor/filters/ChFilterLidarNoise.h"
+#include "chrono_sensor/filters/ChFilterLidarReduce.h"
+#include "chrono_sensor/filters/ChFilterPCfromDepth.h"
+#include "chrono_sensor/filters/ChFilterSave.h"
+#include "chrono_sensor/filters/ChFilterSavePtCloud.h"
+#include "chrono_sensor/filters/ChFilterVisualize.h"
+#include "chrono_sensor/filters/ChFilterVisualizePointCloud.h"
+#include "chrono_sensor/sensors/ChCameraSensor.h"
+#include "chrono_sensor/sensors/ChLidarSensor.h"
+
+#include "chrono_ros/ChROSManager.h"
+#include "chrono_ros/handlers/ChROSBodyHandler.h"
+#include "chrono_ros/handlers/ChROSClockHandler.h"
+#include "chrono_ros/handlers/ChROSTFHandler.h"
+#include "chrono_ros/handlers/sensor/ChROSLidarHandler.h"
 #include "chrono_thirdparty/cxxopts/ChCLI.h"
+
+// Quality of Service
+#include <fastdds/dds/domain/qos/DomainParticipantQos.hpp>
+#include <fastdds/rtps/transport/UDPv4TransportDescriptor.h>
+#include <fastdds/rtps/transport/UDPv6TransportDescriptor.h>
+
+using namespace eprosima::fastdds::dds;
+using namespace eprosima::fastdds::rtps;
+using namespace eprosima::fastrtps::rtps;
 
 using namespace chrono;
 using namespace chrono::irrlicht;
@@ -58,6 +86,8 @@ using namespace chrono::geometry;
 using namespace chrono::hil;
 using namespace chrono::utils;
 using namespace chrono::synchrono;
+using namespace chrono::sensor;
+using namespace chrono::ros;
 
 const double RADS_2_RPM = 30 / CH_C_PI;
 const double RADS_2_DEG = 180 / CH_C_PI;
@@ -75,14 +105,14 @@ const double G_2_MPSS = 9.81;
 #define IP_OUT_2 "90.0.0.120"
 #else
 #define PORT_IN 1209
-#define PORT_OUT 1210
-#define PORT_OUT_2 1211
+#define PORT_OUT 1204
+#define PORT_OUT_2 9092
 #define IP_OUT "127.0.0.1"
 #define IP_OUT_2 "127.0.0.1"
 #endif
 
-bool render = false;
-ChVector<> driver_eyepoint(-0.3, 0.4, 0.98);
+bool render = true;
+ChVector<> driver_eyepoint(-0.45, 0.4, 0.98);
 
 // =============================================================================
 
@@ -95,7 +125,7 @@ ChContactMethod contact_method = ChContactMethod::SMC;
 
 // Simulation step sizes
 double step_size = 1e-3;
-double tire_step_size = 1e-5;
+double tire_step_size = 1e-6;
 
 // Simulation end time
 double t_end = 1000;
@@ -113,6 +143,8 @@ int main(int argc, char *argv[]) {
 
   const int node_id = cli.GetAsType<int>("node_id");
   const int num_nodes = cli.GetAsType<int>("num_nodes");
+  const std::vector<std::string> ip_list =
+      cli.GetAsType<std::vector<std::string>>("ip");
 
   std::cout << "id:" << node_id << std::endl;
   std::cout << "num:" << num_nodes << std::endl;
@@ -122,7 +154,23 @@ int main(int argc, char *argv[]) {
   // -----------------------
   // Create SynChronoManager
   // -----------------------
-  auto communicator = chrono_types::make_shared<SynDDSCommunicator>(node_id);
+  // Use UDP4
+  DomainParticipantQos qos;
+  qos.name("/syn/node/" + std::to_string(node_id) + ".0");
+  qos.transport().user_transports.push_back(
+      std::make_shared<UDPv4TransportDescriptor>());
+
+  qos.transport().use_builtin_transports = false;
+  qos.wire_protocol().builtin.avoid_builtin_multicast = false;
+
+  // Set the initialPeersList
+  for (const auto &ip : ip_list) {
+    Locator_t locator;
+    locator.kind = LOCATOR_KIND_UDPv4;
+    IPLocator::setIPv4(locator, ip);
+    qos.wire_protocol().builtin.initialPeersList.push_back(locator);
+  }
+  auto communicator = chrono_types::make_shared<SynDDSCommunicator>(qos);
   SynChronoManager syn_manager(node_id, num_nodes, communicator);
 
   // Change SynChronoManager settings
@@ -150,12 +198,12 @@ int main(int argc, char *argv[]) {
   // Create the Sedan vehicle, set parameters, and initialize
   WheeledVehicle my_vehicle(vehicle_filename, ChContactMethod::SMC);
   auto ego_chassis = my_vehicle.GetChassis();
+  my_vehicle.SetCollisionSystemType(ChCollisionSystem::Type::BULLET);
   my_vehicle.Initialize(ChCoordsys<>(initLoc, initRot));
   my_vehicle.GetChassis()->SetFixed(false);
 
   auto engine = ReadEngineJSON(engine_filename);
-  std::shared_ptr<ChTransmission> transmission =
-      ReadTransmissionJSON(transmission_filename);
+  auto transmission = ReadTransmissionJSON(transmission_filename);
   auto powertrain =
       chrono_types::make_shared<ChPowertrainAssembly>(engine, transmission);
   my_vehicle.InitializePowertrain(powertrain);
@@ -199,31 +247,12 @@ int main(int argc, char *argv[]) {
 
   patch = terrain.AddPatch(patch_mat, CSYSNORM,
                            std::string(STRINGIFY(HIL_DATA_DIR)) +
-                               "/Environments/nads/newnads/terrain.obj");
-
-  patch->SetColor(ChColor(0.8f, 0.8f, 0.5f));
+                               "/Environments/nads/newnads/terrain.obj",
+                           true, 0, true);
 
   terrain.Initialize();
 
-  // add vis mesh
-  auto terrain_mesh = chrono_types::make_shared<ChTriangleMeshConnected>();
-  terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
-                                      "/Environments/nads/newnads/terrain.obj",
-                                  true, true);
-  terrain_mesh->Transform(ChVector<>(0, 0, 0),
-                          ChMatrix33<>(1)); // scale to a different size
-  auto terrain_shape = chrono_types::make_shared<ChTriangleMeshShape>();
-  terrain_shape->SetMesh(terrain_mesh);
-  terrain_shape->SetName("terrain");
-  terrain_shape->SetMutable(false);
-
-  auto terrain_body = chrono_types::make_shared<ChBody>();
-  terrain_body->SetPos({0, 0, -.01});
-  // terrain_body->SetRot(Q_from_AngX(CH_C_PI_2));
-  terrain_body->AddVisualShape(terrain_shape);
-  terrain_body->SetBodyFixed(true);
-  terrain_body->SetCollide(false);
-  my_vehicle.GetSystem()->Add(terrain_body);
+  // ====================================================
 
   // ------------------------
   // Create a Irrlicht vis
@@ -238,6 +267,96 @@ int main(int argc, char *argv[]) {
   vis->AddSkyBox();
   vis->AddLogo();
   vis->AttachVehicle(&my_vehicle);
+
+  // ---------------------------------
+  // Add sensor manager and simulation
+  // ---------------------------------
+
+  auto manager =
+      chrono_types::make_shared<ChSensorManager>(my_vehicle.GetSystem());
+  Background b;
+  b.mode = BackgroundMode::ENVIRONMENT_MAP; // GRADIENT
+  b.env_tex =
+      std::string(STRINGIFY(HIL_DATA_DIR)) + ("/Environments/sky_2_4k.hdr");
+  manager->scene->SetBackground(b);
+  float brightness = 1.5f;
+  manager->scene->AddPointLight({0, 0, 10000},
+                                {brightness, brightness, brightness}, 100000);
+  manager->scene->SetAmbientLight({.1, .1, .1});
+  manager->scene->SetSceneEpsilon(1e-3);
+  manager->scene->EnableDynamicOrigin(true);
+  manager->scene->SetOriginOffsetThreshold(500.f);
+
+  // camera at driver's eye location for Audi
+  auto driver_cam = chrono_types::make_shared<ChCameraSensor>(
+      my_vehicle.GetChassisBody(), // body camera is attached to
+      30,                          // update rate in Hz
+      chrono::ChFrame<double>({0.54, .381, 1.04},
+                              Q_from_AngAxis(0, {0, 1, 0})), // offset pose
+      1280,                                                  // image width
+      720,                                                   // image height
+      3.14 / 1.5,                                            // fov
+      2);
+
+  driver_cam->SetName("DriverCam");
+  driver_cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
+      1280, 720, "Camera1", false));
+  driver_cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
+  manager->AddSensor(driver_cam);
+
+  int horizontal_samples = 512;
+  int vertical_samples = 256;
+
+  auto lidar = chrono_types::make_shared<ChLidarSensor>(
+      my_vehicle.GetChassisBody(), // body lidar is attached to
+      15,                          // scanning rate in Hz
+      chrono::ChFrame<double>({4.0, 0.0, 0.0},
+                              Q_from_AngAxis(0, {0, 1, 0})), // offset pose
+      horizontal_samples,   // number of horizontal samples
+      vertical_samples,     // number of vertical channels
+      (float)(2 * CH_C_PI), // horizontal field of view
+      (float)CH_C_PI / 6, (float)-CH_C_PI / 720, 35.0f // vertical field of view
+  );
+  lidar->SetName("LIDAR_TOP");
+  lidar->PushFilter(chrono_types::make_shared<ChFilterDIAccess>());
+  lidar->PushFilter(chrono_types::make_shared<ChFilterPCfromDepth>());
+  lidar->PushFilter(chrono_types::make_shared<ChFilterXYZIAccess>());
+
+  // Renders the raw lidar data
+  lidar->PushFilter(chrono_types::make_shared<ChFilterVisualizePointCloud>(
+      640, 480, 2, "Lidar Point Cloud"));
+
+  manager->AddSensor(lidar);
+
+  // Create ROS Manager
+  auto ros_manager = chrono_types::make_shared<ChROSManager>();
+
+  // Create a publisher for the simulation clock
+  // The clock automatically publishes on every tick and on topic /clock
+  auto clock_handler = chrono_types::make_shared<ChROSClockHandler>();
+  ros_manager->RegisterHandler(clock_handler);
+
+  // Create the publisher for the lidar
+  auto lidar_topic_name = "/LIDAR_TOP";
+  auto lidar_handler =
+      chrono_types::make_shared<ChROSLidarHandler>(lidar, lidar_topic_name);
+  ros_manager->RegisterHandler(lidar_handler);
+
+  // Create the publisher for the camera
+  auto camera_rate = driver_cam->GetUpdateRate() / 2;
+  auto camera_topic_name = "~/output/camera/data/image";
+  auto camera_handler = chrono_types::make_shared<ChROSCameraHandler>(
+      camera_rate, driver_cam, camera_topic_name);
+  ros_manager->RegisterHandler(camera_handler);
+
+  // Create _one_ tf handler which we'll add transforms for all the sensors to
+  auto tf_handler = chrono_types::make_shared<ChROSTFHandler>(100);
+  tf_handler->AddSensor(driver_cam);
+  tf_handler->AddSensor(lidar);
+  ros_manager->RegisterHandler(tf_handler);
+
+  // Finally, initialize the ros manager
+  ros_manager->Initialize();
 
   // ------------------------
   // Create the driver system
@@ -271,33 +390,42 @@ int main(int argc, char *argv[]) {
   std::map<int, std::shared_ptr<SynWheeledVehicleAgent>> id_map;
 
   // declare a set of moving average filter for data smoothing
-  ChRunningAverage acc_x(100);
-  ChRunningAverage acc_y(100);
-  ChRunningAverage acc_z(100);
+  ChRunningAverage acc_x(250);
+  ChRunningAverage acc_y(250);
+  ChRunningAverage acc_z(250);
 
-  ChRunningAverage ang_vel_x(100);
-  ChRunningAverage ang_vel_y(100);
-  ChRunningAverage ang_vel_z(100);
+  ChRunningAverage ang_vel_x(250);
+  ChRunningAverage ang_vel_y(250);
+  ChRunningAverage ang_vel_z(250);
 
-  ChRunningAverage eyepoint_vel_x(100);
-  ChRunningAverage eyepoint_vel_y(100);
-  ChRunningAverage eyepoint_vel_z(100);
+  ChRunningAverage eyepoint_vel_x(250);
+  ChRunningAverage eyepoint_vel_y(250);
+  ChRunningAverage eyepoint_vel_z(250);
 
-  ChRunningAverage eyepoint_acc_x(100);
-  ChRunningAverage eyepoint_acc_y(100);
-  ChRunningAverage eyepoint_acc_z(100);
+  ChRunningAverage eyepoint_acc_x(250);
+  ChRunningAverage eyepoint_acc_y(250);
+  ChRunningAverage eyepoint_acc_z(250);
 
-  ChRunningAverage lf_wheel_vel(100);
-  ChRunningAverage rf_wheel_vel(100);
-  ChRunningAverage lr_wheel_vel(100);
-  ChRunningAverage rr_wheel_vel(100);
+  ChRunningAverage lf_wheel_vel(250);
+  ChRunningAverage rf_wheel_vel(250);
+  ChRunningAverage lr_wheel_vel(250);
+  ChRunningAverage rr_wheel_vel(250);
+
+  my_vehicle.EnableRealtime(false);
 
   // simulation loop
   while (vis->Run() && syn_manager.IsOk()) {
+    auto now = std::chrono::high_resolution_clock::now();
+    auto dds_time_stamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              now.time_since_epoch())
+                              .count();
     double time = my_vehicle.GetSystem()->GetChTime();
 
     ChVector<> pos = my_vehicle.GetChassis()->GetPos();
     ChQuaternion<> rot = my_vehicle.GetChassis()->GetRot();
+
+    if (!ros_manager->Update(time, step_size))
+      break;
 
     auto euler_rot = Q_to_Euler123(rot);
     euler_rot.x() = 0.0;
@@ -306,7 +434,6 @@ int main(int argc, char *argv[]) {
 
     attached_body->SetPos(pos);
     attached_body->SetRot(y_0_rot);
-
 #ifndef USENADS
     // End simulation
     if (time >= t_end)
@@ -512,7 +639,7 @@ int main(int argc, char *argv[]) {
 
     // obtain map
     if (num_nodes > 1) {
-      if (step_number % 10 == 0) {
+      if (step_number % 16 == 0) {
         int traf_id = 1;
         for (std::map<int, std::shared_ptr<SynWheeledVehicleAgent>>::iterator
                  it = id_map.begin();
@@ -520,22 +647,24 @@ int main(int argc, char *argv[]) {
 
           ChronoVehicleInfo info;
           info.vehicle_id = traf_id;
-          info.time_stamp = std::chrono::high_resolution_clock::now()
-                                .time_since_epoch()
-                                .count();
+          info.time_stamp = dds_time_stamp;
 
           ChVector<double> chassis_pos = it->second->GetZombiePos();
           ChVector<double> chassis_rot =
               it->second->GetZombieRot().Q_to_Euler123();
 
           // converting chassis
-          info.position[0] = chassis_pos.x() * M_2_FT;
-          info.position[1] = -chassis_pos.y() * M_2_FT;
-          info.position[2] = -chassis_pos.z() * M_2_FT;
+          info.position[0] =
+              -chassis_pos.y() * M_2_FT; // chassis_pos.x()*M_2_FT;
+          info.position[1] =
+              chassis_pos.x() * M_2_FT; //-chassis_pos.y()*M_2_FT;
+          info.position[2] =
+              chassis_pos.z() * M_2_FT; //-chassis_pos.z()*M_2_FT;
 
-          info.orientation[0] = chassis_rot.x();
-          info.orientation[1] = -chassis_rot.y();
-          info.orientation[2] = -chassis_rot.z();
+          info.orientation[0] = CH_C_PI - chassis_rot.x(); // chassis_rot.x();
+          info.orientation[1] = -chassis_rot.y();          //-chassis_rot.y();
+          info.orientation[2] =
+              CH_C_PI / 2.0 + chassis_rot.z(); //-chassis_rot.z();
 
           info.steering_angle =
               driver_inputs.m_steering * double(30.0 / 180.0) * CH_C_PI * 2;
@@ -544,8 +673,31 @@ int main(int argc, char *argv[]) {
           info.wheel_rotations[2] = 0.0;
           info.wheel_rotations[3] = 0.0;
 
-          boost_traffic_streamer.AddVehicleStruct(info);
+          boost_traffic_streamer.AddChronoVehicleInfo(info);
+          /*
+                          for(int j = 0; j < 4; j++){
+                              ChVector<long long> wheel_pos =
+             it->second->GetZombieWheelPos(j); ChVector<long long> wheel_rot =
+             it->second->GetZombieWheelRot(j).Q_to_Euler123();
+
+                              // converting wheels
+
+                              wheel_rot.y() = -wheel_rot.y();
+                              wheel_rot.z() = -wheel_rot.z();
+
+                              boost_traffic_streamer.AddLongLongVector(wheel_pos);
+                              boost_traffic_streamer.AddLongLongVector(wheel_rot);
+                          }
+                          */
+
           traf_id++;
+
+          // std::cout << info.vehicle_id <<", "<< info.time_stamp << ", " <<
+          // info.position[0]<<", "<<info.position[1] << ", " <<
+          // info.position[2] << ", " << info.orientation[0] << ",
+          // "<<info.orientation[1] << ", "<<info.orientation[2] << ", " <<
+          // info.steering_angle << ", " << info.wheel_rotations[0] <<
+          // std::endl;
         }
         boost_traffic_streamer.Synchronize();
       }
@@ -554,16 +706,15 @@ int main(int argc, char *argv[]) {
     // =======================
     // end data stream out section
     // =======================
-
-    // Update modules (process inputs from other modules)
-    terrain.Synchronize(time);
     my_vehicle.Synchronize(time, driver_inputs, terrain);
+    terrain.Synchronize(time);
     syn_manager.Synchronize(time); // Synchronize between nodes
-
-    // Advance simulation for one timestep for all modules
+    // Advance simulation for one time for all modules
     terrain.Advance(step_size);
     my_vehicle.Advance(step_size);
     vis->Advance(step_size);
+
+    manager->Update();
 
     // Increment frame number
     step_number++;
@@ -572,9 +723,9 @@ int main(int argc, char *argv[]) {
       realtime_timer.Reset();
     }
 
-    if (step_number % 10 == 0) {
-      realtime_timer.Spin(time);
-    }
+    // if (step_number % 10 == 0) {
+    realtime_timer.Spin(time);
+    //}
 
     if (step_number % 500 == 0) {
       std::chrono::high_resolution_clock::time_point end =
@@ -582,9 +733,12 @@ int main(int argc, char *argv[]) {
       std::chrono::duration<double> wall_time =
           std::chrono::duration_cast<std::chrono::duration<double>>(end -
                                                                     start);
-
       std::cout << "elapsed time = " << (wall_time.count()) / (time - last_time)
-                << ", t = " << time << "\n";
+                << ", t = " << time << ", gear = "
+                << gear
+                //<< ", Sp Frc Z = " << (eye_acc_z_filtered / G_2_MPSS)
+                << "\n";
+
       last_time = time;
       start = std::chrono::high_resolution_clock::now();
     }
@@ -596,6 +750,7 @@ int main(int argc, char *argv[]) {
       vis->Synchronize(time, driver_inputs);
     }
   }
+
   syn_manager.QuitSimulation();
   return 0;
 }
@@ -604,4 +759,6 @@ void AddCommandLineOptions(ChCLI &cli) {
   // DDS Specific
   cli.AddOption<int>("DDS", "d,node_id", "ID for this Node", "1");
   cli.AddOption<int>("DDS", "n,num_nodes", "Number of Nodes", "2");
+  cli.AddOption<std::vector<std::string>>(
+      "DDS", "ip", "IP Addresses for initialPeersList", "127.0.0.1");
 }

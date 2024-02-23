@@ -50,6 +50,15 @@
 
 #include "chrono_thirdparty/cxxopts/ChCLI.h"
 
+// Quality of Service
+#include <fastdds/dds/domain/qos/DomainParticipantQos.hpp>
+#include <fastdds/rtps/transport/UDPv4TransportDescriptor.h>
+#include <fastdds/rtps/transport/UDPv6TransportDescriptor.h>
+
+using namespace eprosima::fastdds::dds;
+using namespace eprosima::fastdds::rtps;
+using namespace eprosima::fastrtps::rtps;
+
 using namespace chrono;
 using namespace chrono::irrlicht;
 using namespace chrono::vehicle;
@@ -96,6 +105,8 @@ int main(int argc, char *argv[]) {
 
   const int node_id = cli.GetAsType<int>("node_id");
   const int num_nodes = cli.GetAsType<int>("num_nodes");
+  const std::vector<std::string> ip_list =
+      cli.GetAsType<std::vector<std::string>>("ip");
 
   std::cout << "id:" << node_id << std::endl;
   std::cout << "num:" << num_nodes << std::endl;
@@ -105,7 +116,23 @@ int main(int argc, char *argv[]) {
   // -----------------------
   // Create SynChronoManager
   // -----------------------
-  auto communicator = chrono_types::make_shared<SynDDSCommunicator>(node_id);
+  // Use UDP4
+  DomainParticipantQos qos;
+  qos.name("/syn/node/" + std::to_string(node_id) + ".0");
+  qos.transport().user_transports.push_back(
+      std::make_shared<UDPv4TransportDescriptor>());
+
+  qos.transport().use_builtin_transports = false;
+  qos.wire_protocol().builtin.avoid_builtin_multicast = false;
+
+  // Set the initialPeersList
+  for (const auto &ip : ip_list) {
+    Locator_t locator;
+    locator.kind = LOCATOR_KIND_UDPv4;
+    IPLocator::setIPv4(locator, ip);
+    qos.wire_protocol().builtin.initialPeersList.push_back(locator);
+  }
+  auto communicator = chrono_types::make_shared<SynDDSCommunicator>(qos);
   SynChronoManager syn_manager(node_id, num_nodes, communicator);
 
   // Change SynChronoManager settings
@@ -142,6 +169,7 @@ int main(int argc, char *argv[]) {
   } else if (node_id == 4) {
     initLoc = ChVector<>(-50.788, 98.647, 0.25);
   }
+  my_vehicle.SetCollisionSystemType(ChCollisionSystem::Type::BULLET);
   my_vehicle.Initialize(ChCoordsys<>(initLoc, initRot));
   my_vehicle.GetChassis()->SetFixed(false);
 
@@ -184,7 +212,7 @@ int main(int argc, char *argv[]) {
   auto path = ChBezierCurve::read(path_file, true);
 
   // lead_count
-  ChPathFollowerDriver driver(my_vehicle, path, "my_path", 10);
+  ChPathFollowerDriver driver(my_vehicle, path, "my_path", 3.0);
   driver.GetSteeringController().SetLookAheadDistance(2.0);
   driver.GetSteeringController().SetGains(1.0, 0, 0);
   driver.GetSpeedController().SetGains(0.6, 0.05, 0);
@@ -208,7 +236,7 @@ int main(int argc, char *argv[]) {
   patch->SetColor(ChColor(0.8f, 0.8f, 0.5f));
 
   terrain.Initialize();
-
+  std::cout << "tp1" << std::endl;
   // add vis mesh
   auto terrain_mesh = chrono_types::make_shared<ChTriangleMeshConnected>();
   terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
@@ -216,7 +244,7 @@ int main(int argc, char *argv[]) {
                                   true, true);
   terrain_mesh->Transform(ChVector<>(0, 0, 0),
                           ChMatrix33<>(1)); // scale to a different size
-  auto terrain_shape = chrono_types::make_shared<ChTriangleMeshShape>();
+  auto terrain_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   terrain_shape->SetMesh(terrain_mesh);
   terrain_shape->SetName("terrain");
   terrain_shape->SetMutable(false);
@@ -229,24 +257,6 @@ int main(int argc, char *argv[]) {
   terrain_body->SetCollide(false);
   my_vehicle.GetSystem()->Add(terrain_body);
 
-  // ------------------------
-  // Create a Irrlicht vis
-  // ------------------------
-  ChVector<> trackPoint(0.0, 0.0, 1.75);
-  int render_step = 20;
-  auto vis = chrono_types::make_shared<ChWheeledVehicleVisualSystemIrrlicht>();
-  vis->SetWindowTitle("NADS");
-  vis->SetChaseCamera(trackPoint, 6.0, 0.5);
-  vis->Initialize();
-  vis->AddLightDirectional();
-  vis->AddSkyBox();
-  vis->AddLogo();
-  vis->AttachVehicle(&my_vehicle);
-
-  // ------------------------
-  // Create the driver system
-  // ------------------------
-
   // ---------------
   // Simulation loop
   // ---------------
@@ -256,15 +266,10 @@ int main(int argc, char *argv[]) {
 
   my_vehicle.EnableRealtime(false);
 
-  ChRealtimeCumulative realtime_timer;
-  std::chrono::high_resolution_clock::time_point start =
-      std::chrono::high_resolution_clock::now();
-  double last_time = 0;
-
   DriverInputs driver_inputs = {0, 0, 0};
 
   // simulation loop
-  while (vis->Run() && syn_manager.IsOk()) {
+  while (syn_manager.IsOk()) {
     double time = my_vehicle.GetSystem()->GetChTime();
 
     ChVector<> pos = my_vehicle.GetChassis()->GetPos();
@@ -295,43 +300,14 @@ int main(int argc, char *argv[]) {
     syn_manager.Synchronize(time); // Synchronize between nodes
     terrain.Synchronize(time);
     my_vehicle.Synchronize(time, driver_inputs, terrain);
-    vis->Synchronize(time, driver_inputs);
 
     // Advance simulation for one timestep for all modules
     terrain.Advance(step_size);
     my_vehicle.Advance(step_size);
     driver.Advance(step_size);
-    vis->Advance(step_size);
 
     // Increment frame number
     step_number++;
-
-    if (step_number == 0) {
-      realtime_timer.Reset();
-    }
-
-    if (step_number % 10 == 0) {
-      realtime_timer.Spin(time);
-    }
-
-    if (step_number % 500 == 0) {
-      std::chrono::high_resolution_clock::time_point end =
-          std::chrono::high_resolution_clock::now();
-      std::chrono::duration<double> wall_time =
-          std::chrono::duration_cast<std::chrono::duration<double>>(end -
-                                                                    start);
-
-      std::cout << "elapsed time = " << (wall_time.count()) / (time - last_time)
-                << ", t = " << time << "\n";
-      last_time = time;
-      start = std::chrono::high_resolution_clock::now();
-    }
-
-    if (render == true && step_number % render_step == 0) {
-      vis->BeginScene();
-      vis->Render();
-      vis->EndScene();
-    }
   }
   syn_manager.QuitSimulation();
   return 0;
@@ -341,4 +317,6 @@ void AddCommandLineOptions(ChCLI &cli) {
   // DDS Specific
   cli.AddOption<int>("DDS", "d,node_id", "ID for this Node", "1");
   cli.AddOption<int>("DDS", "n,num_nodes", "Number of Nodes", "2");
+  cli.AddOption<std::vector<std::string>>(
+      "DDS", "ip", "IP Addresses for initialPeersList", "127.0.0.1");
 }
