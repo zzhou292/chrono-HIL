@@ -76,7 +76,7 @@ using namespace chrono::synchrono;
 using namespace chrono::hil;
 
 #define PORT_OUT 1209
-#define IP_OUT "128.104.188.63"
+#define IP_OUT "127.0.0.1"
 
 // -----------------------------------------------------------------------------
 // rad to RPM conversion parameters
@@ -925,7 +925,7 @@ int main(int argc, char *argv[]) {
     boost_streamer.AddData(driver_inputs.m_throttle);           // throttle data
     boost_streamer.AddData(driver_inputs.m_braking);            // brake data
     boost_streamer.AddData(driver_inputs.m_steering);           // steering data
-
+    std::cout << "lead_count:" << lead_count << std::endl;
     if (lead_count != 0) {
       // if lead count isn't 0, treat it as lead vehicle
       boost_streamer.AddData(lead_vec[0]->GetPos().x()); // lead vehicle x pos
