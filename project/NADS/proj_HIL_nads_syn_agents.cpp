@@ -211,12 +211,27 @@ int main(int argc, char *argv[]) {
                           "/Environments/nads/nads_path_5.txt";
   auto path = ChBezierCurve::read(path_file, true);
 
+  std::string path_file2 = std::string(STRINGIFY(HIL_DATA_DIR)) +
+                           "/Environments/nads/path_inner_5.txt";
+  auto path2 = ChBezierCurve::read(path_file2, false);
+
   // lead_count
-  ChPathFollowerDriver driver(my_vehicle, path, "my_path", 3.0);
-  driver.GetSteeringController().SetLookAheadDistance(2.0);
-  driver.GetSteeringController().SetGains(1.0, 0, 0);
-  driver.GetSpeedController().SetGains(0.6, 0.05, 0);
-  driver.Initialize();
+  std::shared_ptr<chrono::vehicle::ChPathFollowerDriver> driver;
+  std::shared_ptr<chrono::vehicle::ChPathFollowerDriver> driver2;
+
+  driver = chrono_types::make_shared<ChPathFollowerDriver>(my_vehicle, path,
+                                                           "my_path", 5.0);
+  driver->GetSteeringController().SetLookAheadDistance(2.0);
+  driver->GetSteeringController().SetGains(1.0, 0, 0);
+  driver->GetSpeedController().SetGains(0.6, 0.05, 0);
+  driver->Initialize();
+
+  driver2 = chrono_types::make_shared<ChPathFollowerDriver>(my_vehicle, path2,
+                                                            "my_path2", 5.0);
+  driver2->GetSteeringController().SetLookAheadDistance(20.0);
+  driver2->GetSteeringController().SetGains(0.4, 0, 0);
+  driver2->GetSpeedController().SetGains(0.6, 0.05, 0);
+  driver2->Initialize();
 
   // Create the terrain
   RigidTerrain terrain(my_vehicle.GetSystem());
@@ -290,7 +305,11 @@ int main(int argc, char *argv[]) {
 #endif
 
     // Get driver inputs
-    driver_inputs = driver.GetInputs();
+    driver_inputs = driver->GetInputs();
+
+    if (node_id == 4 && time > 15) {
+      driver_inputs = driver2->GetInputs();
+    }
 
     // =======================
     // end data stream out section
@@ -304,7 +323,10 @@ int main(int argc, char *argv[]) {
     // Advance simulation for one timestep for all modules
     terrain.Advance(step_size);
     my_vehicle.Advance(step_size);
-    driver.Advance(step_size);
+    driver->Advance(step_size);
+    if (node_id == 4) {
+      driver2->Advance(step_size);
+    }
 
     // Increment frame number
     step_number++;

@@ -50,6 +50,7 @@
 #include "chrono_synchrono/utils/SynLog.h"
 
 #include "chrono_ros/handlers/sensor/ChROSCameraHandler.h"
+
 #include "chrono_sensor/ChSensorManager.h"
 #include "chrono_sensor/filters/ChFilterAccess.h"
 #include "chrono_sensor/filters/ChFilterLidarNoise.h"
