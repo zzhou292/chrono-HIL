@@ -350,7 +350,7 @@ int main(int argc, char *argv[]) {
   auto status_topic_name = "/vehicle_status";
   auto status_handler =
       chrono_types::make_shared<ChROSDriverSignalInputHandler>(
-          vehicle_brake_signal, status_topic_name, 10);
+          vehicle_brake_signal, status_topic_name, 5);
   ros_manager->RegisterHandler(status_handler);
 
   std::cout << "test poin 2 " << std::endl;
