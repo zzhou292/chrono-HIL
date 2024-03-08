@@ -19,6 +19,7 @@
 
 #include "chrono/utils/ChFilters.h"
 
+#include "chrono_hil/driver/ChIDM_Follower.h"
 #include "chrono_vehicle/driver/ChPathFollowerDriver.h"
 
 #include "chrono_hil/timer/ChRealtimeCumulative.h"
@@ -87,6 +88,13 @@ double tire_step_size = 1e-6;
 
 // Simulation end time
 double t_end = 1000;
+
+// Unity dashboard streaming out
+const std::string UNITY_IP_OUT = "127.0.0.1";
+const int UNITY_PORT_OUT = 1209;
+
+// Conversion factors
+const double rads2rpm = 30 / CH_C_PI;
 
 // =============================================================================
 void AddCommandLineOptions(ChCLI &cli);
@@ -234,7 +242,7 @@ int main(int argc, char *argv[]) {
       5760,                                                  // image width
       1080,                                                  // image height
       3.14 / 1.5,                                            // fov
-      2);
+      1);
 
   driver_cam->SetName("DriverCam");
   driver_cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
@@ -254,6 +262,7 @@ int main(int argc, char *argv[]) {
   double last_time = 0;
 
   ChBoostInStreamer in_streamer(1214, 3);
+  ChBoostOutStreamer boost_streamer(UNITY_IP_OUT, UNITY_PORT_OUT);
 
   DriverInputs driver_inputs;
 
@@ -317,6 +326,25 @@ int main(int argc, char *argv[]) {
 
     // if (step_number % 10 == 0) {
     realtime_timer.Spin(time);
+
+    if (step_number % 50 == 0) {
+
+      // Stream out data
+      boost_streamer.AddData(my_vehicle.GetSystem()->GetChTime()); // sim time
+      boost_streamer.AddData(my_vehicle.GetSpeed() *
+                             MS_TO_MPH); // vehicle speed
+      boost_streamer.AddData(my_vehicle.GetEngine()->GetMotorSpeed() *
+                             rads2rpm); // RPM
+      boost_streamer.AddData(
+          my_vehicle.GetChassis()->GetPos().x()); // vehicle x pos
+      boost_streamer.AddData(
+          my_vehicle.GetChassis()->GetPos().y());       // vehicle y pos
+      boost_streamer.AddData(driver_inputs.m_throttle); // throttle data
+      boost_streamer.AddData(driver_inputs.m_braking);  // brake data
+      boost_streamer.AddData(driver_inputs.m_steering); // steering data
+
+      boost_streamer.Synchronize();
+    }
 
     if (SDLDriver.Synchronize() == 1) {
       break;
