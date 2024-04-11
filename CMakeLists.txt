@@ -126,6 +126,7 @@ if(MSVC)
 else()
     set(EXTRA_COMPILE_FLAGS "")
 endif()
+add_compile_options(-fPIC)
 
 #--------------------------------------------------------------
 # === 3 ===

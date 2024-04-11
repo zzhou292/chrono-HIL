@@ -49,8 +49,6 @@ set(EXT_LIBRARIES
 	ChronoEngine_hil
 )
 
-
-
 #--------------------------------------------------------------
 # Append to the parent's list of DLLs
 #--------------------------------------------------------------
@@ -63,6 +61,7 @@ set(ALL_DLLS "${ALL_DLLS}" PARENT_SCOPE)
 #--------------------------------------------------------------
 
 set(COMPILE_FLAGS ${CHRONO_CXX_FLAGS})
+
 
 # Disable some warnings triggered by Irrlicht (Windows only)
 #if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
@@ -82,11 +81,14 @@ foreach(PROGRAM ${DEMOS})
   add_executable(${PROGRAM}  "${PROGRAM}.cpp")
   source_group(""  FILES "${PROGRAM}.cpp")
   
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
   target_compile_definitions(${PROGRAM} PUBLIC "CHRONO_DATA_DIR=\"${CHRONO_DATA_DIR}\"") 
   target_compile_definitions(${PROGRAM} PUBLIC "PROJECTS_DATA_DIR=\"${PROJECTS_DATA_DIR}\"") 
   target_compile_options(${PROGRAM} PUBLIC ${CHRONO_CXX_FLAGS})
-  target_link_options(${PROGRAM} PUBLIC ${CH_LINKERFLAG_SHARED})
+  target_link_options(${PROGRAM} PUBLIC ${CHRONO_LINKER_FLAGS})
+  
 
-	target_link_libraries(${PROGRAM} ${EXT_LIBRARIES} ${CHRONO_LIBRARIES} "-L/usr/local/cuda/lib64")# -lcudart")
+  target_link_libraries(${PROGRAM} ${CHRONO_LIBRARIES}  ${EXT_LIBRARIES} "-L/usr/local/cuda/lib64")
+	#target_link_libraries(${PROGRAM} ${EXT_LIBRARIES} ${CHRONO_LIBRARIES} "-L/usr/local/cuda/lib64")# -lcudart")
 
 endforeach(PROGRAM)
