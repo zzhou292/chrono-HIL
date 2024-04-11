@@ -19,7 +19,7 @@
 
 using namespace chrono;
 using namespace chrono::vehicle;
-using namespace chrono::geometry;
+
 
 Ch_8DOF_vehicle::Ch_8DOF_vehicle(std::string rom_json, float z_plane,
                                  float step_size, bool vis) {
@@ -64,13 +64,13 @@ Ch_8DOF_vehicle::Ch_8DOF_vehicle(std::string rom_json, float z_plane,
   prev_tire_rotation[2] = 0.0;
   prev_tire_rotation[3] = 0.0;
 
-  wheels_offset_rot[0].Q_from_Euler123(
+  wheels_offset_rot[0].SetFromCardanAnglesXYZ(
       vehicle::ReadVectorJSON(d["Wheel_Rot_0"]));
-  wheels_offset_rot[1].Q_from_Euler123(
+  wheels_offset_rot[1].SetFromCardanAnglesXYZ(
       vehicle::ReadVectorJSON(d["Wheel_Rot_1"]));
-  wheels_offset_rot[2].Q_from_Euler123(
+  wheels_offset_rot[2].SetFromCardanAnglesXYZ(
       vehicle::ReadVectorJSON(d["Wheel_Rot_2"]));
-  wheels_offset_rot[3].Q_from_Euler123(
+  wheels_offset_rot[3].SetFromCardanAnglesXYZ(
       vehicle::ReadVectorJSON(d["Wheel_Rot_3"]));
 
   rapidjson::Document d_dyn;
@@ -157,13 +157,13 @@ Ch_8DOF_vehicle::Ch_8DOF_vehicle(
   prev_tire_rotation[2] = 0.0;
   prev_tire_rotation[3] = 0.0;
 
-  wheels_offset_rot[0].Q_from_Euler123(
+  wheels_offset_rot[0].SetFromCardanAnglesXYZ(
       vehicle::ReadVectorJSON(d["Wheel_Rot_0"]));
-  wheels_offset_rot[1].Q_from_Euler123(
+  wheels_offset_rot[1].SetFromCardanAnglesXYZ(
       vehicle::ReadVectorJSON(d["Wheel_Rot_1"]));
-  wheels_offset_rot[2].Q_from_Euler123(
+  wheels_offset_rot[2].SetFromCardanAnglesXYZ(
       vehicle::ReadVectorJSON(d["Wheel_Rot_2"]));
-  wheels_offset_rot[3].Q_from_Euler123(
+  wheels_offset_rot[3].SetFromCardanAnglesXYZ(
       vehicle::ReadVectorJSON(d["Wheel_Rot_3"]));
 
   rapidjson::Document d_dyn;
@@ -209,9 +209,9 @@ void Ch_8DOF_vehicle::Initialize(ChSystem *sys) {
 
     chassis_body = chrono_types::make_shared<ChBodyAuxRef>();
 
-    chassis_body->SetCollide(false);
+    chassis_body->EnableCollision(false);
 
-    chassis_body->SetBodyFixed(true);
+    chassis_body->SetFixed(true);
 
     // initializing visualization assets for chassis
     if (preload_vis_mesh == true) {
@@ -238,22 +238,22 @@ void Ch_8DOF_vehicle::Initialize(ChSystem *sys) {
     sys->AddBody(chassis_body);
 
     // Express relative frame in global
-    ChFrame<> X_LF = chassis_body->GetFrame_REF_to_abs() *
+    ChFrame<> X_LF = chassis_body->GetFrameRefToAbs() *
                      ChFrame<>(wheels_offset_pos[0], wheels_offset_rot[0]);
-    ChFrame<> X_RF = chassis_body->GetFrame_REF_to_abs() *
+    ChFrame<> X_RF = chassis_body->GetFrameRefToAbs() *
                      ChFrame<>(wheels_offset_pos[1], wheels_offset_rot[1]);
-    ChFrame<> X_LR = chassis_body->GetFrame_REF_to_abs() *
+    ChFrame<> X_LR = chassis_body->GetFrameRefToAbs() *
                      ChFrame<>(wheels_offset_pos[2], wheels_offset_rot[2]);
-    ChFrame<> X_RR = chassis_body->GetFrame_REF_to_abs() *
+    ChFrame<> X_RR = chassis_body->GetFrameRefToAbs() *
                      ChFrame<>(wheels_offset_pos[3], wheels_offset_rot[3]);
 
     // initializing visualization assets for wheels
     for (int i = 0; i < 4; i++) {
 
       wheels_body[i] = chrono_types::make_shared<ChBodyAuxRef>();
-      wheels_body[i]->SetCollide(false);
+      wheels_body[i]->EnableCollision(false);
 
-      wheels_body[i]->SetBodyFixed(true);
+      wheels_body[i]->SetFixed(true);
 
       if (enable_vis) {
         if (preload_vis_mesh) {
@@ -277,7 +277,7 @@ void Ch_8DOF_vehicle::Initialize(ChSystem *sys) {
           wheel_mmesh->LoadWavefrontMesh(m_wheel_mesh, false, true);
 
           // transform all wheel rotations, to the meshes
-          wheel_mmesh->Transform(ChVector<>(0.0, 0.0, 0.0),
+          wheel_mmesh->Transform(ChVector3<>(0.0, 0.0, 0.0),
                                  wheels_offset_rot[i]);
 
           auto wheel_trimesh_shape =
@@ -379,14 +379,14 @@ void Ch_8DOF_vehicle::Advance(float time, DriverInputs inputs) {
       // steering
       if (i == 0 || i == 1) {
         ChQuaternion<> temp = ChQuaternion<>(1, 0, 0, 0);
-        temp.Q_from_AngZ(inputs.m_steering * veh1_param.m_maxSteer);
+        temp.SetFromAngleZ(inputs.m_steering * veh1_param.m_maxSteer);
         rot_operator = rot_operator * temp;
       }
 
       // 3 - take into tire rotation
       // apply to all tires
       ChQuaternion<> temp(1, 0, 0, 0);
-      temp.Q_from_AngY(prev_tire_rotation[i] +
+      temp.SetFromAngleY(prev_tire_rotation[i] +
                        veh1_param.m_step * tirelf_st.m_omega);
       prev_tire_rotation[i] =
           prev_tire_rotation[i] + veh1_param.m_step * tirelf_st.m_omega;
@@ -417,18 +417,18 @@ void Ch_8DOF_vehicle::Advance(float time, DriverInputs inputs) {
   }
 }
 
-ChVector<> Ch_8DOF_vehicle::GetPos() {
-  return ChVector<>(veh1_st.m_x, veh1_st.m_y, rom_z_plane);
+ChVector3<> Ch_8DOF_vehicle::GetPos() {
+  return ChVector3<>(veh1_st.m_x, veh1_st.m_y, rom_z_plane);
 }
 
 ChQuaternion<> Ch_8DOF_vehicle::GetRot() {
   ChQuaternion<> ret_rot = ChQuaternion<>(1, 0, 0, 0);
-  ret_rot.Q_from_Euler123(ChVector<>(veh1_st.m_phi, 0, veh1_st.m_psi));
+  ret_rot.SetFromCardanAnglesXYZ(ChVector3<>(veh1_st.m_phi, 0, veh1_st.m_psi));
   return ret_rot;
 }
 
-ChVector<> Ch_8DOF_vehicle::GetVel() {
-  return ChVector<>(veh1_st.m_u, veh1_st.m_v, 0.0);
+ChVector3<> Ch_8DOF_vehicle::GetVel() {
+  return ChVector3<>(veh1_st.m_u, veh1_st.m_v, 0.0);
 }
 
 float Ch_8DOF_vehicle::GetStepSize() { return veh1_param.m_step; }
@@ -437,7 +437,7 @@ std::shared_ptr<ChBodyAuxRef> Ch_8DOF_vehicle::GetChassisBody() {
   return chassis_body;
 }
 
-void Ch_8DOF_vehicle::SetInitPos(ChVector<> init_pos) {
+void Ch_8DOF_vehicle::SetInitPos(ChVector3<> init_pos) {
   veh1_st.m_x = init_pos.x();
   veh1_st.m_y = init_pos.y();
 }

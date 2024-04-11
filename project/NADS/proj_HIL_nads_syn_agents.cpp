@@ -12,7 +12,6 @@
 // Authors: Jason Zhou
 // =============================================================================
 
-#include "chrono/core/ChStream.h"
 #include "chrono/utils/ChFilters.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
 
@@ -63,24 +62,23 @@ using namespace chrono;
 using namespace chrono::irrlicht;
 using namespace chrono::vehicle;
 using namespace chrono::vehicle::sedan;
-using namespace chrono::geometry;
 using namespace chrono::hil;
 using namespace chrono::utils;
 using namespace chrono::synchrono;
 
-const double RADS_2_RPM = 30 / CH_C_PI;
-const double RADS_2_DEG = 180 / CH_C_PI;
+const double RADS_2_RPM = 30 / CH_PI;
+const double RADS_2_DEG = 180 / CH_PI;
 const double MS_2_MPH = 2.2369;
 const double M_2_FT = 3.28084;
 const double G_2_MPSS = 9.81;
 
 bool render = false;
-ChVector<> driver_eyepoint(-0.3, 0.4, 0.98);
+ChVector3<> driver_eyepoint(-0.3, 0.4, 0.98);
 
 // =============================================================================
 
 // Initial vehicle location and orientation
-ChVector<> initLoc(-91.788, 98.647, 0.25);
+ChVector3<> initLoc(-91.788, 98.647, 0.25);
 ChQuaternion<> initRot(1, 0, 0, 0);
 
 // Contact method
@@ -161,13 +159,13 @@ int main(int argc, char *argv[]) {
   WheeledVehicle my_vehicle(vehicle_filename, ChContactMethod::SMC);
   auto ego_chassis = my_vehicle.GetChassis();
   if (node_id == 1) {
-    initLoc = ChVector<>(-80.788, 98.647, 0.25);
+    initLoc = ChVector3<>(-80.788, 98.647, 0.25);
   } else if (node_id == 2) {
-    initLoc = ChVector<>(-70.788, 98.647, 0.25);
+    initLoc = ChVector3<>(-70.788, 98.647, 0.25);
   } else if (node_id == 3) {
-    initLoc = ChVector<>(-60.788, 98.647, 0.25);
+    initLoc = ChVector3<>(-60.788, 98.647, 0.25);
   } else if (node_id == 4) {
-    initLoc = ChVector<>(-50.788, 98.647, 0.25);
+    initLoc = ChVector3<>(-50.788, 98.647, 0.25);
   }
   my_vehicle.SetCollisionSystemType(ChCollisionSystem::Type::BULLET);
   my_vehicle.Initialize(ChCoordsys<>(initLoc, initRot));
@@ -195,8 +193,8 @@ int main(int argc, char *argv[]) {
 
   auto attached_body = std::make_shared<ChBody>();
   my_vehicle.GetSystem()->AddBody(attached_body);
-  attached_body->SetCollide(false);
-  attached_body->SetBodyFixed(true);
+  attached_body->EnableCollision(false);
+  attached_body->SetFixed(true);
 
   // Add vehicle as an agent and initialize SynChronoManager
   std::string zombie_filename =
@@ -209,7 +207,7 @@ int main(int argc, char *argv[]) {
   // Create the driver
   std::string path_file = std::string(STRINGIFY(HIL_DATA_DIR)) +
                           "/Environments/nads/nads_path_5.txt";
-  auto path = ChBezierCurve::read(path_file, true);
+  auto path = ChBezierCurve::Read(path_file, true);
 
   // lead_count
   std::shared_ptr<chrono::vehicle::ChPathFollowerDriver> driver;
@@ -244,7 +242,7 @@ int main(int argc, char *argv[]) {
   terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
                                       "/Environments/nads/newnads/terrain.obj",
                                   true, true);
-  terrain_mesh->Transform(ChVector<>(0, 0, 0),
+  terrain_mesh->Transform(ChVector3<>(0, 0, 0),
                           ChMatrix33<>(1)); // scale to a different size
   auto terrain_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   terrain_shape->SetMesh(terrain_mesh);
@@ -253,10 +251,10 @@ int main(int argc, char *argv[]) {
 
   auto terrain_body = chrono_types::make_shared<ChBody>();
   terrain_body->SetPos({0, 0, -.01});
-  // terrain_body->SetRot(Q_from_AngX(CH_C_PI_2));
+  // terrain_body->SetRot(Q_from_AngX(CH_PI_2));
   terrain_body->AddVisualShape(terrain_shape);
-  terrain_body->SetBodyFixed(true);
-  terrain_body->SetCollide(false);
+  terrain_body->SetFixed(true);
+  terrain_body->EnableCollision(false);
   my_vehicle.GetSystem()->Add(terrain_body);
 
   // ---------------
@@ -274,13 +272,15 @@ int main(int argc, char *argv[]) {
   while (syn_manager.IsOk()) {
     double time = my_vehicle.GetSystem()->GetChTime();
 
-    ChVector<> pos = my_vehicle.GetChassis()->GetPos();
+    ChVector3<> pos = my_vehicle.GetChassis()->GetPos();
     ChQuaternion<> rot = my_vehicle.GetChassis()->GetRot();
 
-    auto euler_rot = Q_to_Euler123(rot);
+    auto euler_rot = rot.GetCardanAnglesXYZ();
     euler_rot.x() = 0.0;
     euler_rot.y() = 0.0;
-    auto y_0_rot = Q_from_Euler123(euler_rot);
+    ChQuaternion<> y_0_rot;
+
+    y_0_rot.SetFromCardanAnglesXYZ(euler_rot);
 
     attached_body->SetPos(pos);
     attached_body->SetRot(y_0_rot);

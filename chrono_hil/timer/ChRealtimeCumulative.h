@@ -40,7 +40,7 @@ public:
   /// function will spin in place until real time catches up with the simulation
   /// time, thus providing soft real-time capabilities.
   void Spin(double sim_time) {
-    while (GetTimeSecondsIntermediate() < sim_time) {
+    while (GetTimeSeconds() < sim_time) {
     }
   }
 

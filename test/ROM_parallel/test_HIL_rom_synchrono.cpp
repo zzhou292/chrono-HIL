@@ -108,11 +108,11 @@ float heartbeat = 1e-2;
 // Time interval between two render frames
 double render_step_size = 1.0 / 50; // FPS = 50
 
-ChVector<> initLoc(0, 0, 1.4);
+ChVector3<> initLoc(0, 0, 1.4);
 ChQuaternion<> initRot(1, 0, 0, 0);
 
 // Point on chassis tracked by the camera
-ChVector<> trackPoint(0.0, 0.0, 1.75);
+ChVector3<> trackPoint(0.0, 0.0, 1.75);
 
 // =============================================================================
 // Quality of Service
@@ -148,7 +148,7 @@ int main(int argc, char *argv[]) {
       cli.GetAsType<std::vector<std::string>>("ip");
 
   ChSystemSMC my_system;
-  my_system.Set_G_acc(ChVector<>(0.0, 0.0, -9.81));
+  my_system.Set_G_acc(ChVector3<>(0.0, 0.0, -9.81));
   int num_rom = 20;
 
   vehicle::SetDataPath(CHRONO_DATA_DIR + std::string("vehicle/"));
@@ -194,7 +194,7 @@ int main(int argc, char *argv[]) {
 
   auto ego_chassis = my_vehicle.GetChassis();
   my_vehicle.Initialize(ChCoordsys<>(
-      initLoc + ChVector<>(0.0, 0.0 + (num_rom + (node_id - 1)) * 3.0, 0.25),
+      initLoc + ChVector3<>(0.0, 0.0 + (num_rom + (node_id - 1)) * 3.0, 0.25),
       initRot));
   my_vehicle.GetChassis()->SetFixed(false);
   auto powertrain = ReadPowertrainJSON(powertrain_filename);
@@ -253,9 +253,9 @@ int main(int argc, char *argv[]) {
   // Create a body that camera attaches to
   auto attached_body = std::make_shared<ChBody>();
   my_system.AddBody(attached_body);
-  attached_body->SetPos(ChVector<>(0.0, 0.0, 0.0));
-  attached_body->SetCollide(false);
-  attached_body->SetBodyFixed(true);
+  attached_body->SetPos(ChVector3<>(0.0, 0.0, 0.0));
+  attached_body->EnableCollision(false);
+  attached_body->SetFixed(true);
 
   // Create camera
   // Create the camera sensor
@@ -272,8 +272,8 @@ int main(int argc, char *argv[]) {
       attached_body, // body camera is attached to
       25,            // update rate in Hz
       chrono::ChFrame<double>(
-          ChVector<>(20.0, -13.0, 18.0),
-          Q_from_Euler123(ChVector<>(0.0, C_PI / 8, C_PI / 2))), // offset pose
+          ChVector3<>(20.0, -13.0, 18.0),
+          SetFromCardanAnglesXYZ(ChVector3<>(0.0, C_PI / 8, C_PI / 2))), // offset pose
       1920,                                                      // image width
       1080,                                                      // image
       1.608f, 1); // fov, lag, exposure cam->SetName("Camera Sensor");
@@ -393,9 +393,9 @@ int main(int argc, char *argv[]) {
 
       for (int i = 0; i < num_rom; i++) {
         zombie_vec[i]->Update(
-            ChVector<>(recv_data[0 + i * 11], recv_data[1 + i * 11],
+            ChVector3<>(recv_data[0 + i * 11], recv_data[1 + i * 11],
                        recv_data[2 + i * 11]),
-            ChVector<>(recv_data[3 + i * 11], recv_data[4 + i * 11],
+            ChVector3<>(recv_data[3 + i * 11], recv_data[4 + i * 11],
                        recv_data[5 + i * 11]),
             recv_data[6 + i * 11], recv_data[7 + i * 11], recv_data[8 + i * 11],
             recv_data[9 + i * 11], recv_data[10 + i * 11]);

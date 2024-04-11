@@ -98,18 +98,18 @@ float heartbeat = 1e-2;
 // Time interval between two render frames
 double render_step_size = 1.0 / 50; // FPS = 50
 
-ChVector<> initLoc(0, 0, 1.4);
+ChVector3<> initLoc(0, 0, 1.4);
 ChQuaternion<> initRot(1, 0, 0, 0);
 
 // Point on chassis tracked by the camera
-ChVector<> trackPoint(0.0, 0.0, 1.75);
+ChVector3<> trackPoint(0.0, 0.0, 1.75);
 
 // =====================================================
 
 int main(int argc, char *argv[]) {
 
   ChSystemSMC my_system;
-  my_system.Set_G_acc(ChVector<>(0.0, 0.0, -9.81));
+  my_system.Set_G_acc(ChVector3<>(0.0, 0.0, -9.81));
   int num_rom = 20;
 
   std::vector<std::shared_ptr<Ch_8DOF_vehicle>>
@@ -123,7 +123,7 @@ int main(int argc, char *argv[]) {
     std::shared_ptr<Ch_8DOF_vehicle> rom_veh =
         chrono_types::make_shared<Ch_8DOF_vehicle>(rom_json, init_height,
                                                    step_size);
-    rom_veh->SetInitPos(initLoc + ChVector<>(0.0, 0.0 + i * 3.0, init_height));
+    rom_veh->SetInitPos(initLoc + ChVector3<>(0.0, 0.0 + i * 3.0, init_height));
     rom_veh->SetInitRot(0.0);
     rom_veh->Initialize(&my_system);
     rom_vec.push_back(rom_veh);
@@ -151,9 +151,9 @@ int main(int argc, char *argv[]) {
   // Create a body that camera attaches to
   auto attached_body = std::make_shared<ChBody>();
   my_system.AddBody(attached_body);
-  attached_body->SetPos(ChVector<>(0.0, 0.0, 0.0));
-  attached_body->SetCollide(false);
-  attached_body->SetBodyFixed(true);
+  attached_body->SetPos(ChVector3<>(0.0, 0.0, 0.0));
+  attached_body->EnableCollision(false);
+  attached_body->SetFixed(true);
 
   // Set the time response for steering and throttle keyboard inputs.
   double steering_time = 1.0; // time to go from 0 to +1 (or from 0 to -1)
@@ -232,9 +232,9 @@ int main(int argc, char *argv[]) {
     if (step_number % 10 == 0) {
       // send data to chrono
       for (int i = 0; i < num_rom; i++) {
-        ChVector<> rom_pos = rom_vec[i]->GetPos();
+        ChVector3<> rom_pos = rom_vec[i]->GetPos();
         ChQuaternion<> rom_rot = rom_vec[i]->GetRot();
-        ChVector<> rom_rot_vec = rom_rot.Q_to_Euler123();
+        ChVector3<> rom_rot_vec = rom_rot.GetCardanAnglesXYZ();
         DriverInputs rom_inputs = rom_vec[i]->GetDriverInputs();
 
         data_to_send.push_back(rom_pos.x());

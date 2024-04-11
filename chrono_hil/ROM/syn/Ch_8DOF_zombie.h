@@ -20,7 +20,7 @@
 
 #include "../../ChApiHil.h"
 #include "chrono/core/ChQuaternion.h"
-#include "chrono/core/ChVector.h"
+#include "chrono/core/ChVector3.h"
 #include "chrono/physics/ChBodyAuxRef.h"
 #include "chrono/physics/ChSystem.h"
 #include "chrono_vehicle/ChSubsysDefs.h"
@@ -37,14 +37,14 @@ public:
 
   void Initialize(ChSystem *sys);
 
-  void Update(ChVector<> pos, ChVector<> rot, float steering, float tire_rot_0,
+  void Update(ChVector3<> pos, ChVector3<> rot, float steering, float tire_rot_0,
               float tire_rot_1, float tire_rot_2, float tire_rot_3);
 
-  void SetPos(ChVector<> pos);
+  void SetPos(ChVector3<> pos);
 
   void SetRot(float roll, float yaw);
 
-  ChVector<> GetPos();
+  ChVector3<> GetPos();
 
   ChQuaternion<> GetRot();
 
@@ -60,10 +60,10 @@ private:
   std::shared_ptr<ChBodyAuxRef> chassis_body;
   std::shared_ptr<ChBodyAuxRef> wheels_body[4];
 
-  ChVector<> wheels_offset_pos[4];
+  ChVector3<> wheels_offset_pos[4];
   ChQuaternion<> wheels_offset_rot[4];
 
-  ChVector<> rom_pos;
+  ChVector3<> rom_pos;
   ChQuaternion<> rom_rot;
 
   float tire_rotation[4];

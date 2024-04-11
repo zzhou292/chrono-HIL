@@ -17,7 +17,6 @@
 // =============================================================================
 
 #include "chrono/core/ChRealtimeStep.h"
-#include "chrono/core/ChStream.h"
 #include "chrono/utils/ChFilters.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
 
@@ -59,7 +58,7 @@ void ReverseButtonCallback();
 // =============================================================================
 
 // Initial vehicle location and orientation
-ChVector<> initLoc(0, 0, 0.5);
+ChVector3<> initLoc(0, 0, 0.5);
 ChQuaternion<> initRot(1, 0, 0, 0);
 
 enum DriverMode { DEFAULT, RECORD, PLAYBACK };
@@ -85,7 +84,7 @@ double terrainLength = 5000.0; // size in X direction
 double terrainWidth = 5000.0;  // size in Y direction
 
 // Point on chassis tracked by the camera
-ChVector<> trackPoint(0.0, 0.0, 1.75);
+ChVector3<> trackPoint(0.0, 0.0, 1.75);
 
 // Contact method
 ChContactMethod contact_method = ChContactMethod::SMC;
@@ -113,7 +112,7 @@ double debug_step_size = 1.0 / 1; // FPS = 1
 bool povray_output = false;
 
 // param
-const double RADS_2_RPM = 30 / CH_C_PI;
+const double RADS_2_RPM = 30 / CH_PI;
 const double MS_2_MPH = 2.2369;
 
 // read ip address and port from a json file
@@ -163,18 +162,18 @@ int main(int argc, char *argv[]) {
 
   switch (terrain_model) {
   case RigidTerrain::PatchType::BOX:
-    initLoc = ChVector<>(0, 0, 0.5);
+    initLoc = ChVector3<>(0, 0, 0.5);
     initRot = ChQuaternion<>(1, 0, 0, 0);
     break;
   case RigidTerrain::PatchType::MESH:
     // if long-distance curved highway mesh
     if (mesh_number == 0) {
-      initLoc = ChVector<>(0, -580, 1.5);
+      initLoc = ChVector3<>(0, -580, 1.5);
       initRot = ChQuaternion<>(1, 0, 0, 0);
-      initRot.Q_from_AngZ(CH_C_PI / 2);
+      initRot.SetFromAngleZ(CH_PI / 2);
     } else if (mesh_number == 1) {
       // if default test obj terrain
-      initLoc = ChVector<>(0, 0, 0.5);
+      initLoc = ChVector3<>(0, 0, 0.5);
       initRot = ChQuaternion<>(1, 0, 0, 0);
     }
 
@@ -411,7 +410,7 @@ int main(int argc, char *argv[]) {
 
     // prepare for data output
     ChQuaternion<> dir = my_sedan.GetVehicle().GetRot();
-    ChVector<> euler_dir = dir.Q_to_Euler123();
+    ChVector3<> euler_dir = dir.GetCardanAnglesXYZ();
 
     float udp_float_arr[23];
 

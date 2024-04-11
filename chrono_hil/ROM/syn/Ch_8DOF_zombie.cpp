@@ -19,7 +19,6 @@
 
 using namespace chrono;
 using namespace chrono::vehicle;
-using namespace chrono::geometry;
 
 Ch_8DOF_zombie::Ch_8DOF_zombie(std::string rom_json, float z_plane, bool vis) {
 
@@ -61,25 +60,28 @@ Ch_8DOF_zombie::Ch_8DOF_zombie(std::string rom_json, float z_plane, bool vis) {
   wheels_offset_pos[2] = vehicle::ReadVectorJSON(d["Wheel_Pos_2"]);
   wheels_offset_pos[3] = vehicle::ReadVectorJSON(d["Wheel_Pos_3"]);
 
-  wheels_offset_rot[0].Q_from_Euler123(
+  wheels_offset_rot[0].SetFromCardanAnglesXYZ(
       vehicle::ReadVectorJSON(d["Wheel_Rot_0"]));
-  wheels_offset_rot[1].Q_from_Euler123(
+  wheels_offset_rot[1].SetFromCardanAnglesXYZ(
       vehicle::ReadVectorJSON(d["Wheel_Rot_1"]));
-  wheels_offset_rot[2].Q_from_Euler123(
+  wheels_offset_rot[2].SetFromCardanAnglesXYZ(
       vehicle::ReadVectorJSON(d["Wheel_Rot_2"]));
-  wheels_offset_rot[3].Q_from_Euler123(
+  wheels_offset_rot[3].SetFromCardanAnglesXYZ(
       vehicle::ReadVectorJSON(d["Wheel_Rot_3"]));
 }
 
-void Ch_8DOF_zombie::Update(ChVector<> pos, ChVector<> rot, float steering,
+void Ch_8DOF_zombie::Update(ChVector3<> pos, ChVector3<> rot, float steering,
                             float tire_rot_0, float tire_rot_1,
                             float tire_rot_2, float tire_rot_3) {
   if (enable_vis) {
     chassis_body->SetPos(pos);
 
-    chassis_body->SetRot(Q_from_Euler123(rot));
+    
+    ChQuaternion<> temp_rot(1,0,0,0);
+    temp_rot.SetFromCardanAnglesXYZ(rot);
+    chassis_body->SetRot(temp_rot);
 
-    ChFrame<> chassis_body_fr = ChFrame<>(pos, Q_from_Euler123(rot));
+    ChFrame<> chassis_body_fr = ChFrame<>(pos, temp_rot);
 
     tire_rotation[0] = tire_rot_0;
     tire_rotation[1] = tire_rot_1;
@@ -104,14 +106,14 @@ void Ch_8DOF_zombie::Update(ChVector<> pos, ChVector<> rot, float steering,
       // step two only applies to front wheels which need to take care of
       if (i == 0 || i == 1) {
         ChQuaternion<> temp = ChQuaternion<>(1, 0, 0, 0);
-        temp.Q_from_AngZ(steering * max_steer_angle);
+        temp.SetFromAngleZ(steering * max_steer_angle);
         rot_operator = rot_operator * temp;
       }
 
       // 3 - take into tire rotation
       // apply to all tires
       ChQuaternion<> temp(1, 0, 0, 0);
-      temp.Q_from_AngY(tire_rotation[i]);
+      temp.SetFromAngleY(tire_rotation[i]);
       rot_operator = rot_operator * temp;
 
       // final rotation step
@@ -141,9 +143,9 @@ void Ch_8DOF_zombie::Initialize(ChSystem *sys) {
 
     chassis_body = chrono_types::make_shared<ChBodyAuxRef>();
 
-    chassis_body->SetCollide(false);
+    chassis_body->EnableCollision(false);
 
-    chassis_body->SetBodyFixed(true);
+    chassis_body->SetFixed(true);
 
     auto chassis_mmesh = chrono_types::make_shared<ChTriangleMeshConnected>();
     chassis_mmesh->LoadWavefrontMesh(chassis_mesh, false, true);
@@ -157,27 +159,27 @@ void Ch_8DOF_zombie::Initialize(ChSystem *sys) {
     sys->AddBody(chassis_body);
 
     // Express relative frame in global
-    ChFrame<> X_LF = chassis_body->GetFrame_REF_to_abs() *
+    ChFrame<> X_LF = chassis_body->GetFrameRefToAbs() *
                      ChFrame<>(wheels_offset_pos[0], wheels_offset_rot[0]);
-    ChFrame<> X_RF = chassis_body->GetFrame_REF_to_abs() *
+    ChFrame<> X_RF = chassis_body->GetFrameRefToAbs() *
                      ChFrame<>(wheels_offset_pos[1], wheels_offset_rot[1]);
-    ChFrame<> X_LR = chassis_body->GetFrame_REF_to_abs() *
+    ChFrame<> X_LR = chassis_body->GetFrameRefToAbs() *
                      ChFrame<>(wheels_offset_pos[2], wheels_offset_rot[2]);
-    ChFrame<> X_RR = chassis_body->GetFrame_REF_to_abs() *
+    ChFrame<> X_RR = chassis_body->GetFrameRefToAbs() *
                      ChFrame<>(wheels_offset_pos[3], wheels_offset_rot[3]);
 
     for (int i = 0; i < 4; i++) {
       wheels_body[i] = chrono_types::make_shared<ChBodyAuxRef>();
-      wheels_body[i]->SetCollide(false);
+      wheels_body[i]->EnableCollision(false);
 
-      wheels_body[i]->SetBodyFixed(true);
+      wheels_body[i]->SetFixed(true);
 
       if (enable_vis) {
         auto wheel_mmesh = chrono_types::make_shared<ChTriangleMeshConnected>();
         wheel_mmesh->LoadWavefrontMesh(wheel_mesh, false, true);
 
         // transform all wheel rotations, to the meshes
-        wheel_mmesh->Transform(ChVector<>(0.0, 0.0, 0.0), wheels_offset_rot[i]);
+        wheel_mmesh->Transform(ChVector3<>(0.0, 0.0, 0.0), wheels_offset_rot[i]);
 
         auto wheel_trimesh_shape =
             chrono_types::make_shared<ChVisualShapeTriangleMesh>();
@@ -210,7 +212,7 @@ void Ch_8DOF_zombie::Initialize(ChSystem *sys) {
   }
 }
 
-ChVector<> Ch_8DOF_zombie::GetPos() { return rom_pos; }
+ChVector3<> Ch_8DOF_zombie::GetPos() { return rom_pos; }
 
 ChQuaternion<> Ch_8DOF_zombie::GetRot() { return rom_rot; }
 

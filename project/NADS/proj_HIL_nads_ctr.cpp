@@ -12,7 +12,6 @@
 // Authors: Jason Zhou
 // =============================================================================
 
-#include "chrono/core/ChStream.h"
 #include "chrono/utils/ChFilters.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
 #include "chrono_models/vehicle/sedan/Sedan.h"

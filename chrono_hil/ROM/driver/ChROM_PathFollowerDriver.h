@@ -22,7 +22,7 @@
 #include "../veh/Ch_8DOF_vehicle.h"
 #include "chrono/core/ChBezierCurve.h"
 #include "chrono/core/ChQuaternion.h"
-#include "chrono/core/ChVector.h"
+#include "chrono/core/ChVector3.h"
 #include "chrono/physics/ChBodyAuxRef.h"
 #include "chrono/physics/ChSystem.h"
 #include "chrono_vehicle/ChSubsysDefs.h"

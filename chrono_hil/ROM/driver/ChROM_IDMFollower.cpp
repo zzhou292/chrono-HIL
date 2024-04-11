@@ -64,7 +64,7 @@ void ChROM_IDMFollower::Synchronize(double time, double step,
 
   double s_star =
       temp_params[2] +
-      ChMax(0.0,
+      std::max(0.0,
             v * temp_params[1] +
                 (v * delta_v) / (2 * sqrt(temp_params[3] * temp_params[4])));
   double dv_dt = temp_params[3] * (1 - pow(v / temp_params[0], temp_params[5]) -
@@ -72,7 +72,7 @@ void ChROM_IDMFollower::Synchronize(double time, double step,
 
   // integrate intended acceleration into theoretical soeed
   thero_speed = thero_speed + dv_dt * step;
-  double v_ms = ChMax(0.0, thero_speed);
+  double v_ms = std::max(0.0, thero_speed);
 
   // to avoid large negative value during self drive
   if (thero_speed < 0) {

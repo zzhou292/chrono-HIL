@@ -17,7 +17,7 @@
 // =============================================================================
 
 #include "../../ChApiHil.h"
-#include "chrono/motion_functions/ChFunction_Recorder.h"
+#include "chrono/functions/ChFunctionInterp.h"
 #include "chrono_vehicle/utils/ChUtilsJSON.h"
 #include "rom_TMeasy.h"
 #include "rom_utils.h"
@@ -85,8 +85,8 @@ struct VehicleParam {
   std::vector<std::pair<double, double>> m_shift_points; ///< shift pair
   std::vector<double> m_fwd_gear_ratio;                  ///< forward gear ratio
   double m_rev_gear_ratio;                               ///< reverse gear ratio
-  ChFunction_Recorder map_0;                             ///< 0 throttle map
-  ChFunction_Recorder map_f;                             ///< full throttle map
+  ChFunctionInterp map_0;                             ///< 0 throttle map
+  ChFunctionInterp map_f;                             ///< full throttle map
 
   double m_step; ///< vehicle integration time step
 };

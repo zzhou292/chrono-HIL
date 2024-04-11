@@ -106,11 +106,11 @@ float heartbeat = 1e-2;
 // Time interval between two render frames
 double render_step_size = 1.0 / 50; // FPS = 50
 
-ChVector<> initLoc(0, 0, 1.4);
+ChVector3<> initLoc(0, 0, 1.4);
 ChQuaternion<> initRot(1, 0, 0, 0);
 
 // Point on chassis tracked by the camera
-ChVector<> trackPoint(0.0, 0.0, 1.75);
+ChVector3<> trackPoint(0.0, 0.0, 1.75);
 
 std::string demo_data_path = std::string(STRINGIFY(HIL_DATA_DIR));
 
@@ -118,8 +118,8 @@ std::string demo_data_path = std::string(STRINGIFY(HIL_DATA_DIR));
 
 struct rom_item {
   int type;
-  ChVector<double> pos;
-  ChVector<double> rot;
+  ChVector3<double> pos;
+  ChVector3<double> rot;
   int path;
   int ld_id;
   int idm_type;
@@ -140,7 +140,7 @@ int main(int argc, char *argv[]) {
   ReadRomInitFile(filename, rom_data);
 
   ChSystemSMC my_system;
-  my_system.Set_G_acc(ChVector<>(0.0, 0.0, -9.81));
+  my_system.Set_G_acc(ChVector3<>(0.0, 0.0, -9.81));
 
   std::string hmmwv_json =
       std::string(STRINGIFY(HIL_DATA_DIR)) + "/rom/hmmwv/hmmwv_rom.json";
@@ -324,9 +324,9 @@ int main(int argc, char *argv[]) {
     if (step_number % 20 == 0) {
       // send data to chrono
       for (int i = 0; i < rom_data.size(); i++) {
-        ChVector<> rom_pos = rom_vec[i]->GetPos();
+        ChVector3<> rom_pos = rom_vec[i]->GetPos();
         ChQuaternion<> rom_rot = rom_vec[i]->GetRot();
-        ChVector<> rom_rot_vec = rom_rot.Q_to_Euler123();
+        ChVector3<> rom_rot_vec = rom_rot.GetCardanAnglesXYZ();
         DriverInputs rom_inputs = rom_vec[i]->GetDriverInputs();
 
         data_to_send.push_back(rom_pos.x());
@@ -409,7 +409,7 @@ int main(int argc, char *argv[]) {
           output_buffer << input_record[j].m_steering << ",";
 
           ChQuaternion<> temp_qua = rom_vec[focus_idx[j]]->GetRot();
-          ChVector<> temp_vec = temp_qua.Q_to_Euler123();
+          ChVector3<> temp_vec = temp_qua.GetCardanAnglesXYZ();
           output_buffer << temp_vec.x() << ",";
           output_buffer << rom_vec[focus_idx[j]]->GetGear() << ",";
           output_buffer << rom_vec[focus_idx[j]]->GetMotorSpeed() << ",";
@@ -471,10 +471,10 @@ void ReadRomInitFile(std::string csv_filename, std::vector<rom_item> &rom_vec) {
     rom_item temp_struct;
     temp_struct.type = int(data[i][1]);
     temp_struct.pos =
-        ChVector<>(float(data[i][2]), float(data[i][3]), float(data[i][4]));
+        ChVector3<>(float(data[i][2]), float(data[i][3]), float(data[i][4]));
 
     temp_struct.rot =
-        ChVector<>(float(data[i][5]), float(data[i][6]), float(data[i][7]));
+        ChVector3<>(float(data[i][5]), float(data[i][6]), float(data[i][7]));
 
     temp_struct.path = int(data[i][8]);
     temp_struct.ld_id = int(data[i][9]);

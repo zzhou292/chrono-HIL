@@ -40,7 +40,7 @@ void ChBoostOutStreamer::AddData(float data_in) {
   m_stream_data.push_back(data_in);
 }
 
-void ChBoostOutStreamer::AddVector(ChVector<float> data_in) {
+void ChBoostOutStreamer::AddVector(ChVector3<float> data_in) {
   m_stream_data.push_back(data_in.x());
   m_stream_data.push_back(data_in.y());
   m_stream_data.push_back(data_in.z());
@@ -50,7 +50,7 @@ void ChBoostOutStreamer::AddLongLongData(long long data_in) {
   m_long_long_stream_data.push_back(data_in);
 }
 
-void ChBoostOutStreamer::AddLongLongVector(ChVector<long long> data_in) {
+void ChBoostOutStreamer::AddLongLongVector(ChVector3<long long> data_in) {
   m_long_long_stream_data.push_back(data_in.x());
   m_long_long_stream_data.push_back(data_in.y());
   m_long_long_stream_data.push_back(data_in.z());

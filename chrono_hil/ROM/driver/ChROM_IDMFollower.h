@@ -90,7 +90,7 @@ private:
   int update_step_resolution; // IDM parameter disturb frequencies (update each
                               // x steps)
 
-  ChVector<> previousPos;
+  ChVector3<> previousPos;
 
   // traveldistance
   double dist;

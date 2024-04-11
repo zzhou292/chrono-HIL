@@ -74,11 +74,11 @@ double tire_step_size = 1e-3;
 // Time interval between two render frames
 double render_step_size = 1.0 / 50; // FPS = 50
 
-ChVector<> initLoc(0, 0, 1.4);
+ChVector3<> initLoc(0, 0, 1.4);
 ChQuaternion<> initRot(1, 0, 0, 0);
 
 // Point on chassis tracked by the camera
-ChVector<> trackPoint(0.0, 0.0, 1.75);
+ChVector3<> trackPoint(0.0, 0.0, 1.75);
 
 int main(int argc, char *argv[]) {
   ChSystemSMC my_system;
@@ -106,8 +106,8 @@ int main(int argc, char *argv[]) {
   auto wheel_mmesh_r = chrono_types::make_shared<ChTriangleMeshConnected>();
   wheel_mmesh_r->LoadWavefrontMesh(wheel_mesh_obj, false, true);
   ChQuaternion<> mmesh_rot(1, 0, 0, 0);
-  mmesh_rot.Q_from_AngZ(C_PI);
-  wheel_mmesh_r->Transform(ChVector<>(0.0, 0.0, 0.0), mmesh_rot);
+  mmesh_rot.SetFromAngleZ(C_PI);
+  wheel_mmesh_r->Transform(ChVector3<>(0.0, 0.0, 0.0), mmesh_rot);
 
   for (int i = 0; i < num_rom; i++) {
     std::shared_ptr<Ch_8DOF_vehicle> rom_veh =
@@ -119,7 +119,7 @@ int main(int argc, char *argv[]) {
     //     chrono_types::make_shared<Ch_8DOF_vehicle>(rom_json, init_height,
     //                                                step_size, true);
 
-    rom_veh->SetInitPos(initLoc + ChVector<>(0.0, 0.0 + i * 2.0, init_height));
+    rom_veh->SetInitPos(initLoc + ChVector3<>(0.0, 0.0 + i * 2.0, init_height));
     rom_veh->SetInitRot(0.0);
     rom_veh->Initialize(&my_system);
     rom_vec.push_back(rom_veh);
@@ -147,9 +147,9 @@ int main(int argc, char *argv[]) {
   // Create a body that camera attaches to
   auto attached_body = std::make_shared<ChBody>();
   my_system.AddBody(attached_body);
-  attached_body->SetPos(ChVector<>(0.0, 0.0, 0.0));
-  attached_body->SetCollide(false);
-  attached_body->SetBodyFixed(true);
+  attached_body->SetPos(ChVector3<>(0.0, 0.0, 0.0));
+  attached_body->EnableCollision(false);
+  attached_body->SetFixed(true);
 
   // Create camera
   // Create the camera sensor
@@ -166,8 +166,8 @@ int main(int argc, char *argv[]) {
       attached_body, // body camera is attached to
       35,            // update rate in Hz
       chrono::ChFrame<double>(
-          ChVector<>(20.0, -35.0, 1.0),
-          Q_from_Euler123(ChVector<>(0.0, 0.0, C_PI / 2))), // offset pose
+          ChVector3<>(20.0, -35.0, 1.0),
+          SetFromCardanAnglesXYZ(ChVector3<>(0.0, 0.0, C_PI / 2))), // offset pose
       1920,                                                 // image width
       1080,                                                 // image
       1.608f, 1); // fov, lag, exposure cam->SetName("Camera Sensor");

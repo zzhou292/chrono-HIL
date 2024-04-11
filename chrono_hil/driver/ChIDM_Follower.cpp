@@ -52,7 +52,7 @@ void ChIDMFollower::Synchronize(double time, double step, double lead_distance,
   double delta_v = v - lead_speed;
   double s_star =
       behavior_data[2] +
-      ChMax(0.0, v * behavior_data[1] +
+      std::max(0.0, v * behavior_data[1] +
                      (v * delta_v) /
                          (2 * sqrt(behavior_data[3] * behavior_data[4])));
   double dv_dt =
@@ -61,7 +61,7 @@ void ChIDMFollower::Synchronize(double time, double step, double lead_distance,
 
   // integrate intended acceleration into theoretical soeed
   thero_speed = thero_speed + dv_dt * step;
-  double v_ms = ChMax(0.0, thero_speed);
+  double v_ms = std::max(0.0, thero_speed);
 
   // to avoid large negative value during self drive
   if (thero_speed < 0) {

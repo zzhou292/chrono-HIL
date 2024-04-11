@@ -17,7 +17,6 @@
 //
 // =============================================================================
 
-#include "chrono/core/ChStream.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
 
 #include "chrono_models/vehicle/hmmwv/HMMWV.h"
@@ -61,7 +60,6 @@
 #include "chrono_vehicle/utils/ChUtilsJSON.h"
 
 using namespace chrono;
-using namespace chrono::geometry;
 using namespace chrono::vehicle;
 using namespace chrono::sensor;
 using namespace chrono::synchrono;
@@ -70,20 +68,20 @@ using namespace chrono::hil;
 // -----------------------------------------------------------------------------
 // rad to RPM conversion parameters
 // -----------------------------------------------------------------------------
-const double rads2rpm = 30 / CH_C_PI;
+const double rads2rpm = 30 / CH_PI;
 
 // -----------------------------------------------------------------------------
 // Vehicle parameters
 // -----------------------------------------------------------------------------
 
 // Initial vehicle location and orientation
-ChVector<> initLoc(5011.5, -445, 100.75); // near mile marker
+ChVector3<> initLoc(5011.5, -445, 100.75); // near mile marker
 
-ChQuaternion<> initRot = Q_from_AngZ(-CH_C_PI_2);
+ChQuaternion<> initRot = SetFromAngleZ(-CH_PI_2);
 
-ChVector<> driver_eye(-.3, .4, .98);
+ChVector3<> driver_eye(-.3, .4, .98);
 
-ChQuaternion<> driver_view_direction = Q_from_AngAxis(0, {1, 0, 0});
+ChQuaternion<> driver_view_direction = SetFromAngleAxis(0, {1, 0, 0});
 
 enum DriverMode { HUMAN, AUTONOMOUS };
 DriverMode driver_mode = AUTONOMOUS;
@@ -108,7 +106,7 @@ double terrainLength = 40000.0; // size in X direction
 double terrainWidth = 40000.0;  // size in Y direction
 
 // Point on chassis tracked by the camera
-ChVector<> trackPoint(0.0, 0.0, 1.75);
+ChVector3<> trackPoint(0.0, 0.0, 1.75);
 
 // Contact method
 ChContactMethod contact_method = ChContactMethod::SMC;
@@ -191,18 +189,18 @@ std::ofstream buttonstream;
 
 // Fog parameters
 bool fog_enabled = false;
-ChVector<float> fog_color = {.8, .8, .8};
+ChVector3<float> fog_color = {.8, .8, .8};
 float fog_distance = 2000.0;
 
 // mirrors position and rotations
-ChVector<> mirror_rearview_pos = {0.0, 0.0, 0.0};
+ChVector3<> mirror_rearview_pos = {0.0, 0.0, 0.0};
 ChQuaternion<> mirror_rearview_rot = {1.0, 0.0, 0.0, 0.0};
-ChVector<> mirror_wingleft_pos = {0.0, 0.0, 0.0};
+ChVector3<> mirror_wingleft_pos = {0.0, 0.0, 0.0};
 ChQuaternion<> mirror_wingleft_rot = {1.0, 0.0, 0.0, 0.0};
-ChVector<> mirror_wingright_pos = {0.0, 0.0, 0.0};
+ChVector3<> mirror_wingright_pos = {0.0, 0.0, 0.0};
 ChQuaternion<> mirror_wingright_rot = {1.0, 0.0, 0.0, 0.0};
 
-ChVector<> arrived_sign_pos = {0.0, 0.0, 0.0};
+ChVector3<> arrived_sign_pos = {0.0, 0.0, 0.0};
 ChQuaternion<> arrived_sign_rot = {1.0, 0.0, 0.0, 0.0};
 
 // benchmarking
@@ -218,7 +216,7 @@ int num_dummy = 0;   // number of dummy vehicles
 int num_dynamic = 0; // number of dynamic vehicles
 int lead_count = 0;
 // Dummies
-std::vector<ChVector<>> dummy_pos;
+std::vector<ChVector3<>> dummy_pos;
 std::vector<float> dummy_cruise_speed;
 std::vector<int> dummy_lane; // 0 for inner, 1 for outer
 // 0 for no control(constant speed), 1 for distance control, 2 for time control
@@ -232,10 +230,10 @@ std::vector<int>
 std::vector<double>
     dummy_dist; // since dummy vehicle do not have a tracker, we need to track
                 // the distance of the dummy vehicle
-std::vector<ChVector<>> dummy_prev_pos;
+std::vector<ChVector3<>> dummy_prev_pos;
 
 // Dynamic Leaders
-std::vector<ChVector<>> dynamic_pos;
+std::vector<ChVector3<>> dynamic_pos;
 std::vector<float> dynamic_cruise_speed;
 std::vector<int> dynamic_lane; // 0 for inner, 1 for outer
 // 0 for no control(constant speed), 1 for distance control, 2 for time control
@@ -258,7 +256,7 @@ std::string joystick_filename;
 
 // distance variable
 float IG_dist = 0;
-ChVector<> IG_prev_pos;
+ChVector3<> IG_prev_pos;
 
 // driver global variables
 // TODO: maybe there is a better way to handle this
@@ -315,14 +313,14 @@ void IrrDashUpdate(
     std::chrono::time_point<std::chrono::high_resolution_clock> t0,
     ChWheeledVehicleVisualSystemIrrlicht &app, ChWheeledVehicle &vehicle,
     std::shared_ptr<chrono::vehicle::ChChassis> ego_chassis,
-    DriverMode driver_mode, float &IG_dist, ChVector<> &IG_prev_pos,
+    DriverMode driver_mode, float &IG_dist, ChVector3<> &IG_prev_pos,
     bool &IG_started_driving);
 
 // helper function to update dummy vehicles
 void UpdateDummy(std::shared_ptr<ChBodyAuxRef> dummy_vehicle,
                  std::shared_ptr<ChBezierCurve> curve, float dummy_speed,
                  float step_size, float z_offset, ChBezierCurveTracker tracker,
-                 double &dummy_dist, ChVector<> &dummy_prev_pos);
+                 double &dummy_dist, ChVector3<> &dummy_prev_pos);
 
 // compute desired speed for dynamic vehicles
 // based on json defined, time-dependent, piecewise speed data
@@ -380,7 +378,7 @@ void ReadParameterFiles() {
               vehicle::ReadVectorJSON(rearview_params["Position"]);
         }
         if (rearview_params.HasMember("Rotation")) {
-          mirror_rearview_rot = Q_from_Euler123(
+          mirror_rearview_rot = SetFromCardanAnglesXYZ(
               CH_C_DEG_TO_RAD *
               vehicle::ReadVectorJSON(rearview_params["Rotation"]));
         }
@@ -392,7 +390,7 @@ void ReadParameterFiles() {
               vehicle::ReadVectorJSON(wingleft_params["Position"]);
         }
         if (wingleft_params.HasMember("Rotation")) {
-          mirror_wingleft_rot = Q_from_Euler123(
+          mirror_wingleft_rot = SetFromCardanAnglesXYZ(
               CH_C_DEG_TO_RAD *
               vehicle::ReadVectorJSON(wingleft_params["Rotation"]));
         }
@@ -404,7 +402,7 @@ void ReadParameterFiles() {
               vehicle::ReadVectorJSON(wingright_params["Position"]);
         }
         if (wingright_params.HasMember("Rotation")) {
-          mirror_wingright_rot = Q_from_Euler123(
+          mirror_wingright_rot = SetFromCardanAnglesXYZ(
               CH_C_DEG_TO_RAD *
               vehicle::ReadVectorJSON(wingright_params["Rotation"]));
         }
@@ -454,7 +452,7 @@ void ReadParameterFiles() {
             vehicle::ReadVectorJSON(arrived_sign_params["Position"]);
       }
       if (arrived_sign_params.HasMember("Rotation")) {
-        arrived_sign_rot = Q_from_Euler123(
+        arrived_sign_rot = SetFromCardanAnglesXYZ(
             CH_C_DEG_TO_RAD *
             vehicle::ReadVectorJSON(arrived_sign_params["Rotation"]));
       }
@@ -813,7 +811,7 @@ int main(int argc, char *argv[]) {
       demo_data_path +
           "/Environments/Iowa/vehicles/audi_chassis_windowless_2.obj",
       false, true);
-  audi_mesh->Transform(ChVector<>(0, 0, 0),
+  audi_mesh->Transform(ChVector3<>(0, 0, 0),
                        ChMatrix33<>(1)); // scale to a different size
   auto audi_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   audi_shape->SetMesh(audi_mesh);
@@ -827,7 +825,7 @@ int main(int argc, char *argv[]) {
   mirror_mesh->LoadWavefrontMesh(
       demo_data_path + "/Environments/Iowa/vehicles/audi_rearview_mirror.obj",
       false, true);
-  mirror_mesh->Transform(ChVector<>(0, 0, 0),
+  mirror_mesh->Transform(ChVector3<>(0, 0, 0),
                          ChMatrix33<>(1)); // scale to a different size
 
   auto mirror_mat = chrono_types::make_shared<ChVisualMaterial>();
@@ -851,7 +849,7 @@ int main(int argc, char *argv[]) {
   lwm_mesh->LoadWavefrontMesh(
       demo_data_path + "/Environments/Iowa/vehicles/audi_left_wing_mirror.obj",
       false, true);
-  lwm_mesh->Transform(ChVector<>(0, 0, 0),
+  lwm_mesh->Transform(ChVector3<>(0, 0, 0),
                       ChMatrix33<>(1)); // scale to a different size
 
   auto lwm_mirror_shape =
@@ -868,7 +866,7 @@ int main(int argc, char *argv[]) {
   rwm_mesh->LoadWavefrontMesh(
       demo_data_path + "/Environments/Iowa/vehicles/audi_right_wing_mirror.obj",
       false, true);
-  rwm_mesh->Transform(ChVector<>(0, 0, 0),
+  rwm_mesh->Transform(ChVector3<>(0, 0, 0),
                       ChMatrix33<>(1)); // scale to a different size
 
   auto rwm_mirror_shape =
@@ -888,7 +886,7 @@ int main(int argc, char *argv[]) {
         vehicle.GetSystem(), vehicle_file);
     auto lead_powertrain = ReadPowertrainJSON(powertrain_file);
     // lead_vehicle->Initialize(ChCoordsys<>(dynamic_pos[i] +
-    // initRot.Rotate(ChVector<>(lead_heading * (i + 1), 0, 0)), initRot));
+    // initRot.Rotate(ChVector3<>(lead_heading * (i + 1), 0, 0)), initRot));
     lead_vehicle->Initialize(ChCoordsys<>(dynamic_pos[i], initRot));
     lead_vehicle->GetChassis()->SetFixed(false);
     lead_vehicle->SetChassisVisualizationType(chassis_vis_type);
@@ -917,11 +915,11 @@ int main(int argc, char *argv[]) {
   minfo.Y = 2e7f;
   auto patch_mat = minfo.CreateMaterial(contact_method);
 
-  ChVector<> normal = ChVector<>({0, 0, 1});
-  ChVector<> up = normal.GetNormalized();
-  ChVector<> lateral = Vcross(up, ChWorldFrame::Forward());
+  ChVector3<> normal = ChVector3<>({0, 0, 1});
+  ChVector3<> up = normal.GetNormalized();
+  ChVector3<> lateral = Vcross(up, ChWorldFrame::Forward());
   lateral.Normalize();
-  ChVector<> forward = Vcross(lateral, up);
+  ChVector3<> forward = Vcross(lateral, up);
   ChMatrix33<> rot;
   rot.Set_A_axis(forward, lateral, up);
 
@@ -967,7 +965,7 @@ int main(int argc, char *argv[]) {
   std::vector<ChBezierCurveTracker>
       tracker_vec; // bezier curve tracker for dummy's path following
                    // functionality
-  std::vector<ChVector<>> dummy_start;
+  std::vector<ChVector3<>> dummy_start;
 
   // tracker objects initialization
   for (int i = 0; i < num_dummy; i++) {
@@ -982,8 +980,8 @@ int main(int argc, char *argv[]) {
 
   // start location initialization
   for (int i = 0; i < num_dummy; i++) {
-    dummy_start.push_back(ChVector<>(0, 0, 0));
-    tracker_vec[i].calcClosestPoint(dummy_pos[i], dummy_start[i]);
+    dummy_start.push_back(ChVector3<>(0, 0, 0));
+    tracker_vec[i].CalcClosestPoint(dummy_pos[i], dummy_start[i]);
   }
 
   // vector which stores dummy vehicles
@@ -1018,18 +1016,18 @@ int main(int argc, char *argv[]) {
     if (i % 2 == 0) {
       // if the index%2 == 0, we initialize the dummy as a Nissan Patrol
       auto dummy = chrono_types::make_shared<ChBodyAuxRef>();
-      dummy->SetCollide(false);
-      dummy->SetPos(dummy_start[i] + ChVector<>(0, 0, dummy_patrol_z_offset));
-      dummy->SetBodyFixed(true);
+      dummy->EnableCollision(false);
+      dummy->SetPos(dummy_start[i] + ChVector3<>(0, 0, dummy_patrol_z_offset));
+      dummy->SetFixed(true);
       dummy->AddVisualShape(suv_trimesh_shape);
       vehicle.GetSystem()->AddBody(dummy);
       dummies.push_back(dummy);
     } else if (i % 2 == 1) {
       // if the index%2 == 1, we initialize the dummy as an audi
       auto dummy = chrono_types::make_shared<ChBodyAuxRef>();
-      dummy->SetCollide(false);
-      dummy->SetPos(dummy_start[i] + ChVector<>(0, 0, dummy_audi_z_offset));
-      dummy->SetBodyFixed(true);
+      dummy->EnableCollision(false);
+      dummy->SetPos(dummy_start[i] + ChVector3<>(0, 0, dummy_audi_z_offset));
+      dummy->SetFixed(true);
       dummy->AddVisualShape(audi_trimesh_shape);
       vehicle.GetSystem()->AddBody(dummy);
       dummies.push_back(dummy);
@@ -1217,10 +1215,10 @@ int main(int argc, char *argv[]) {
       vehicle.GetChassisBody(), // body camera is attached to
       10,                       // update rate in Hz
       chrono::ChFrame<double>(
-          {0, 0, 3000}, Q_from_AngAxis(CH_C_PI_2, {0, 1, 0})), // offset pose
+          {0, 0, 3000}, SetFromAngleAxis(CH_PI_2, {0, 1, 0})), // offset pose
       1920,                                                    // image width
       1080,                                                    // image height
-      CH_C_PI_4,
+      CH_PI_4,
       super_samples); // fov, lag, exposure
   cam->SetName("Camera Sensor");
   if (sensor_vis)
@@ -1258,7 +1256,7 @@ int main(int argc, char *argv[]) {
   double extra_time = 0.0;
   double last_sim_sync = 0;
 
-  ChVector<> prev_IG_pos;
+  ChVector3<> prev_IG_pos;
   bool IG_started_driving = false;
 
   auto t0 = high_resolution_clock::now();
@@ -1525,8 +1523,8 @@ int main(int argc, char *argv[]) {
         buffer << ego_chassis->GetPos().y() << ",";
         buffer << ego_chassis->GetSpeed() * MS_TO_MPH << ",";
         buffer << ego_chassis->GetBody()
-                      ->GetFrame_REF_to_abs()
-                      .GetPos_dtdt()
+                      ->GetFrameRefToAbs()
+                      .GetPosDt2()
                       .Length()
                << ",";
 
@@ -1539,9 +1537,9 @@ int main(int argc, char *argv[]) {
                   .Length() -
               AUDI_LENGTH;
           buffer << dist << ","; // Distance bumper-to-bumber
-          ChVector<> dist_v =
+          ChVector3<> dist_v =
               lead_vehicles[0]->GetChassis()->GetPos() - ego_chassis->GetPos();
-          ChVector<> car_xaxis =
+          ChVector3<> car_xaxis =
               ChMatrix33<>(ego_chassis->GetRot()).Get_A_Xaxis();
           double proj_dist = (dist_v ^ car_xaxis) - AUDI_LENGTH;
           buffer << proj_dist << ","; // Projected distance bumper-to-bumber
@@ -1550,13 +1548,13 @@ int main(int argc, char *argv[]) {
         // output mile marker
         buffer << IG_dist * M_TO_MILE << ",";
 
-        ChVector<> lane_0_target;
-        ChVector<> lane_1_target;
+        ChVector3<> lane_0_target;
+        ChVector3<> lane_1_target;
 
-        lane_0_tracker.calcClosestPoint(ego_chassis->GetPos(), lane_0_target);
-        lane_1_tracker.calcClosestPoint(ego_chassis->GetPos(), lane_1_target);
+        lane_0_tracker.CalcClosestPoint(ego_chassis->GetPos(), lane_0_target);
+        lane_1_tracker.CalcClosestPoint(ego_chassis->GetPos(), lane_1_target);
 
-        ChVector<> chassis_pos = ego_chassis->GetPos();
+        ChVector3<> chassis_pos = ego_chassis->GetPos();
         float dist_0 = (lane_0_target.x() - chassis_pos.x()) *
                            (lane_0_target.x() - chassis_pos.x()) +
                        (lane_0_target.y() - chassis_pos.y()) *
@@ -1593,8 +1591,8 @@ int main(int argc, char *argv[]) {
           buffer << lead_chassis->GetPos().y() << ",";
           buffer << lead_chassis->GetSpeed() * MS_TO_MPH << ",";
           buffer << lead_chassis->GetBody()
-                        ->GetFrame_REF_to_abs()
-                        .GetPos_dtdt()
+                        ->GetFrameRefToAbs()
+                        .GetPosDt2()
                         .Length()
                  << ","; // output mile marker
           buffer << lead_PFdrivers[lead_PFdrivers.size() - 1]->Get_Dist();
@@ -1629,28 +1627,28 @@ void AddTrees(ChSystem *chsystem) {
   auto tree_mesh_0 = chrono_types::make_shared<ChTriangleMeshConnected>();
   tree_mesh_0->LoadWavefrontMesh(
       demo_data_path + "/Environments/Iowa/trees/tree_01.obj", false, true);
-  tree_mesh_0->Transform(ChVector<>(0, 0, 0),
+  tree_mesh_0->Transform(ChVector3<>(0, 0, 0),
                          ChMatrix33<>(1)); // scale to a different size
 
   auto tree_mesh_1 = chrono_types::make_shared<ChTriangleMeshConnected>();
   tree_mesh_1->LoadWavefrontMesh(
       demo_data_path + "/Environments/Iowa/foliage/trees/oaktree_01.obj", false,
       true);
-  tree_mesh_1->Transform(ChVector<>(0, 0, 0),
+  tree_mesh_1->Transform(ChVector3<>(0, 0, 0),
                          ChMatrix33<>(1)); // scale to a different size
 
   auto tree_mesh_2 = chrono_types::make_shared<ChTriangleMeshConnected>();
   tree_mesh_2->LoadWavefrontMesh(
       demo_data_path + "/Environments/Iowa/foliage/trees/oaktree_02.obj", false,
       true);
-  tree_mesh_2->Transform(ChVector<>(0, 0, 0),
+  tree_mesh_2->Transform(ChVector3<>(0, 0, 0),
                          ChMatrix33<>(1)); // scale to a different size
 
   auto tree_mesh_3 = chrono_types::make_shared<ChTriangleMeshConnected>();
   tree_mesh_3->LoadWavefrontMesh(
       demo_data_path + "/Environments/Iowa/foliage/trees/oaktree_03.obj", false,
       true);
-  tree_mesh_3->Transform(ChVector<>(0, 0, 0),
+  tree_mesh_3->Transform(ChVector3<>(0, 0, 0),
                          ChMatrix33<>(1)); // scale to a different size
 
   std::vector<std::shared_ptr<ChTriangleMeshConnected>> tree_meshes = {
@@ -1686,10 +1684,10 @@ void AddTrees(ChSystem *chsystem) {
       mesh_body->SetPos({i * x_step + x_start + x_variation * (ChRandom() - .5),
                          j * y_step + y_start + y_variation * (ChRandom() - .5),
                          0.0});
-      mesh_body->SetRot(Q_from_AngZ(CH_C_PI_2 * ChRandom()));
+      mesh_body->SetRot(SetFromAngleZ(CH_PI_2 * ChRandom()));
       mesh_body->AddVisualShape(trimesh_shape);
-      mesh_body->SetBodyFixed(true);
-      mesh_body->SetCollide(false);
+      mesh_body->SetFixed(true);
+      mesh_body->EnableCollision(false);
       chsystem->Add(mesh_body);
     }
   }
@@ -1712,10 +1710,10 @@ void AddTrees(ChSystem *chsystem) {
       mesh_body->SetPos({i * x_step + x_start + x_variation * (ChRandom() - .5),
                          j * y_step + y_start + y_variation * (ChRandom() - .5),
                          0.0});
-      mesh_body->SetRot(Q_from_AngZ(CH_C_PI_2 * ChRandom()));
+      mesh_body->SetRot(SetFromAngleZ(CH_PI_2 * ChRandom()));
       mesh_body->AddVisualShape(trimesh_shape);
-      mesh_body->SetBodyFixed(true);
-      mesh_body->SetCollide(false);
+      mesh_body->SetFixed(true);
+      mesh_body->EnableCollision(false);
       chsystem->Add(mesh_body);
     }
   }
@@ -1726,7 +1724,7 @@ void AddRoadway(ChSystem *chsystem) {
       "/Environments/Iowa/signs/mile_markers_inner.obj",
       "/Environments/Iowa/signs/mile_markers_outer.obj",
       "/Environments/Iowa/terrain/oval_highway.obj"};
-  std::vector<ChVector<>> offsets = {
+  std::vector<ChVector3<>> offsets = {
       {0, 0, -128.22}, {0, 0, 0.0}, {0, 0, 0.01}};
 
   for (int i = 0; i < environment_meshes.size();
@@ -1735,7 +1733,7 @@ void AddRoadway(ChSystem *chsystem) {
     auto trimesh = chrono_types::make_shared<ChTriangleMeshConnected>();
     trimesh->LoadWavefrontMesh(demo_data_path + environment_meshes[i], true,
                                true);
-    trimesh->Transform(ChVector<>(0, 0, 0),
+    trimesh->Transform(ChVector3<>(0, 0, 0),
                        ChMatrix33<>(1)); // scale to a different size
     auto trimesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     trimesh_shape->SetMesh(trimesh);
@@ -1762,8 +1760,8 @@ void AddRoadway(ChSystem *chsystem) {
     auto mesh_body = chrono_types::make_shared<ChBody>();
     mesh_body->SetPos(offsets[i]);
     mesh_body->AddVisualShape(trimesh_shape);
-    mesh_body->SetBodyFixed(true);
-    mesh_body->SetCollide(false);
+    mesh_body->SetFixed(true);
+    mesh_body->EnableCollision(false);
     chsystem->Add(mesh_body);
   }
 
@@ -1772,7 +1770,7 @@ void AddRoadway(ChSystem *chsystem) {
     std::string meshname = "/Environments/Iowa/signs/arrived.obj";
     auto trimesh = chrono_types::make_shared<ChTriangleMeshConnected>();
     trimesh->LoadWavefrontMesh(demo_data_path + meshname, false, true);
-    trimesh->Transform(ChVector<>(0, 0, 0),
+    trimesh->Transform(ChVector3<>(0, 0, 0),
                        ChMatrix33<>(1)); // scale to a different size
     auto trimesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     trimesh_shape->SetMesh(trimesh);
@@ -1783,8 +1781,8 @@ void AddRoadway(ChSystem *chsystem) {
     mesh_body->SetPos(arrived_sign_pos);
     mesh_body->SetRot(arrived_sign_rot);
     mesh_body->AddVisualShape(trimesh_shape);
-    mesh_body->SetBodyFixed(true);
-    mesh_body->SetCollide(false);
+    mesh_body->SetFixed(true);
+    mesh_body->EnableCollision(false);
     chsystem->Add(mesh_body);
   }
 }
@@ -1821,7 +1819,7 @@ void AddBuildings(ChSystem *chsystem) {
       "/Environments/Iowa/buildings/radio_tower.obj", //
       "/Environments/Iowa/buildings/water_tower.obj", //
       "/Environments/Iowa/buildings/water_tower.obj"};
-  std::vector<ChVector<>> offsets = {
+  std::vector<ChVector3<>> offsets = {
       {4150, 12776, 0},           // farm 4000
       {3800, 10209, 0},           // farm
       {3920, 8372, 0},            // farm
@@ -1862,7 +1860,7 @@ void AddBuildings(ChSystem *chsystem) {
     auto trimesh = chrono_types::make_shared<ChTriangleMeshConnected>();
     trimesh->LoadWavefrontMesh(demo_data_path + environment_meshes[i], false,
                                true);
-    trimesh->Transform(ChVector<>(0, 0, 0),
+    trimesh->Transform(ChVector3<>(0, 0, 0),
                        ChMatrix33<>(1)); // scale to a different size
     auto trimesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     trimesh_shape->SetMesh(trimesh);
@@ -1871,10 +1869,10 @@ void AddBuildings(ChSystem *chsystem) {
     trimesh_shape->SetScale({3, 3, 3});
     auto mesh_body = chrono_types::make_shared<ChBody>();
     mesh_body->SetPos(offsets[i]);
-    mesh_body->SetRot(Q_from_AngZ(CH_C_2PI * ChRandom()));
+    mesh_body->SetRot(SetFromAngleZ(CH_C_2PI * ChRandom()));
     mesh_body->AddVisualShape(trimesh_shape);
-    mesh_body->SetBodyFixed(true);
-    mesh_body->SetCollide(false);
+    mesh_body->SetFixed(true);
+    mesh_body->EnableCollision(false);
     chsystem->Add(mesh_body);
   }
 }
@@ -1885,7 +1883,7 @@ void AddTerrain(ChSystem *chsystem) {
   terrain_mesh->LoadWavefrontMesh(
       demo_data_path + "/Environments/Iowa/terrain/terrain_v2.obj", false,
       true);
-  terrain_mesh->Transform(ChVector<>(0, 0, 0),
+  terrain_mesh->Transform(ChVector3<>(0, 0, 0),
                           ChMatrix33<>(1)); // scale to a different size
   auto terrain_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   terrain_shape->SetMesh(terrain_mesh);
@@ -1951,8 +1949,8 @@ void AddTerrain(ChSystem *chsystem) {
   auto terrain_body = chrono_types::make_shared<ChBody>();
   terrain_body->SetPos({0, 0, -.01});
   terrain_body->AddVisualShape(terrain_shape);
-  terrain_body->SetBodyFixed(true);
-  terrain_body->SetCollide(false);
+  terrain_body->SetFixed(true);
+  terrain_body->EnableCollision(false);
   chsystem->Add(terrain_body);
 }
 
@@ -1982,33 +1980,33 @@ void CustomButtonCallback() {
 void UpdateDummy(std::shared_ptr<ChBodyAuxRef> dummy_vehicle,
                  std::shared_ptr<ChBezierCurve> curve, float dummy_speed,
                  float step_size, float z_offset, ChBezierCurveTracker tracker,
-                 double &dummy_dist, ChVector<> &dummy_prev_pos) {
+                 double &dummy_dist, ChVector3<> &dummy_prev_pos) {
   // sentinel point fo the current dummy vehicle position
-  ChVector<> sen = dummy_vehicle->GetPos();
-  ChVector<> prev_pos = sen;
+  ChVector3<> sen = dummy_vehicle->GetPos();
+  ChVector3<> prev_pos = sen;
 
-  ChVector<> target;
+  ChVector3<> target;
   ChFrame<> frame;
   double curv;
 
   // obtain the tangent direction on the cloest bezier curve
-  tracker.calcClosestPoint(sen, frame, curv);
-  ChVector<> vel_dir =
-      -frame.TransformDirectionLocalToParent(ChVector<>(1, 0, 0));
+  tracker.CalcClosestPoint(sen, frame, curv);
+  ChVector3<> vel_dir =
+      -frame.TransformDirectionLocalToParent(ChVector3<>(1, 0, 0));
   // normalize velocity vector
   vel_dir.Normalize();
 
   // proceed vehicle by time_step*vel_dir, calculate the closest target point on
   // the bezier curve
-  tracker.calcClosestPoint(sen + (vel_dir * dummy_speed * step_size), target);
+  tracker.CalcClosestPoint(sen + (vel_dir * dummy_speed * step_size), target);
 
-  target = target + ChVector<>(0, 0, z_offset);
+  target = target + ChVector3<>(0, 0, z_offset);
 
   // compute angle
   float angle = atan2(vel_dir[1], vel_dir[0]);
 
   // finally update dummy vehicle position and rotated direction
-  dummy_vehicle->SetRot(Q_from_Euler123(ChVector<>(0, 0, angle)));
+  dummy_vehicle->SetRot(SetFromCardanAnglesXYZ(ChVector3<>(0, 0, angle)));
   dummy_vehicle->SetPos(target);
 
   // update distance and previous position
@@ -2123,7 +2121,7 @@ void IrrDashUpdate(
     std::chrono::time_point<std::chrono::high_resolution_clock> t0,
     ChWheeledVehicleVisualSystemIrrlicht &app, ChWheeledVehicle &vehicle,
     std::shared_ptr<chrono::vehicle::ChChassis> ego_chassis,
-    DriverMode driver_mode, float &IG_dist, ChVector<> &IG_prev_pos,
+    DriverMode driver_mode, float &IG_dist, ChVector3<> &IG_prev_pos,
     bool &IG_started_driving) {
   app.GetDevice()->getVideoDriver()->beginScene();
   /// irrlicht::tools::drawSegment(app.GetVideoDriver(), v1, v2,
@@ -2163,14 +2161,14 @@ void IrrDashUpdate(
   }
 
   double speed_mph = vehicle.GetSpeed() * MS_TO_MPH;
-  double theta = ((265 / 130) * speed_mph) * (CH_C_PI / 180);
+  double theta = ((265 / 130) * speed_mph) * (CH_PI / 180);
   app.GetDevice()->getVideoDriver()->draw2DLine(
       sm_center + irr::core::position2d<irr::s32>(-sm_needle * sin(theta),
                                                   sm_needle * cos(theta)),
       sm_center, irr::video::SColor(255, 255, 0, 0));
 
   double engine_rpm = vehicle.GetPowertrain()->GetMotorSpeed() * rads2rpm;
-  double alpha = ((265.0 / 6500.0) * engine_rpm) * (CH_C_PI / 180);
+  double alpha = ((265.0 / 6500.0) * engine_rpm) * (CH_PI / 180);
   app.GetDevice()->getVideoDriver()->draw2DLine(
       rpm_center + irr::core::position2d<irr::s32>(-sm_needle * sin(alpha),
                                                    sm_needle * cos(alpha)),

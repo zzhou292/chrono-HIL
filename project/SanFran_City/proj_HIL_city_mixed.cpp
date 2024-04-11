@@ -77,20 +77,19 @@ using namespace eprosima::fastdds::rtps;
 using namespace eprosima::fastrtps::rtps;
 
 using namespace chrono;
-using namespace chrono::geometry;
 using namespace chrono::synchrono;
 using namespace chrono::vehicle;
 using namespace chrono::sensor;
 using namespace chrono::hil;
 // =============================================================================
-const double RADS_2_RPM = 30 / CH_C_PI;
+const double RADS_2_RPM = 30 / CH_PI;
 const double MS_2_MPH = 2.2369;
 // =====================================================
 
 struct rom_item {
   int type;
-  ChVector<double> pos;
-  ChVector<double> rot;
+  ChVector3<double> pos;
+  ChVector3<double> rot;
   int path;
   int ld_id;
   int idm_type;
@@ -147,7 +146,7 @@ TireModelType tire_model = TireModelType::TMEASY;
 enum VehicleType { HMMWV, SEDAN, CITYBUS, AUDI, SUV, TRUCK };
 
 // Point on chassis tracked by the camera
-ChVector<> trackPoint(0.0, 0.0, 1.75);
+ChVector3<> trackPoint(0.0, 0.0, 1.75);
 
 // Contact method
 ChContactMethod contact_method = ChContactMethod::SMC;
@@ -163,7 +162,7 @@ double heartbeat = 4e-2;
 
 bool use_fullscreen = false;
 
-ChVector<> simulation_center = {826.734, -37.97, -64.8};
+ChVector3<> simulation_center = {826.734, -37.97, -64.8};
 
 double loading_radius = 1000;
 
@@ -279,17 +278,17 @@ int main(int argc, char *argv[]) {
       CHRONO_DATA_DIR + std::string("vehicle/audi/json/audi.json");
 
   // Initial vehicle location and orientation
-  ChVector<> initLoc;
+  ChVector3<> initLoc;
   ChQuaternion<> initRot;
   if (node_id == 0) {
-    initLoc = ChVector<>(930.434, 0, -65.2);
-    initRot = Q_from_AngZ(3.14 / 2);
+    initLoc = ChVector3<>(930.434, 0, -65.2);
+    initRot = SetFromAngleZ(3.14 / 2);
   } else if (node_id == 1) {
-    initLoc = ChVector<>(930.434, -50.87, -65.2);
-    initRot = Q_from_AngZ(3.14 / 2);
+    initLoc = ChVector3<>(930.434, -50.87, -65.2);
+    initRot = SetFromAngleZ(3.14 / 2);
   } else if (node_id == 2) {
-    initLoc = ChVector<>(930.434, -150.87, -65.2);
-    initRot = Q_from_AngZ(3.14 / 2);
+    initLoc = ChVector3<>(930.434, -150.87, -65.2);
+    initRot = SetFromAngleZ(3.14 / 2);
   }
 
   // Create the Sedan vehicle, set parameters, and initialize
@@ -321,14 +320,14 @@ int main(int argc, char *argv[]) {
 
   auto attached_body = std::make_shared<ChBody>();
   my_vehicle.GetSystem()->AddBody(attached_body);
-  attached_body->SetCollide(false);
-  attached_body->SetBodyFixed(true);
+  attached_body->EnableCollision(false);
+  attached_body->SetFixed(true);
   auto box = chrono_types::make_shared<ChBoxShape>();
-  box->GetBoxGeometry().Size = ChVector<>(10000.0, 10000.0, 0.001);
+  box->GetBoxGeometry().Size = ChVector3<>(10000.0, 10000.0, 0.001);
   auto black_mat = chrono_types::make_shared<ChVisualMaterial>();
   black_mat->SetDiffuseColor(ChColor(0.3f, 0.3f, 0.3f));
   box->AddMaterial(black_mat);
-  attached_body->AddVisualShape(box, ChFrame<>(ChVector<>(0, 0, -65.6), QUNIT));
+  attached_body->AddVisualShape(box, ChFrame<>(ChVector3<>(0, 0, -65.6), QUNIT));
 
   // --------------
   // Create systems
@@ -348,17 +347,17 @@ int main(int argc, char *argv[]) {
   minfo.gt = 20.0;             // tangential viscous damping
   auto patch_mat = minfo.CreateMaterial(contact_method);
 
-  ChVector<> normal = ChVector<>({0, 0, 1});
-  ChVector<> up = normal.GetNormalized();
-  ChVector<> lateral = Vcross(up, ChWorldFrame::Forward());
+  ChVector3<> normal = ChVector3<>({0, 0, 1});
+  ChVector3<> up = normal.GetNormalized();
+  ChVector3<> lateral = Vcross(up, ChWorldFrame::Forward());
   lateral.Normalize();
-  ChVector<> forward = Vcross(lateral, up);
+  ChVector3<> forward = Vcross(lateral, up);
   ChMatrix33<> rot;
   rot.Set_A_axis(forward, lateral, up);
 
   auto patch = terrain.AddPatch(
       patch_mat,
-      ChCoordsys<>(ChVector<>({0, 0, -65.554}), rot.Get_A_quaternion()),
+      ChCoordsys<>(ChVector3<>({0, 0, -65.554}), rot.Get_A_quaternion()),
       10000.0, 10000.0, 2, false, 1, false);
   terrain.Initialize();
 
@@ -403,15 +402,15 @@ int main(int argc, char *argv[]) {
   if (node_id == 0) {
     /*
     // mirrors position and rotations
-    ChVector<> mirror_rearview_pos = {0.253, 0.0, 1.10};
-    ChQuaternion<> mirror_rearview_rot = Q_from_Euler123(
-        ChVector<>(2.0 * 0.01745, -6.0 * 0.01745, -12.0 * 0.01745));
-    ChVector<> mirror_wingleft_pos = {0.47, 0.945, 0.815};
+    ChVector3<> mirror_rearview_pos = {0.253, 0.0, 1.10};
+    ChQuaternion<> mirror_rearview_rot = SetFromCardanAnglesXYZ(
+        ChVector3<>(2.0 * 0.01745, -6.0 * 0.01745, -12.0 * 0.01745));
+    ChVector3<> mirror_wingleft_pos = {0.47, 0.945, 0.815};
     ChQuaternion<> mirror_wingleft_rot =
-        Q_from_Euler123(ChVector<>(0.0, 5.0 * 0.01745, 17.0 * 0.01745));
-    ChVector<> mirror_wingright_pos = {0.4899, -0.95925, 0.80857};
+        SetFromCardanAnglesXYZ(ChVector3<>(0.0, 5.0 * 0.01745, 17.0 * 0.01745));
+    ChVector3<> mirror_wingright_pos = {0.4899, -0.95925, 0.80857};
     ChQuaternion<> mirror_wingright_rot =
-        Q_from_Euler123(ChVector<>(0.0, 3.5 * 0.01745, -28.0 * 0.01745));
+        SetFromCardanAnglesXYZ(ChVector3<>(0.0, 3.5 * 0.01745, -28.0 * 0.01745));
 
     // change the ego vehicle vis out for windowless audi
     my_vehicle.GetChassisBody()->GetVisualModel()->Clear();
@@ -421,7 +420,7 @@ int main(int argc, char *argv[]) {
         std::string(STRINGIFY(HIL_DATA_DIR)) +
             "/Environments/Iowa/vehicles/audi_chassis_windowless_2.obj",
         false, true);
-    audi_mesh->Transform(ChVector<>(0, 0, 0),
+    audi_mesh->Transform(ChVector3<>(0, 0, 0),
                          ChMatrix33<>(1)); // scale to a different size
     auto audi_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     audi_shape->SetMesh(audi_mesh);
@@ -436,7 +435,7 @@ int main(int argc, char *argv[]) {
         std::string(STRINGIFY(HIL_DATA_DIR)) +
             "/Environments/Iowa/vehicles/audi_rearview_mirror.obj",
         false, true);
-    mirror_mesh->Transform(ChVector<>(0, 0, 0),
+    mirror_mesh->Transform(ChVector3<>(0, 0, 0),
                            ChMatrix33<>(1)); // scale to a different size
 
     auto mirror_mat = chrono_types::make_shared<ChVisualMaterial>();
@@ -460,7 +459,7 @@ int main(int argc, char *argv[]) {
         std::string(STRINGIFY(HIL_DATA_DIR)) +
             "/Environments/Iowa/vehicles/audi_left_wing_mirror.obj",
         false, true);
-    lwm_mesh->Transform(ChVector<>(0, 0, 0),
+    lwm_mesh->Transform(ChVector3<>(0, 0, 0),
                         ChMatrix33<>(1)); // scale to a different size
 
     auto lwm_mirror_shape =
@@ -478,7 +477,7 @@ int main(int argc, char *argv[]) {
         std::string(STRINGIFY(HIL_DATA_DIR)) +
             "/Environments/Iowa/vehicles/audi_right_wing_mirror.obj",
         false, true);
-    rwm_mesh->Transform(ChVector<>(0, 0, 0),
+    rwm_mesh->Transform(ChVector3<>(0, 0, 0),
                         ChMatrix33<>(1)); // scale to a different size
 
     auto rwm_mirror_shape = chrono_types::make_shared<ChTriangleMeshShape>();
@@ -512,7 +511,7 @@ int main(int argc, char *argv[]) {
                                          // my_vehicle.GetChassisBody()
             25,                          // update rate in Hz
             chrono::ChFrame<double>({-6.0, 0.0, 2.5},
-                                    Q_from_AngAxis(0.0, {0, 1, 0})), // offset
+                                    SetFromAngleAxis(0.0, {0, 1, 0})), // offset
        pose 640,                                                     // image
        width 320,                                                     // image
        height 3.14 / 1.5,                                              // fov
@@ -531,11 +530,11 @@ int main(int argc, char *argv[]) {
         my_vehicle.GetChassisBody(), // body lidar is attached to
         25,                          // scanning rate in Hz
         chrono::ChFrame<double>({0.0, 0.0, 3.5},
-                                Q_from_AngAxis(0.0, {0, 1, 0})), // offset pose
+                                SetFromAngleAxis(0.0, {0, 1, 0})), // offset pose
         1280,                 // number of horizontal samples
         720,                  // numberof vertical channels
-        (float)(2 * CH_C_PI), // horizontal field of view
-        (float)CH_C_PI / 12, (float)-CH_C_PI / 3,
+        (float)(2 * CH_PI), // horizontal field of view
+        (float)CH_PI / 12, (float)-CH_PI / 3,
         200.0f // vertical field of view
     );
     lidar->SetName("Lidar Sensor 1");
@@ -622,8 +621,8 @@ int main(int argc, char *argv[]) {
   double sim_time = 0.f;
   double last_time = 0.f;
   int step_number = 0;
-  ChVector<> ego_cur_pos;
-  ChVector<> ego_prev_pos;
+  ChVector3<> ego_cur_pos;
+  ChVector3<> ego_prev_pos;
   float ego_spd;
 
   // obtain and initiate all zombie instances
@@ -754,9 +753,9 @@ int main(int argc, char *argv[]) {
 
       for (int i = 0; i < num_rom; i++) {
         zombie_vec[i]->Update(
-            ChVector<>(recv_data[0 + i * 11], recv_data[1 + i * 11],
+            ChVector3<>(recv_data[0 + i * 11], recv_data[1 + i * 11],
                        recv_data[2 + i * 11]),
-            ChVector<>(recv_data[3 + i * 11], recv_data[4 + i * 11],
+            ChVector3<>(recv_data[3 + i * 11], recv_data[4 + i * 11],
                        recv_data[5 + i * 11]),
             recv_data[6 + i * 11], recv_data[7 + i * 11], recv_data[8 + i * 11],
             recv_data[9 + i * 11], recv_data[10 + i * 11]);
@@ -781,7 +780,7 @@ int main(int argc, char *argv[]) {
       output_buffer << sim_time << ",";
       output_buffer << my_vehicle.GetSpeed() << ",";
       ChQuaternion<> temp_qua = my_vehicle.GetRot();
-      ChVector<> temp_vec = temp_qua.Q_to_Euler123();
+      ChVector3<> temp_vec = temp_qua.GetCardanAnglesXYZ();
       output_buffer << temp_vec.x() << ",";
       output_buffer << temp_vec.y() << ",";
       output_buffer << temp_vec.z() << ",";
@@ -848,8 +847,8 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
       mesh_map;
 
   auto mesh_body = chrono_types::make_shared<ChBody>();
-  mesh_body->SetBodyFixed(true);
-  mesh_body->SetCollide(false);
+  mesh_body->SetFixed(true);
+  mesh_body->EnableCollision(false);
   chsystem->Add(mesh_body);
 
   int meshes_added = 0;
@@ -880,7 +879,7 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
                                  // emission on
 
           if (true || mesh_name.find("Road") != std::string::npos) {
-            ChVector<double> pos = {std::stod(result[2]), std::stod(result[3]),
+            ChVector3<double> pos = {std::stod(result[2]), std::stod(result[3]),
                                     std::stod(result[4])};
 
             if ((pos - simulation_center).Length() < loading_radius) {
@@ -899,7 +898,7 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
               ChQuaternion<double> rot = {
                   std::stod(result[5]), std::stod(result[6]),
                   std::stod(result[7]), std::stod(result[8])};
-              ChVector<double> scale = {std::stod(result[9]),
+              ChVector3<double> scale = {std::stod(result[9]),
                                         std::stod(result[10]),
                                         std::stod(result[11])};
 
@@ -963,10 +962,10 @@ void ReadRomInitFile(std::string csv_filename, std::vector<rom_item> &rom_vec) {
     rom_item temp_struct;
     temp_struct.type = int(data[i][1]);
     temp_struct.pos =
-        ChVector<>(float(data[i][2]), float(data[i][3]), float(data[i][4]));
+        ChVector3<>(float(data[i][2]), float(data[i][3]), float(data[i][4]));
 
     temp_struct.rot =
-        ChVector<>(float(data[i][5]), float(data[i][6]), float(data[i][7]));
+        ChVector3<>(float(data[i][5]), float(data[i][6]), float(data[i][7]));
 
     temp_struct.path = int(data[i][8]);
     temp_struct.ld_id = int(data[i][9]);

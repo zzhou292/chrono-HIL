@@ -73,13 +73,12 @@ using namespace eprosima::fastrtps::rtps;
 // =============================================================================
 
 using namespace chrono;
-using namespace chrono::geometry;
 using namespace chrono::synchrono;
 using namespace chrono::vehicle;
 using namespace chrono::sensor;
 using namespace chrono::hil;
 // =============================================================================
-const double RADS_2_RPM = 30 / CH_C_PI;
+const double RADS_2_RPM = 30 / CH_PI;
 const double MS_2_MPH = 2.2369;
 // =============================================================================
 
@@ -97,7 +96,7 @@ TireModelType tire_model = TireModelType::TMEASY;
 enum VehicleType { HMMWV, SEDAN, CITYBUS, AUDI, SUV, TRUCK };
 
 // Point on chassis tracked by the camera
-ChVector<> trackPoint(0.0, 0.0, 1.75);
+ChVector3<> trackPoint(0.0, 0.0, 1.75);
 
 // Contact method
 ChContactMethod contact_method = ChContactMethod::SMC;
@@ -113,7 +112,7 @@ double heartbeat = 2e-2; // 50[Hz]
 
 bool use_fullscreen = false;
 
-ChVector<> simulation_center = {826.734, -37.97, -64.8};
+ChVector3<> simulation_center = {826.734, -37.97, -64.8};
 
 double loading_radius = 1000;
 
@@ -136,7 +135,7 @@ std::string demo_data_path = std::string(STRINGIFY(HIL_DATA_DIR));
 
 struct PathVehicleSetup {
   VehicleType vehicle_type;
-  ChVector<double> pos;
+  ChVector3<double> pos;
   ChQuaternion<double> rot;
   std::string path_file;
   double lookahead;
@@ -153,63 +152,63 @@ std::vector<PathVehicleSetup> demo_config = {
     // traffic on path 2 -0
     {SEDAN,
      {925.434, -53.47, -65.2},
-     Q_from_AngZ(3.14 / 2),
+     SetFromAngleZ(3.14 / 2),
      "/paths/2.txt",
      8.0,
      0.1},
     // traffic on path 2 -1
     {SUV,
      {925.434, 0.47, -65.2},
-     Q_from_AngZ(3.14 / 2),
+     SetFromAngleZ(3.14 / 2),
      "/paths/2.txt",
      8.0,
      0.1},
     // traffic on path 2 -2
     {CITYBUS,
      {925.434, 50.47, -64.8},
-     Q_from_AngZ(3.14 / 2),
+     SetFromAngleZ(3.14 / 2),
      "/paths/2.txt",
      8.0,
      1.0},
     // traffic on path 3 -3
     {SUV,
      {917.234, 60.63, -64.8},
-     Q_from_AngZ(-3.14 / 2),
+     SetFromAngleZ(-3.14 / 2),
      "/paths/3.txt",
      suv_lookahead,
      suv_pgain},
     // traffic on path 4 -4
     {AUDI,
      {917.234, -10.63, -64.8},
-     Q_from_AngZ(-3.14 / 2),
+     SetFromAngleZ(-3.14 / 2),
      "/paths/3.txt",
      suv_lookahead,
      suv_pgain},
     // traffic on path 4 -5
     {AUDI,
      {917.334, -95.67, -64.8},
-     Q_from_AngZ(-3.14 / 2),
+     SetFromAngleZ(-3.14 / 2),
      "/paths/3.txt",
      audi_tight_lookahead,
      audi_pgain},
     // mini sim - 6
     {HMMWV,
      {925.434, -150.87, -65.2},
-     Q_from_AngZ(3.14 / 2),
+     SetFromAngleZ(3.14 / 2),
      "/paths/2.txt",
      8.0,
      0.1},
     // kelvin sim - 7
     {HMMWV,
      {925.434, -170.87, -65.2},
-     Q_from_AngZ(3.14 / 2),
+     SetFromAngleZ(3.14 / 2),
      "/paths/2.txt",
      8.0,
      0.1},
     // sbel sim - 8
     {TRUCK,
      {925.434, -190.87, -65.2},
-     Q_from_AngZ(3.14 / 2),
+     SetFromAngleZ(3.14 / 2),
      "/paths/2.txt",
      8.0,
      0.1}
@@ -223,7 +222,7 @@ void LogCopyright(bool show);
 void AddCommandLineOptions(ChCLI &cli);
 void GetVehicleModelFiles(VehicleType type, std::string &vehicle,
                           std::string &powertrain, std::string &tire,
-                          std::string &zombie, ChVector<> &lidar_pos,
+                          std::string &zombie, ChVector3<> &lidar_pos,
                           double &cam_distance);
 
 void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain);
@@ -316,7 +315,7 @@ int main(int argc, char *argv[]) {
   double cam_distance;
   std::string vehicle_filename, powertrain_filename, tire_filename,
       zombie_filename;
-  ChVector<> lidar_pos;
+  ChVector3<> lidar_pos;
 
   GetVehicleModelFiles(demo_config[node_id].vehicle_type, vehicle_filename,
                        powertrain_filename, tire_filename, zombie_filename,
@@ -371,17 +370,17 @@ int main(int argc, char *argv[]) {
   minfo.gt = 20.0;             // tangential viscous damping
   auto patch_mat = minfo.CreateMaterial(contact_method);
 
-  ChVector<> normal = ChVector<>({0, 0, 1});
-  ChVector<> up = normal.GetNormalized();
-  ChVector<> lateral = Vcross(up, ChWorldFrame::Forward());
+  ChVector3<> normal = ChVector3<>({0, 0, 1});
+  ChVector3<> up = normal.GetNormalized();
+  ChVector3<> lateral = Vcross(up, ChWorldFrame::Forward());
   lateral.Normalize();
-  ChVector<> forward = Vcross(lateral, up);
+  ChVector3<> forward = Vcross(lateral, up);
   ChMatrix33<> rot;
   rot.Set_A_axis(forward, lateral, up);
 
   auto patch = terrain.AddPatch(
       patch_mat,
-      ChCoordsys<>(ChVector<>({0, 0, -65.554}), rot.Get_A_quaternion()),
+      ChCoordsys<>(ChVector3<>({0, 0, -65.554}), rot.Get_A_quaternion()),
       10000.0, 10000.0, 2, false, 1, false);
   terrain.Initialize();
 
@@ -412,7 +411,7 @@ int main(int argc, char *argv[]) {
         vehicle.GetChassisBody(), // body camera is attached to
         refresh_rate,             // update rate in Hz
         chrono::ChFrame<double>({cam_offset, .381, 1.04},
-                                Q_from_AngAxis(0, {0, 1, 0})), // offset pose
+                                SetFromAngleAxis(0, {0, 1, 0})), // offset pose
         image_width,                                           // image width
         image_height,                                          // image height
         3.14 / 1.5,                                            // fov
@@ -639,7 +638,7 @@ void AddCommandLineOptions(ChCLI &cli) {
 
 void GetVehicleModelFiles(VehicleType type, std::string &vehicle,
                           std::string &powertrain, std::string &tire,
-                          std::string &zombie, ChVector<> &lidar_pos,
+                          std::string &zombie, ChVector3<> &lidar_pos,
                           double &cam_distance) {
   switch (type) {
   case VehicleType::HMMWV:
@@ -735,8 +734,8 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
       mesh_map;
 
   auto mesh_body = chrono_types::make_shared<ChBody>();
-  mesh_body->SetBodyFixed(true);
-  mesh_body->SetCollide(false);
+  mesh_body->SetFixed(true);
+  mesh_body->EnableCollision(false);
   chsystem->Add(mesh_body);
 
   int meshes_added = 0;
@@ -767,7 +766,7 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
                                  // emission on
 
           if (true || mesh_name.find("Road") != std::string::npos) {
-            ChVector<double> pos = {std::stod(result[2]), std::stod(result[3]),
+            ChVector3<double> pos = {std::stod(result[2]), std::stod(result[3]),
                                     std::stod(result[4])};
 
             if ((pos - simulation_center).Length() < loading_radius) {
@@ -786,7 +785,7 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
               ChQuaternion<double> rot = {
                   std::stod(result[5]), std::stod(result[6]),
                   std::stod(result[7]), std::stod(result[8])};
-              ChVector<double> scale = {std::stod(result[9]),
+              ChVector3<double> scale = {std::stod(result[9]),
                                         std::stod(result[10]),
                                         std::stod(result[11])};
 
@@ -833,7 +832,7 @@ void VehicleProcessMessageCallback(
     double max_angle = vehicle.GetMaxSteeringAngle();
     double curr_steering = driver->GetSteering();
 
-    ChQuaternion<> q = Q_from_AngZ(max_angle * curr_steering);
+    ChQuaternion<> q = SetFromAngleZ(max_angle * curr_steering);
 
     // Get the zombies position relative to this vehicle
     auto zombie_pos =

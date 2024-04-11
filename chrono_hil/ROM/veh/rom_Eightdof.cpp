@@ -22,7 +22,7 @@
 using namespace chrono;
 using namespace chrono::vehicle;
 
-const double rpm2rads = CH_C_PI / 30;
+const double rpm2rads = C_PI / 30;
 
 /*
 Code for the Eight dof model implemented in cpp
@@ -54,9 +54,9 @@ double driveTorque(const VehicleParam &v_params, VehicleState &v_state,
 
   double motor_torque = 0.0;
   if (throttle == 0) {
-    motor_torque = v_params.map_0.Get_y(motor_speed);
+    motor_torque = v_params.map_0.GetVal(motor_speed);
   } else {
-    motor_torque = v_params.map_f.Get_y(motor_speed);
+    motor_torque = v_params.map_f.GetVal(motor_speed);
   }
 
   motor_torque = motor_torque * throttle;

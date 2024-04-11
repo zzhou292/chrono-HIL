@@ -12,7 +12,6 @@
 // Authors: Jason Zhou
 // =============================================================================
 
-#include "chrono/core/ChStream.h"
 #include "chrono/utils/ChFilters.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
 #include <chrono>
@@ -84,15 +83,14 @@ using namespace chrono;
 using namespace chrono::irrlicht;
 using namespace chrono::vehicle;
 using namespace chrono::vehicle::sedan;
-using namespace chrono::geometry;
 using namespace chrono::hil;
 using namespace chrono::utils;
 using namespace chrono::synchrono;
 using namespace chrono::sensor;
 using namespace chrono::ros;
 
-const double RADS_2_RPM = 30 / CH_C_PI;
-const double RADS_2_DEG = 180 / CH_C_PI;
+const double RADS_2_RPM = 30 / CH_PI;
+const double RADS_2_DEG = 180 / CH_PI;
 const double MS_2_MPH = 2.2369;
 const double M_2_FT = 3.28084;
 const double G_2_MPSS = 9.81;
@@ -114,12 +112,12 @@ const double G_2_MPSS = 9.81;
 #endif
 
 bool render = true;
-ChVector<> driver_eyepoint(-0.45, 0.4, 0.98);
+ChVector3<> driver_eyepoint(-0.45, 0.4, 0.98);
 
 // =============================================================================
 
 // Initial vehicle location and orientation
-ChVector<> initLoc(-91.788, 98.647, 0.25);
+ChVector3<> initLoc(-91.788, 98.647, 0.25);
 ChQuaternion<> initRot(1, 0, 0, 0);
 
 // Contact method
@@ -225,8 +223,8 @@ int main(int argc, char *argv[]) {
 
   auto attached_body = std::make_shared<ChBody>();
   my_vehicle.GetSystem()->AddBody(attached_body);
-  attached_body->SetCollide(false);
-  attached_body->SetBodyFixed(true);
+  attached_body->EnableCollision(false);
+  attached_body->SetFixed(true);
 
   // Add vehicle as an agent and initialize SynChronoManager
   std::string zombie_filename =
@@ -259,7 +257,7 @@ int main(int argc, char *argv[]) {
   // ------------------------
   // Create a Irrlicht vis
   // ------------------------
-  ChVector<> trackPoint(0.0, 0.0, 1.75);
+  ChVector3<> trackPoint(0.0, 0.0, 1.75);
   int render_step = 20;
   auto vis = chrono_types::make_shared<ChWheeledVehicleVisualSystemIrrlicht>();
   vis->SetWindowTitle("NADS");
@@ -290,11 +288,13 @@ int main(int argc, char *argv[]) {
   manager->scene->SetOriginOffsetThreshold(500.f);
 
   // camera at driver's eye location for Audi
+  ChQuaternion<> driver_cam_rot;
+  driver_cam_rot.SetFromAngleAxis(0, ChVector3<>(0, 1, 0));
   auto driver_cam = chrono_types::make_shared<ChCameraSensor>(
       my_vehicle.GetChassisBody(), // body camera is attached to
       30,                          // update rate in Hz
       chrono::ChFrame<double>({0.54, .381, 1.04},
-                              Q_from_AngAxis(0, {0, 1, 0})), // offset pose
+                              driver_cam_rot), // offset pose
       1280,                                                  // image width
       720,                                                   // image height
       3.14 / 1.5,                                            // fov
@@ -309,15 +309,17 @@ int main(int argc, char *argv[]) {
   int horizontal_samples = 512;
   int vertical_samples = 256;
 
+  ChQuaternion<> lidar_rot;
+  lidar_rot.SetFromAngleAxis(0, ChVector3<>(0, 1, 0));
   auto lidar = chrono_types::make_shared<ChLidarSensor>(
       my_vehicle.GetChassisBody(), // body lidar is attached to
       15,                          // scanning rate in Hz
       chrono::ChFrame<double>({4.0, 0.0, 0.0},
-                              Q_from_AngAxis(0, {0, 1, 0})), // offset pose
+                              lidar_rot), // offset pose
       horizontal_samples,   // number of horizontal samples
       vertical_samples,     // number of vertical channels
-      (float)(2 * CH_C_PI), // horizontal field of view
-      (float)CH_C_PI / 6, (float)-CH_C_PI / 720, 35.0f // vertical field of view
+      (float)(2 * CH_PI), // horizontal field of view
+      (float)CH_PI / 6, (float)-CH_PI / 720, 35.0f // vertical field of view
   );
   lidar->SetName("LIDAR_TOP");
   lidar->PushFilter(chrono_types::make_shared<ChFilterDIAccess>());
@@ -436,16 +438,17 @@ int main(int argc, char *argv[]) {
                               .count();
     double time = my_vehicle.GetSystem()->GetChTime();
 
-    ChVector<> pos = my_vehicle.GetChassis()->GetPos();
+    ChVector3<> pos = my_vehicle.GetChassis()->GetPos();
     ChQuaternion<> rot = my_vehicle.GetChassis()->GetRot();
 
     if (!ros_manager->Update(time, step_size))
       break;
 
-    auto euler_rot = Q_to_Euler123(rot);
+    ChVector3<> euler_rot = rot.GetCardanAnglesXYZ();
     euler_rot.x() = 0.0;
     euler_rot.y() = 0.0;
-    auto y_0_rot = Q_from_Euler123(euler_rot);
+    ChQuaternion<> y_0_rot;
+    y_0_rot.SetFromCardanAnglesXYZ(euler_rot);
 
     attached_body->SetPos(pos);
     attached_body->SetRot(y_0_rot);
@@ -510,21 +513,21 @@ int main(int argc, char *argv[]) {
       boost_streamer.AddData(-pos.z() * M_2_FT); // 3
 
       // Eyepoint position
-      ChVector<> eyepoint_global = my_vehicle.GetPointLocation(driver_eyepoint);
+      ChVector3<> eyepoint_global = my_vehicle.GetPointLocation(driver_eyepoint);
 
       boost_streamer.AddData(-eyepoint_global.y() * M_2_FT); // 4
       boost_streamer.AddData(eyepoint_global.x() * M_2_FT);  // 5
       boost_streamer.AddData(eyepoint_global.z() * M_2_FT);  // 6
 
       // Eyepoint orientation
-      auto eu_rot = Q_to_Euler123(rot);
+      ChVector3<> eu_rot = rot.GetCardanAnglesXYZ();
 
       boost_streamer.AddData(eu_rot.z() * RADS_2_DEG);  // 7 - yaw
       boost_streamer.AddData(-eu_rot.y() * RADS_2_DEG); // 8 - pitch
       boost_streamer.AddData(eu_rot.x() * RADS_2_DEG);  // 9 - roll
 
       // Chassis angular velocity
-      auto ang_vel = my_vehicle.GetChassis()->GetBody()->GetWvel_loc();
+      auto ang_vel = my_vehicle.GetChassis()->GetBody()->GetAngVelLocal();
       auto ang_vel_x_filtered = ang_vel_x.Add(ang_vel.x());
       auto ang_vel_y_filtered = ang_vel_y.Add(ang_vel.y());
       auto ang_vel_z_filtered = ang_vel_z.Add(ang_vel.z());
@@ -535,14 +538,14 @@ int main(int argc, char *argv[]) {
 
       // Chassis velocity
       auto vel =
-          my_vehicle.GetChassis()->GetBody()->GetFrame_REF_to_abs().GetPos_dt();
+          my_vehicle.GetChassis()->GetBody()->GetFrameRefToAbs().GetPosDt();
 
       boost_streamer.AddData(vel.x() * M_2_FT);  // 13
       boost_streamer.AddData(-vel.y() * M_2_FT); // 14
       boost_streamer.AddData(-vel.z() * M_2_FT); // 15
 
       // Eyepoint velocity
-      ChVector<> eyepoint_velocity =
+      ChVector3<> eyepoint_velocity =
           my_vehicle.GetPointVelocity(driver_eyepoint);
       auto eyepoint_velocity_x_filtered =
           eyepoint_vel_x.Add(-eyepoint_velocity.y());
@@ -569,13 +572,13 @@ int main(int argc, char *argv[]) {
       // Eyepoint specific force
       // rotation matrix A -> from local to global
       auto A_REF_to_abs =
-          my_vehicle.GetChassis()->GetBody()->GetFrame_REF_to_abs().GetA();
+          my_vehicle.GetChassis()->GetBody()->GetFrameRefToAbs().GetRotMat();
 
       // inverse rotation matrix invA -> from global to local
       ChMatrix33<> inv_A_REF_to_abs = A_REF_to_abs.inverse();
 
       // local gravity
-      auto local_g = inv_A_REF_to_abs * ChVector<>(0.0, 0.0, -9.81);
+      auto local_g = inv_A_REF_to_abs * ChVector3<>(0.0, 0.0, -9.81);
 
       auto eye_acc_x_filtered = eyepoint_acc_x.Add(acc_local.x() + local_g.x());
       auto eye_acc_y_filtered =
@@ -669,9 +672,9 @@ int main(int argc, char *argv[]) {
           info.vehicle_id = traf_id;
           info.time_stamp = dds_time_stamp;
 
-          ChVector<double> chassis_pos = it->second->GetZombiePos();
-          ChVector<double> chassis_rot =
-              it->second->GetZombieRot().Q_to_Euler123();
+          ChVector3<double> chassis_pos = it->second->GetZombiePos();
+          ChVector3<double> chassis_rot =
+              it->second->GetZombieRot().GetCardanAnglesXYZ();
 
           // converting chassis
           info.position[0] =
@@ -681,13 +684,13 @@ int main(int argc, char *argv[]) {
           info.position[2] =
               chassis_pos.z() * M_2_FT; //-chassis_pos.z()*M_2_FT;
 
-          info.orientation[0] = CH_C_PI - chassis_rot.x(); // chassis_rot.x();
+          info.orientation[0] = CH_PI - chassis_rot.x(); // chassis_rot.x();
           info.orientation[1] = -chassis_rot.y();          //-chassis_rot.y();
           info.orientation[2] =
-              CH_C_PI / 2.0 + chassis_rot.z(); //-chassis_rot.z();
+              CH_PI / 2.0 + chassis_rot.z(); //-chassis_rot.z();
 
           info.steering_angle =
-              driver_inputs.m_steering * double(30.0 / 180.0) * CH_C_PI * 2;
+              driver_inputs.m_steering * double(30.0 / 180.0) * CH_PI * 2;
           info.wheel_rotations[0] = 0.0;
           info.wheel_rotations[1] = 0.0;
           info.wheel_rotations[2] = 0.0;
@@ -696,9 +699,9 @@ int main(int argc, char *argv[]) {
           boost_traffic_streamer.AddChronoVehicleInfo(info);
           /*
                           for(int j = 0; j < 4; j++){
-                              ChVector<long long> wheel_pos =
-             it->second->GetZombieWheelPos(j); ChVector<long long> wheel_rot =
-             it->second->GetZombieWheelRot(j).Q_to_Euler123();
+                              ChVector3<long long> wheel_pos =
+             it->second->GetZombieWheelPos(j); ChVector3<long long> wheel_rot =
+             it->second->GetZombieWheelRot(j).GetCardanAnglesXYZ();
 
                               // converting wheels
 

@@ -76,11 +76,11 @@ double tire_step_size = 1e-3;
 // Time interval between two render frames
 double render_step_size = 1.0 / 50; // FPS = 50
 
-ChVector<> initLoc(0, 0, 1.4);
+ChVector3<> initLoc(0, 0, 1.4);
 ChQuaternion<> initRot(1, 0, 0, 0);
 
 // Point on chassis tracked by the camera
-ChVector<> trackPoint(0.0, 0.0, 1.75);
+ChVector3<> trackPoint(0.0, 0.0, 1.75);
 
 bool output = false;
 const std::string out_dir = GetChronoOutputPath() + "8dof";
@@ -169,7 +169,7 @@ int main(int argc, char *argv[]) {
   std::shared_ptr<Ch_8DOF_vehicle> rom_veh =
       chrono_types::make_shared<Ch_8DOF_vehicle>(rom_json, init_height,
                                                  step_size, true);
-  rom_veh->SetInitPos(initLoc + ChVector<>(0.0, 4.0, init_height));
+  rom_veh->SetInitPos(initLoc + ChVector3<>(0.0, 4.0, init_height));
   rom_veh->SetInitRot(0.0);
   rom_veh->Initialize(my_vehicle.GetSystem());
 
@@ -194,9 +194,9 @@ int main(int argc, char *argv[]) {
   // Create a body that camera attaches to
   auto attached_body = std::make_shared<ChBody>();
   my_vehicle.GetSystem()->AddBody(attached_body);
-  attached_body->SetPos(ChVector<>(0.0, 0.0, 0.0));
-  attached_body->SetCollide(false);
-  attached_body->SetBodyFixed(true);
+  attached_body->SetPos(ChVector3<>(0.0, 0.0, 0.0));
+  attached_body->EnableCollision(false);
+  attached_body->SetFixed(true);
 
   // Create camera
   // Create the camera sensor
@@ -214,8 +214,8 @@ int main(int argc, char *argv[]) {
       attached_body, // body camera is attached to
       25,            // update rate in Hz
       chrono::ChFrame<double>(
-          ChVector<>(20.0, -25.0, 10.0),
-          Q_from_Euler123(ChVector<>(0.0, C_PI / 6, C_PI / 2))), // offset pose
+          ChVector3<>(20.0, -25.0, 10.0),
+          SetFromCardanAnglesXYZ(ChVector3<>(0.0, C_PI / 6, C_PI / 2))), // offset pose
       1280,                                                      // image width
       720,                                                       // image
       1.608f, 1); // fov, lag, exposure cam->SetName("Camera Sensor");
@@ -323,14 +323,14 @@ int main(int argc, char *argv[]) {
       }
 
       // chrono vehicle info
-      ChVector<> veh_pos = my_vehicle.GetChassis()->GetPos();
+      ChVector3<> veh_pos = my_vehicle.GetChassis()->GetPos();
       ChQuaternion<> veh_rot = my_vehicle.GetChassis()->GetRot();
-      ChVector<> veh_rot_euler = veh_rot.Q_to_Euler123();
+      ChVector3<> veh_rot_euler = veh_rot.GetCardanAnglesXYZ();
 
       // 8dof rom vehicle info
-      ChVector<> rom_pos = rom_veh->GetPos();
+      ChVector3<> rom_pos = rom_veh->GetPos();
       ChQuaternion<> rom_rot = rom_veh->GetRot();
-      ChVector<> rom_rot_euler = rom_rot.Q_to_Euler123();
+      ChVector3<> rom_rot_euler = rom_rot.GetCardanAnglesXYZ();
       // write drive torques of all four wheels into file
       csv << time << "," << veh_pos.x() << "," << veh_pos.y() << ","
           << my_vehicle.GetChassis()->GetSpeed() << "," << veh_rot_euler.y()

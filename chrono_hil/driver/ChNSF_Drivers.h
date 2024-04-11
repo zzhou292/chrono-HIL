@@ -76,7 +76,7 @@ public:
 
 private:
   // starting pos to compare with to obtain traveled dist
-  ChVector<> previousPos;
+  ChVector3<> previousPos;
   // traveldistance
   double dist;
   // vector of vectors containing the instruction for target speed
@@ -141,7 +141,7 @@ public:
 
 private:
   // starting pos to compare with to obtain traveled dist
-  ChVector<> previousPos;
+  ChVector3<> previousPos;
   // traveldistance
   double dist;
   // theoretical speed

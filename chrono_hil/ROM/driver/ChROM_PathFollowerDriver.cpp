@@ -15,6 +15,7 @@
 //
 // =============================================================================
 #include "ChROM_PathFollowerDriver.h"
+#include "chrono/utils/ChUtils.h"
 namespace chrono {
 namespace hil {
 ChROM_PathFollowerDriver::ChROM_PathFollowerDriver(
@@ -44,26 +45,26 @@ ChROM_PathFollowerDriver::ChROM_PathFollowerDriver(
 DriverInputs ChROM_PathFollowerDriver::GetDriverInput() { return m_inputs; }
 
 void ChROM_PathFollowerDriver::Advance(double time_step) {
-  ChVector<> cur_pos = m_rom->GetPos(); // current vehicle position
-  ChVector<> cur_vel = m_rom->GetVel(); // current vehicle velocity
+  ChVector3<> cur_pos = m_rom->GetPos(); // current vehicle position
+  ChVector3<> cur_vel = m_rom->GetVel(); // current vehicle velocity
 
   // control steering of the vehicle
-  ChVector<> sentinel =
+  ChVector3<> sentinel =
       m_rom->GetChassisBody()
-          ->GetFrame_REF_to_abs()
+          ->GetFrameRefToAbs()
           .TransformPointLocalToParent(m_dist * ChWorldFrame::Forward());
 
-  ChVector<> target;
+  ChVector3<> target;
 
-  m_tracker->calcClosestPoint(sentinel, target);
+  m_tracker->CalcClosestPoint(sentinel, target);
 
-  ChVector<> sentinel_vec = sentinel - cur_pos;
+  ChVector3<> sentinel_vec = sentinel - cur_pos;
   ChWorldFrame::Project(sentinel_vec);
 
-  ChVector<> target_vec = target - cur_pos;
+  ChVector3<> target_vec = target - cur_pos;
   ChWorldFrame::Project(target_vec);
 
-  ChVector<> err_vec = target - sentinel;
+  ChVector3<> err_vec = target - sentinel;
   // to do
   err_vec.z() = 0.0;
 

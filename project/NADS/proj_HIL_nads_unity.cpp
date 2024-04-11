@@ -11,7 +11,6 @@
 // Authors: Jason Zhou
 // =============================================================================
 
-#include "chrono/core/ChStream.h"
 #include "chrono/utils/ChFilters.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
 
@@ -47,11 +46,10 @@ using namespace chrono;
 using namespace chrono::irrlicht;
 using namespace chrono::vehicle;
 using namespace chrono::vehicle::sedan;
-using namespace chrono::geometry;
 using namespace chrono::sensor;
 using namespace chrono::hil;
 
-const double RADS_2_RPM = 30 / CH_C_PI;
+const double RADS_2_RPM = 30 / CH_PI;
 const double MS_2_MPH = 2.2369;
 
 #define PORT_OUT 1209
@@ -61,8 +59,8 @@ bool render = true;
 // =============================================================================
 
 // Initial vehicle location and orientation
-// ChVector<> initLoc(-91.788, 98.647, 0.4);
-ChVector<> initLoc(0.0, 0.0, 0.4);
+// ChVector3<> initLoc(-91.788, 98.647, 0.4);
+ChVector3<> initLoc(0.0, 0.0, 0.4);
 ChQuaternion<> initRot(1, 0, 0, 0);
 
 // Contact method
@@ -123,8 +121,8 @@ int main(int argc, char *argv[]) {
 
   auto attached_body = std::make_shared<ChBody>();
   my_vehicle.GetSystem()->AddBody(attached_body);
-  attached_body->SetCollide(false);
-  attached_body->SetBodyFixed(true);
+  attached_body->EnableCollision(false);
+  attached_body->SetFixed(true);
 
   // Create the terrain
   RigidTerrain terrain(my_vehicle.GetSystem());
@@ -150,7 +148,7 @@ int main(int argc, char *argv[]) {
   terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
                                       "/Environments/nads/newnads/terrain.obj",
                                   true, true);
-  terrain_mesh->Transform(ChVector<>(0, 0, 0),
+  terrain_mesh->Transform(ChVector3<>(0, 0, 0),
                           ChMatrix33<>(1)); // scale to a different size
   auto terrain_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   terrain_shape->SetMesh(terrain_mesh);
@@ -159,10 +157,10 @@ int main(int argc, char *argv[]) {
 
   auto terrain_body = chrono_types::make_shared<ChBody>();
   terrain_body->SetPos({0, 0, -.01});
-  // terrain_body->SetRot(Q_from_AngX(CH_C_PI_2));
+  // terrain_body->SetRot(Q_from_AngX(CH_PI_2));
   terrain_body->AddVisualShape(terrain_shape);
-  terrain_body->SetBodyFixed(true);
-  terrain_body->SetCollide(false);
+  terrain_body->SetFixed(true);
+  terrain_body->EnableCollision(false);
   my_vehicle.GetSystem()->Add(terrain_body);
 
   // ------------------------
@@ -194,8 +192,8 @@ int main(int argc, char *argv[]) {
         attached_body, // body camera is attached to
         30,            // update rate in Hz
         chrono::ChFrame<double>(
-            ChVector<>(-10.0, 0.0, 2.0),
-            Q_from_Euler123(ChVector<>(0.0, 0.11, 0.0))), // offset pose
+            ChVector3<>(-10.0, 0.0, 2.0),
+            SetFromCardanAnglesXYZ(ChVector3<>(0.0, 0.11, 0.0))), // offset pose
         1920,                                             // image width
         1080,                                             // image height
         1.408f,
@@ -228,13 +226,13 @@ int main(int argc, char *argv[]) {
   while (true) {
     double time = my_vehicle.GetSystem()->GetChTime();
 
-    ChVector<> pos = my_vehicle.GetChassis()->GetPos();
+    ChVector3<> pos = my_vehicle.GetChassis()->GetPos();
     ChQuaternion<> rot = my_vehicle.GetChassis()->GetRot();
 
-    auto euler_rot = Q_to_Euler123(rot);
+    auto euler_rot = GetCardanAnglesXYZ(rot);
     euler_rot.x() = 0.0;
     euler_rot.y() = 0.0;
-    auto y_0_rot = Q_from_Euler123(euler_rot);
+    auto y_0_rot = SetFromCardanAnglesXYZ(euler_rot);
 
     attached_body->SetPos(pos);
     attached_body->SetRot(y_0_rot);
@@ -261,7 +259,7 @@ int main(int argc, char *argv[]) {
     boost_streamer.AddData(pos.y());
     boost_streamer.AddData(pos.z());
 
-    auto eu_rot = Q_to_Euler123(rot);
+    auto eu_rot = GetCardanAnglesXYZ(rot);
     boost_streamer.AddData(eu_rot.x()); // 4 - x rotation
     boost_streamer.AddData(eu_rot.y()); // 5 - y rotation
     boost_streamer.AddData(eu_rot.z()); // 6 - z

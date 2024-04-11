@@ -20,7 +20,7 @@
 
 #include "../../ChApiHil.h"
 #include "chrono/core/ChQuaternion.h"
-#include "chrono/core/ChVector.h"
+#include "chrono/core/ChVector3.h"
 #include "chrono/physics/ChBodyAuxRef.h"
 #include "chrono/physics/ChSystem.h"
 #include "chrono_vehicle/ChSubsysDefs.h"
@@ -30,7 +30,6 @@
 
 using namespace chrono;
 using namespace chrono::vehicle;
-using namespace chrono::geometry;
 
 // Class definition for the 8DOF Reduced-Order Vehicle Model (ROM).
 class CH_HIL_API Ch_8DOF_vehicle {
@@ -52,7 +51,7 @@ public:
 
   /// Set 8DOF ROM initial position. Note
   /// that the z position sets the plane the 8DOF ROM is moving on
-  void SetInitPos(ChVector<> init_pos);
+  void SetInitPos(ChVector3<> init_pos);
 
   /// Set 8DOF ROM initial yaw angle
   void SetInitRot(float yaw);
@@ -61,7 +60,7 @@ public:
   void Advance(float time, DriverInputs inputs);
 
   /// Get the current position of the 8DOF ROM
-  ChVector<> GetPos();
+  ChVector3<> GetPos();
 
   /// Get the current rotation of the 8DOF ROM
   /// Returns A quaternion which describes the orientation of the 8DOF ROM in
@@ -73,7 +72,7 @@ public:
   float GetStepSize();
 
   /// Get the current velocity of the 8DOF ROM
-  ChVector<> GetVel();
+  ChVector3<> GetVel();
 
   /// Obtain the ChBody attached on the chassis
   std::shared_ptr<ChBodyAuxRef> GetChassisBody();
@@ -139,7 +138,7 @@ private:
   std::shared_ptr<ChBodyAuxRef> chassis_body;
   std::shared_ptr<ChBodyAuxRef> wheels_body[4];
 
-  ChVector<> wheels_offset_pos[4];
+  ChVector3<> wheels_offset_pos[4];
   ChQuaternion<> wheels_offset_rot[4];
 
   float prev_tire_rotation[4];

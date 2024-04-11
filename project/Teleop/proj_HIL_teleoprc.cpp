@@ -19,7 +19,6 @@
 //
 // =============================================================================
 
-#include "chrono/core/ChStream.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
 
 #include "chrono_vehicle/ChConfigVehicle.h"
@@ -49,12 +48,11 @@ using namespace chrono::vehicle;
 using namespace chrono::vehicle::artcar;
 using namespace chrono::hil;
 using namespace chrono::sensor;
-using namespace chrono::geometry;
 
 // =============================================================================
 
 // Initial vehicle location and orientation
-ChVector<> initLoc(0, 0, 0.5);
+ChVector3<> initLoc(0, 0, 0.5);
 ChQuaternion<> initRot(1, 0, 0, 0);
 
 // Visualization type for vehicle parts (PRIMITIVES, MESH, or NONE)
@@ -76,7 +74,7 @@ double terrainLength = 100.0; // size in X direction
 double terrainWidth = 100.0;  // size in Y direction
 
 // Point on chassis tracked by the camera
-ChVector<> trackPoint(0.0, 0.0, 0.2);
+ChVector3<> trackPoint(0.0, 0.0, 0.2);
 
 // Contact method
 ChContactMethod contact_method = ChContactMethod::SMC;
@@ -104,7 +102,7 @@ double debug_step_size = 1.0 / 1; // FPS = 1
 bool povray_output = false;
 
 void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
-              std::vector<ChVector<>> &cone_pos);
+              std::vector<ChVector3<>> &cone_pos);
 
 // =============================================================================
 
@@ -196,15 +194,15 @@ int main(int argc, char *argv[]) {
       "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
       "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj"  //
   };
-  std::vector<ChVector<>> cone_pos = {
-      ChVector<>(6.5, -0.3, 0.005),  ChVector<>(6.5, 0.70, 0.005),
-      ChVector<>(6.0, -0.35, 0.005), ChVector<>(6.0, 0.65, 0.005),
-      ChVector<>(5.5, -0.4, 0.005),  ChVector<>(5.5, 0.6, 0.005),
-      ChVector<>(5.0, -0.45, 0.005), ChVector<>(5.0, 0.55, 0.005),
-      ChVector<>(4.5, -0.5, 0.005),  ChVector<>(4.5, 0.5, 0.005), //
-      ChVector<>(4.0, -0.5, 0.005),  ChVector<>(4.0, 0.5, 0.005), //
-      ChVector<>(3.5, -0.5, 0.005),  ChVector<>(3.5, 0.5, 0.005), //
-      ChVector<>(3.0, -0.5, 0.005),  ChVector<>(3.0, 0.5, 0.005)  //
+  std::vector<ChVector3<>> cone_pos = {
+      ChVector3<>(6.5, -0.3, 0.005),  ChVector3<>(6.5, 0.70, 0.005),
+      ChVector3<>(6.0, -0.35, 0.005), ChVector3<>(6.0, 0.65, 0.005),
+      ChVector3<>(5.5, -0.4, 0.005),  ChVector3<>(5.5, 0.6, 0.005),
+      ChVector3<>(5.0, -0.45, 0.005), ChVector3<>(5.0, 0.55, 0.005),
+      ChVector3<>(4.5, -0.5, 0.005),  ChVector3<>(4.5, 0.5, 0.005), //
+      ChVector3<>(4.0, -0.5, 0.005),  ChVector3<>(4.0, 0.5, 0.005), //
+      ChVector3<>(3.5, -0.5, 0.005),  ChVector3<>(3.5, 0.5, 0.005), //
+      ChVector3<>(3.0, -0.5, 0.005),  ChVector3<>(3.0, 0.5, 0.005)  //
   };
 
   addCones((*my_rccar.GetSystem()), cone_meshfile, cone_pos);
@@ -230,10 +228,10 @@ int main(int argc, char *argv[]) {
       my_rccar.GetVehicle().GetChassisBody(), // body camera is attached to
       25,                                     // update rate in Hz
       chrono::ChFrame<double>({-0.05, 0, 0.07},
-                              Q_from_AngAxis(0, {0, 1, 0})), // offset pose
+                              SetFromAngleAxis(0, {0, 1, 0})), // offset pose
       1280,                                                  // image width
       720,                                                   // image height
-      CH_C_PI_4,
+      CH_PI_4,
       1); // fov, lag, exposure
   cam->SetName("Camera Sensor");
   cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
@@ -249,10 +247,10 @@ int main(int argc, char *argv[]) {
       my_rccar.GetVehicle().GetChassisBody(), // body camera is attached to
       25,                                     // update rate in Hz
       chrono::ChFrame<double>(
-          {-0.1, 0, 0.07}, Q_from_AngAxis(CH_C_PI, {0, 0, 1})), // offset pose
+          {-0.1, 0, 0.07}, SetFromAngleAxis(CH_PI, {0, 0, 1})), // offset pose
       1280,                                                     // image width
       720,                                                      // image height
-      CH_C_PI_4,
+      CH_PI_4,
       1); // fov, lag, exposure
   cam2->SetName("Camera Sensor - back");
   cam2->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
@@ -383,7 +381,7 @@ int main(int argc, char *argv[]) {
 }
 
 void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
-              std::vector<ChVector<>> &cone_pos) {
+              std::vector<ChVector3<>> &cone_pos) {
   SetChronoDataPath(CHRONO_DATA_DIR);
   std::vector<std::shared_ptr<ChBodyAuxRef>> cone;
   double cone_density = 900;
@@ -395,18 +393,18 @@ void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
         GetChronoDataFile(cone_files[i]), false, true);
 
     double mass;
-    ChVector<> cog;
+    ChVector3<> cog;
     ChMatrix33<> inertia;
     mesh->ComputeMassProperties(true, mass, cog, inertia);
     ChMatrix33<> principal_inertia_rot;
-    ChVector<> principal_I;
+    ChVector3<> principal_I;
     ChInertiaUtils::PrincipalInertia(inertia, principal_I,
                                      principal_inertia_rot);
 
     auto body = chrono_types::make_shared<ChBodyAuxRef>();
     sys.Add(body);
-    body->SetBodyFixed(true);
-    body->SetFrame_REF_to_abs(ChFrame<>(ChVector<>(cone_pos[i]), QUNIT));
+    body->SetFixed(true);
+    body->SetFrame_REF_to_abs(ChFrame<>(ChVector3<>(cone_pos[i]), QUNIT));
     body->SetFrame_COG_to_REF(ChFrame<>(cog, principal_inertia_rot));
     body->SetMass(mass * cone_density);
     body->SetInertiaXX(cone_density * principal_I);

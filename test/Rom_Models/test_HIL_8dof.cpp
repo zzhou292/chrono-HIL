@@ -34,7 +34,6 @@
 // Use the namespaces of Chrono
 using namespace chrono;
 using namespace chrono::irrlicht;
-using namespace chrono::geometry;
 using namespace chrono::hil;
 using namespace chrono::vehicle;
 using namespace chrono::sensor;
@@ -125,8 +124,8 @@ int main(int argc, char *argv[]) {
       rom_veh.GetChassisBody(), // body camera is attached to
       35,                       // update rate in Hz
       chrono::ChFrame<double>(
-          ChVector<>(0.0, 6.0, 2.5),
-          Q_from_Euler123(ChVector<>(0.0, 0.15, -C_PI / 2))), // offset pose
+          ChVector3<>(0.0, 6.0, 2.5),
+          SetFromCardanAnglesXYZ(ChVector3<>(0.0, 0.15, -C_PI / 2))), // offset pose
       1280,                                                   // image width
       720,                                                    // image height
       1.608f,
@@ -143,8 +142,8 @@ int main(int argc, char *argv[]) {
       rom_veh.GetChassisBody(), // body camera is attached to
       35,                       // update rate in Hz
       chrono::ChFrame<double>(
-          ChVector<>(0.0, -5.0, 0.0),
-          Q_from_Euler123(ChVector<>(0.0, 0.25, C_PI / 2))), // offset pose
+          ChVector3<>(0.0, -5.0, 0.0),
+          SetFromCardanAnglesXYZ(ChVector3<>(0.0, 0.25, C_PI / 2))), // offset pose
       1280,                                                  // image width
       720,                                                   // image height
       1.608f,

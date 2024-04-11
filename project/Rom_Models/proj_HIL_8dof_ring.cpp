@@ -52,7 +52,6 @@
 // Use the namespaces of Chrono
 using namespace chrono;
 using namespace chrono::irrlicht;
-using namespace chrono::geometry;
 using namespace chrono::hil;
 using namespace chrono::vehicle;
 using namespace chrono::sensor;
@@ -143,7 +142,7 @@ int main(int argc, char *argv[]) {
     terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
                                         "/ring/terrain0103/ring_terrain_50.obj",
                                     false, true);
-    terrain_mesh->Transform(ChVector<>(0, 0, 0),
+    terrain_mesh->Transform(ChVector3<>(0, 0, 0),
                             ChMatrix33<>(1)); // scale to a different size
     auto terrain_shape = chrono_types::make_shared<ChTriangleMeshShape>();
     terrain_shape->SetMesh(terrain_mesh);
@@ -153,8 +152,8 @@ int main(int argc, char *argv[]) {
     auto terrain_body = chrono_types::make_shared<ChBody>();
     terrain_body->SetPos({0, 0, 0.0});
     terrain_body->AddVisualShape(terrain_shape);
-    terrain_body->SetBodyFixed(true);
-    terrain_body->SetCollide(false);
+    terrain_body->SetFixed(true);
+    terrain_body->EnableCollision(false);
 
     sys.AddBody(terrain_body);
   */
@@ -192,10 +191,10 @@ int main(int argc, char *argv[]) {
                                                    step_size, true);
 
     // determine initial position and initial orientation
-    float deg_sec = (CH_C_PI * 1.8) / (num_rom);
-    ChVector<> initLoc = ChVector<>(ring_radius * cos(deg_sec * i),
+    float deg_sec = (CH_PI * 1.8) / (num_rom);
+    ChVector3<> initLoc = ChVector3<>(ring_radius * cos(deg_sec * i),
                                     ring_radius * sin(deg_sec * i), 0.5);
-    float rot_deg = deg_sec * i + CH_C_PI_2;
+    float rot_deg = deg_sec * i + CH_PI_2;
     if (rot_deg > CH_C_2PI) {
       rot_deg = rot_deg - CH_C_2PI;
     }
@@ -252,9 +251,9 @@ int main(int argc, char *argv[]) {
 
   auto attached_body = std::make_shared<ChBody>();
   sys.AddBody(attached_body);
-  attached_body->SetPos(ChVector<>(0.0, 0.0, 0.0));
-  attached_body->SetCollide(false);
-  attached_body->SetBodyFixed(true);
+  attached_body->SetPos(ChVector3<>(0.0, 0.0, 0.0));
+  attached_body->EnableCollision(false);
+  attached_body->SetFixed(true);
 
   // Create the camera sensor
   auto manager = chrono_types::make_shared<ChSensorManager>(&sys);
@@ -270,8 +269,8 @@ int main(int argc, char *argv[]) {
       attached_body, // body camera is attached to
       35,            // update rate in Hz
       chrono::ChFrame<double>(
-          ChVector<>(0.0, 0.0, 1100.0),
-          Q_from_Euler123(ChVector<>(0.0, C_PI / 2, 0.0))), // offset pose
+          ChVector3<>(0.0, 0.0, 1100.0),
+          SetFromCardanAnglesXYZ(ChVector3<>(0.0, C_PI / 2, 0.0))), // offset pose
       1280,                                                 // image width
       720,                                                  // image
       1.608f, 1); // fov, lag, exposure cam->SetName("Camera Sensor");
@@ -284,11 +283,11 @@ int main(int argc, char *argv[]) {
 
   // manager->Update();
 
-  std::vector<ChVector<>> prev_pos_vec;
+  std::vector<ChVector3<>> prev_pos_vec;
   std::vector<float> rom_dis_vec;
 
   for (int i = 0; i < num_rom; i++) {
-    prev_pos_vec.push_back(ChVector<>(0.0, 0.0, 0.0));
+    prev_pos_vec.push_back(ChVector3<>(0.0, 0.0, 0.0));
     rom_dis_vec.push_back(0.0);
   }
 
