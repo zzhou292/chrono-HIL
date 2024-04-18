@@ -9,7 +9,7 @@
 
 set(DEMOS
 	proj_HIL_highway
-	#proj_HIL_highway_2
+	proj_HIL_highway_2
 )
 
 #--------------------------------------------------------------
