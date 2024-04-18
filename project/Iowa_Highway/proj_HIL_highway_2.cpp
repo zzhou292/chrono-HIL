@@ -45,7 +45,7 @@
 #include "chrono_thirdparty/filesystem/path.h"
 #include "chrono_vehicle/wheeled_vehicle/ChWheeledVehicleVisualSystemIrrlicht.h"
 
-//#include "chrono_vehicle/driver/ChPathFollowerDriver.h"
+// #include "chrono_vehicle/driver/ChPathFollowerDriver.h"
 
 #include "chrono_hil/driver/ChCSLDriver.h"
 #include "chrono_hil/driver/ChNSF_Drivers.h"
@@ -54,6 +54,7 @@
 
 #include "chrono/utils/ChFilters.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
+#include "chrono_hil/network/udp/ChBoostInStreamer.h"
 #include "chrono_hil/network/udp/ChBoostOutStreamer.h"
 #include "chrono/core/ChRandom.h"
 
@@ -74,6 +75,7 @@ using namespace chrono::sensor;
 using namespace chrono::synchrono;
 using namespace chrono::hil;
 
+#define PORT_IN 1210
 #define PORT_OUT 1209
 #define IP_OUT "128.104.190.120"
 
@@ -83,7 +85,7 @@ using namespace chrono::hil;
 const double rads2rpm = 30 / CH_PI;
 const double RADS_2_RPM = 30 / CH_PI;
 const double RADS_2_DEG = 180 / CH_PI;
-const double DEG_2_RADS = CH_PI/180;
+const double DEG_2_RADS = CH_PI / 180;
 
 // -----------------------------------------------------------------------------
 // Vehicle parameters
@@ -98,8 +100,12 @@ ChVector3<> driver_eye(-.3, .4, .98);
 
 ChQuaternion<> driver_view_direction;
 
-enum DriverMode { HUMAN, AUTONOMOUS };
-DriverMode driver_mode = AUTONOMOUS;
+enum DriverMode
+{
+  HUMAN,
+  AUTONOMOUS
+};
+DriverMode driver_mode = HUMAN;
 
 // Visualization type for vehicle parts (PRIMITIVES, MESH, or NONE)
 VisualizationType chassis_vis_type = VisualizationType::MESH;
@@ -178,8 +184,6 @@ double cruise_speed = 45;
 
 int correct_ratio = 200;
 
-// Data saving
-bool save_driver = true;
 // time interval between data savings
 double tsave = 1e-2;
 
@@ -253,80 +257,102 @@ float ControlFindSpeed_x_y(std::vector<float> time_vec,
                            std::vector<float> speed_vec, float time,
                            float default_speed);
 
-void ReadParameterFiles() {
+void ReadParameterFiles()
+{
   { // Simulation parameter file
     rapidjson::Document d;
     vehicle::ReadFileJSON(simulation_parameters, d);
 
-    if (d.HasMember("TimeStep")) {
+    if (d.HasMember("TimeStep"))
+    {
       step_size = d["TimeStep"].GetDouble();
     }
 
-    if (d.HasMember("Camera")) {
+    if (d.HasMember("Camera"))
+    {
       const rapidjson::Value &camera_params = d["Camera"];
-      if (camera_params.HasMember("DriverEye")) {
+      if (camera_params.HasMember("DriverEye"))
+      {
         driver_eye = vehicle::ReadVectorJSON(camera_params["DriverEye"]);
       }
-      if (camera_params.HasMember("FrameRate")) {
+      if (camera_params.HasMember("FrameRate"))
+      {
         frame_rate = camera_params["FrameRate"].GetFloat();
       }
-      if (camera_params.HasMember("SuperSamples")) {
+      if (camera_params.HasMember("SuperSamples"))
+      {
         super_samples = camera_params["SuperSamples"].GetInt();
       }
-      if (camera_params.HasMember("FieldOfView")) {
+      if (camera_params.HasMember("FieldOfView"))
+      {
         cam_fov = camera_params["FieldOfView"].GetFloat() * DEG_2_RADS;
       }
     }
-    if (d.HasMember("Fog")) {
+    if (d.HasMember("Fog"))
+    {
       const rapidjson::Value &fog_params = d["Fog"];
-      if (fog_params.HasMember("Enabled")) {
+      if (fog_params.HasMember("Enabled"))
+      {
         fog_enabled = fog_params["Enabled"].GetBool();
       }
-      if (fog_params.HasMember("Color")) {
+      if (fog_params.HasMember("Color"))
+      {
         fog_color = vehicle::ReadVectorJSON(fog_params["Color"]);
       }
-      if (fog_params.HasMember("Distance")) {
+      if (fog_params.HasMember("Distance"))
+      {
         fog_distance = fog_params["Distance"].GetFloat();
       }
     }
 
-    if (d.HasMember("Joystick")) {
+    if (d.HasMember("Joystick"))
+    {
       joystick_filename = demo_data_path + d["Joystick"].GetString();
     }
 
-    if (d.HasMember("Mirrors")) {
+    if (d.HasMember("Mirrors"))
+    {
       const rapidjson::Value &mirror_params = d["Mirrors"];
-      if (mirror_params.HasMember("Rearview")) {
+      if (mirror_params.HasMember("Rearview"))
+      {
         const rapidjson::Value &rearview_params = mirror_params["Rearview"];
-        if (rearview_params.HasMember("Position")) {
+        if (rearview_params.HasMember("Position"))
+        {
           mirror_rearview_pos =
               vehicle::ReadVectorJSON(rearview_params["Position"]);
         }
-        if (rearview_params.HasMember("Rotation")) {
+        if (rearview_params.HasMember("Rotation"))
+        {
           mirror_rearview_rot.SetFromCardanAnglesXYZ(
               DEG_2_RADS *
               vehicle::ReadVectorJSON(rearview_params["Rotation"]));
         }
       }
-      if (mirror_params.HasMember("WingLeft")) {
+      if (mirror_params.HasMember("WingLeft"))
+      {
         const rapidjson::Value &wingleft_params = mirror_params["WingLeft"];
-        if (wingleft_params.HasMember("Position")) {
+        if (wingleft_params.HasMember("Position"))
+        {
           mirror_wingleft_pos =
               vehicle::ReadVectorJSON(wingleft_params["Position"]);
         }
-        if (wingleft_params.HasMember("Rotation")) {
+        if (wingleft_params.HasMember("Rotation"))
+        {
           mirror_wingleft_rot.SetFromCardanAnglesXYZ(
               DEG_2_RADS *
               vehicle::ReadVectorJSON(wingleft_params["Rotation"]));
         }
       }
-      if (mirror_params.HasMember("WingRight")) {
+      if (mirror_params.HasMember("WingRight"))
+      {
         const rapidjson::Value &wingright_params = mirror_params["WingRight"];
-        if (wingright_params.HasMember("Position")) {
+        if (wingright_params.HasMember("Position"))
+        {
           mirror_wingright_pos =
               vehicle::ReadVectorJSON(wingright_params["Position"]);
         }
-        if (wingright_params.HasMember("Rotation")) {
+        if (wingright_params.HasMember("Rotation"))
+        {
           mirror_wingright_rot.SetFromCardanAnglesXYZ(
               DEG_2_RADS *
               vehicle::ReadVectorJSON(wingright_params["Rotation"]));
@@ -339,44 +365,56 @@ void ReadParameterFiles() {
     rapidjson::Document d;
     vehicle::ReadFileJSON(scenario_parameters, d);
 
-    if (d.HasMember("StartLocation")) {
+    if (d.HasMember("StartLocation"))
+    {
       initLoc = vehicle::ReadVectorJSON(d["StartLocation"]);
     }
-    if (d.HasMember("EndTime")) {
+    if (d.HasMember("EndTime"))
+    {
       t_end = d["EndTime"].GetDouble();
     }
 
-    if (d.HasMember("MeetTime")) {
+    if (d.HasMember("MeetTime"))
+    {
       meet_time = d["MeetTime"].GetInt();
     }
 
-    if (d.HasMember("ETADist")) {
+    if (d.HasMember("ETADist"))
+    {
       eta_dist = d["ETADist"].GetDouble();
     }
     // TODO: figure out what is happening there, not sure necessary
-    if (d.HasMember("FollowerDriverParam")) {
+    if (d.HasMember("FollowerDriverParam"))
+    {
       auto marr = d["FollowerDriverParam"].GetArray();
       int msize = marr.Size();
       assert(msize == 7);
       followerParam.resize(msize);
-      for (int j = 0; j < marr.Size(); j++) {
+      for (int j = 0; j < marr.Size(); j++)
+      {
         followerParam[j] = marr[j].GetDouble();
       }
-    } else {
+    }
+    else
+    {
       followerParam.resize(6);
       followerParam = {30, 1.5, 2.0, 5.0, 3.0, 4.0, AUDI_LENGTH};
     }
 
-    if (d.HasMember("CruiseSpeed")) {
+    if (d.HasMember("CruiseSpeed"))
+    {
       cruise_speed = d["CruiseSpeed"].GetDouble();
     }
-    if (d.HasMember("ArrivedSign")) {
+    if (d.HasMember("ArrivedSign"))
+    {
       const rapidjson::Value &arrived_sign_params = d["ArrivedSign"];
-      if (arrived_sign_params.HasMember("Position")) {
+      if (arrived_sign_params.HasMember("Position"))
+      {
         arrived_sign_pos =
             vehicle::ReadVectorJSON(arrived_sign_params["Position"]);
       }
-      if (arrived_sign_params.HasMember("Rotation")) {
+      if (arrived_sign_params.HasMember("Rotation"))
+      {
         arrived_sign_rot.SetFromCardanAnglesXYZ(
             DEG_2_RADS *
             vehicle::ReadVectorJSON(arrived_sign_params["Rotation"]));
@@ -390,12 +428,14 @@ void ReadParameterFiles() {
     rapidjson::Document d;
     vehicle::ReadFileJSON(lead_parameters, d);
 
-    while (true) {
+    while (true)
+    {
       std::string entry_name = "lead_" + std::to_string(lead_count);
 
       std::cout << entry_name << std::endl;
 
-      if (d.HasMember(entry_name.c_str())) {
+      if (d.HasMember(entry_name.c_str()))
+      {
         std::cout << "lead_count:" << lead_count << std::endl;
 
         dynamic_pos.push_back(
@@ -405,17 +445,23 @@ void ReadParameterFiles() {
         dynamic_lane.push_back(d[entry_name.c_str()]["lane"].GetInt());
 
         // read speed control
-        if (d[entry_name.c_str()].HasMember("time_speed_control")) {
+        if (d[entry_name.c_str()].HasMember("time_speed_control"))
+        {
           dynamic_control.push_back(2);
           std::vector<float> temp_time;
           std::vector<float> temp_speed;
 
           auto marr = d[entry_name.c_str()]["time_speed_control"].GetArray();
-          for (int i = 0; i < marr[0].Size(); i++) {
-            for (int j = 0; j < marr[1].Size(); j++) {
-              if (i == 0) {
+          for (int i = 0; i < marr[0].Size(); i++)
+          {
+            for (int j = 0; j < marr[1].Size(); j++)
+            {
+              if (i == 0)
+              {
                 temp_time.push_back(marr[i][j].GetDouble());
-              } else if (i == 1) {
+              }
+              else if (i == 1)
+              {
                 temp_speed.push_back(marr[i][j].GetDouble());
               }
             }
@@ -424,7 +470,8 @@ void ReadParameterFiles() {
           dynamic_control_y.push_back(temp_speed);
         }
 
-        if (d[entry_name.c_str()].HasMember("LeaderDriverParam")) {
+        if (d[entry_name.c_str()].HasMember("LeaderDriverParam"))
+        {
           std::vector<std::vector<double>> temp_leaderParam;
           auto marr = d[entry_name.c_str()]["LeaderDriverParam"].GetArray();
           int msize0 = marr.Size();
@@ -432,21 +479,27 @@ void ReadParameterFiles() {
           assert(msize1 == 6);
           temp_leaderParam.resize(msize0);
           // printf("ARRAY DIM = %i \n", msize);
-          for (auto it = marr.begin(); it != marr.end(); ++it) {
+          for (auto it = marr.begin(); it != marr.end(); ++it)
+          {
             auto i = std::distance(marr.begin(), it);
             temp_leaderParam[i].resize(msize1);
-            for (int j = 0; j < marr[i].Size(); j++) {
+            for (int j = 0; j < marr[i].Size(); j++)
+            {
               temp_leaderParam[i][j] = marr[i][j].GetDouble();
             }
           }
           leaderParam.push_back(temp_leaderParam);
-        } else {
+        }
+        else
+        {
           std::vector<std::vector<double>> temp_leaderParam;
           temp_leaderParam.resize(1);
           temp_leaderParam[0] = {0.5, 1.5, 55.0, 5.0, 628.3, 0.0};
           leaderParam.push_back(temp_leaderParam);
         }
-      } else {
+      }
+      else
+      {
         break;
       }
       lead_count++;
@@ -454,7 +507,8 @@ void ReadParameterFiles() {
   }
 }
 
-void AddCommandLineOptions(ChCLI &cli) {
+void AddCommandLineOptions(ChCLI &cli)
+{
   cli.AddOption<double>("Simulation", "s,step_size", "Step size",
                         std::to_string(step_size));
   cli.AddOption<double>("Simulation", "e,end_time", "End time",
@@ -495,7 +549,8 @@ void AddCommandLineOptions(ChCLI &cli) {
       "true");
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
   // mitigation and adapt to api change
   initRot.SetFromAngleZ(-CH_PI_2);
   driver_view_direction.SetFromAngleAxis(0, {1, 0, 0});
@@ -519,7 +574,8 @@ int main(int argc, char *argv[]) {
   std::cout << "enable_realtime: " << enable_realtime << std::endl;
 
   use_fullscreen = cli.GetAsType<bool>("fullscreen");
-  if (use_fullscreen) {
+  if (use_fullscreen)
+  {
     image_width = fullscreen_image_width;
     image_height = fullscreen_image_height;
     cam_fov = 1.608f;
@@ -586,8 +642,10 @@ int main(int argc, char *argv[]) {
   vehicle.InitializePowertrain(powertrain);
 
   // Create and initialize the tires
-  for (auto &axle : vehicle.GetAxles()) {
-    for (auto &wheel : axle->GetWheels()) {
+  for (auto &axle : vehicle.GetAxles())
+  {
+    for (auto &wheel : axle->GetWheels())
+    {
       auto tire = ReadTireJSON(tire_file);
       tire->SetStepsize(step_size / 20);
       vehicle.InitializeTire(tire, wheel, tire_vis_type);
@@ -687,7 +745,8 @@ int main(int argc, char *argv[]) {
   rot.SetFromDirectionAxes(forward, lateral, up);
 
   std::shared_ptr<RigidTerrain::Patch> patch;
-  switch (terrain_model) {
+  switch (terrain_model)
+  {
   case RigidTerrain::PatchType::BOX:
     patch = terrain.AddPatch(patch_mat, CSYSNORM, terrainLength, terrainWidth,
                              2, false, 1, false);
@@ -728,7 +787,8 @@ int main(int argc, char *argv[]) {
   std::vector<std::shared_ptr<Ch_8DOF_vehicle>> lead_vec;
   std::vector<std::shared_ptr<ChROM_PathFollowerDriver>> driver_vec;
 
-  for (int i = 0; i < lead_count; i++) {
+  for (int i = 0; i < lead_count; i++)
+  {
     std::shared_ptr<Ch_8DOF_vehicle> rom_veh =
         chrono_types::make_shared<Ch_8DOF_vehicle>(rom_json, init_height,
                                                    step_size, true);
@@ -740,11 +800,14 @@ int main(int argc, char *argv[]) {
 
     std::string path_file;
     std::shared_ptr<ChBezierCurve> path;
-    if (dynamic_lane[i] == 0) {
+    if (dynamic_lane[i] == 0)
+    {
       path_file = STRINGIFY(HIL_DATA_DIR) +
                   std::string("/Environments/Iowa/Driver/OnInnerLane.txt");
       path = ChBezierCurve::Read(path_file, true);
-    } else if (dynamic_lane[i] == 1) {
+    }
+    else if (dynamic_lane[i] == 1)
+    {
       path_file = STRINGIFY(HIL_DATA_DIR) +
                   std::string("/Environments/Iowa/Driver/OnOuterLane.txt");
       path = ChBezierCurve::Read(path_file, true);
@@ -756,6 +819,31 @@ int main(int argc, char *argv[]) {
             0.3, 0.0, 0.0);
     driver_vec.push_back(driver);
   }
+
+  std::string steering_controller_file_IG =
+      demo_data_path + "/Environments/Iowa/Driver/SteeringController_IG.json";
+  std::string steering_controller_file_IG_nl =
+      demo_data_path +
+      "/Environments/Iowa/Driver/SteeringController_IG_nl.json";
+  std::string steering_controller_file_LD =
+      demo_data_path + "/Environments/Iowa/Driver/SteeringController_LD.json";
+
+  std::string speed_controller_file_IG =
+      demo_data_path + "/Environments/Iowa/Driver/SpeedController_IG.json";
+  std::string speed_controller_file_IG_nl =
+      demo_data_path + "/Environments/Iowa/Driver/SpeedController_IG_nl.json";
+  std::string speed_controller_file_LD =
+      demo_data_path + "/Environments/Iowa/Driver/SpeedController_LD.json";
+
+  std::shared_ptr<ChNSFFollowerDriver> PFdriver;
+
+  PFdriver = chrono_types::make_shared<ChNSFFollowerDriver>(
+      vehicle, steering_controller_file_IG_nl, speed_controller_file_IG_nl,
+      inner_path, "road", cruise_speed * MPH_TO_MS, followerParam);
+
+  PFdriver->Initialize();
+
+  PF_driver_ptr = PFdriver;
 
   // ---------------
   // Simulation loop
@@ -787,7 +875,8 @@ int main(int argc, char *argv[]) {
   b.mode = BackgroundMode::ENVIRONMENT_MAP;
   b.env_tex = GetChronoDataFile("sensor/textures/sunflowers_4k.hdr");
   manager->scene->SetBackground(b);
-  if (fog_enabled) {
+  if (fog_enabled)
+  {
     manager->scene->SetFogScatteringFromDistance(fog_distance);
     manager->scene->SetFogColor(fog_color);
   }
@@ -801,9 +890,9 @@ int main(int argc, char *argv[]) {
       vehicle.GetChassisBody(), // body camera is attached to
       10,                       // update rate in Hz
       chrono::ChFrame<double>(
-          {0, 0, 3000}, cam_rot ), // offset pose
-      1920,                                                    // image width
-      1080,                                                    // image height
+          {0, 0, 3000}, cam_rot), // offset pose
+      1920,                       // image width
+      1080,                       // image height
       CH_PI_4,
       super_samples); // fov, lag, exposure
   cam->SetName("Camera Sensor");
@@ -818,11 +907,11 @@ int main(int argc, char *argv[]) {
   // Create a second camera and add it to the sensor manager
   // -------------------------------------------------------
   auto cam2 = chrono_types::make_shared<ChCameraSensor>(
-      vehicle.GetChassisBody(), // body camera is attached to
-      frame_rate,               // update rate in Hz
+      vehicle.GetChassisBody(),                                   // body camera is attached to
+      frame_rate,                                                 // update rate in Hz
       chrono::ChFrame<double>(driver_eye, driver_view_direction), // offset pose
       image_width,                                                // image width
-      image_height, // image height
+      image_height,                                               // image height
       cam_fov,
       super_samples); // fov, lag, exposure
   cam2->SetName("Camera Sensor");
@@ -862,7 +951,11 @@ int main(int argc, char *argv[]) {
   // create boost data streaming interface
   ChBoostOutStreamer boost_streamer(IP_OUT, PORT_OUT);
 
-  while (true) {
+  ChBoostInStreamer in_streamer(PORT_IN, 1);
+  std::vector<float> recv_data;
+
+  while (true)
+  {
     sim_time = vehicle.GetSystem()->GetChTime();
 
     // End simulation
@@ -871,9 +964,18 @@ int main(int argc, char *argv[]) {
 
     // Collect output data from modules (for inter-module communication)
     DriverInputs driver_inputs;
-    driver_inputs.m_steering = SDLDriver.GetSteering();
-    driver_inputs.m_throttle = SDLDriver.GetThrottle();
-    driver_inputs.m_braking = SDLDriver.GetBraking();
+
+    // Collect output data from modules (for inter-module communication)
+    if (driver_mode == AUTONOMOUS)
+    {
+      driver_inputs = PFdriver->GetInputs();
+    }
+    else
+    {
+      driver_inputs.m_steering = SDLDriver.GetSteering();
+      driver_inputs.m_throttle = SDLDriver.GetThrottle();
+      driver_inputs.m_braking = SDLDriver.GetBraking();
+    }
 
     auto ig_speed = vehicle.GetSpeed() * MS_TO_MPH;
     auto wall_time = high_resolution_clock::now();
@@ -884,13 +986,18 @@ int main(int argc, char *argv[]) {
     // update current vehicle speed
     cur_follower_speed = vehicle.GetSpeed();
 
-    if (SDLDriver.Synchronize() == 1) {
+    if (SDLDriver.Synchronize() == 1)
+    {
       break;
     }
 
+    if (driver_mode == AUTONOMOUS)
+      PFdriver->Synchronize(sim_time, step_size);
+
     terrain.Synchronize(sim_time);
     vehicle.Synchronize(sim_time, driver_inputs, terrain);
-    for (int i = 0; i < lead_count; i++) {
+    for (int i = 0; i < lead_count; i++)
+    {
       float target_spd =
           ControlFindSpeed_x_y(dynamic_control_x[i], dynamic_control_y[i],
                                sim_time, dynamic_cruise_speed[i]);
@@ -909,54 +1016,76 @@ int main(int argc, char *argv[]) {
     terrain.Advance(step);
     vehicle.Advance(step);
 
+    if (driver_mode == AUTONOMOUS)
+      PFdriver->Advance(step);
+
     // Update the sensor manager
-    if (render) {
+    if (render)
+    {
       manager->Update();
     }
 
-    if (step_number == 0) {
-      if (enable_realtime) {
+    if (step_number == 0)
+    {
+      if (enable_realtime)
+      {
         realtime_timer.Reset();
       }
 
       t0 = high_resolution_clock::now();
     }
 
-    // Stream out data
-    boost_streamer.AddData(vehicle.GetSystem()->GetChTime()); // sim time
-    boost_streamer.AddData(vehicle.GetSpeed() * MS_TO_MPH);   // vehicle speed
-    boost_streamer.AddData(vehicle.GetEngine()->GetMotorSpeed() *
-                           rads2rpm);                           // RPM
-    boost_streamer.AddData(vehicle.GetChassis()->GetPos().x()); // vehicle x pos
-    boost_streamer.AddData(vehicle.GetChassis()->GetPos().y()); // vehicle y pos
-    boost_streamer.AddData(driver_inputs.m_throttle);           // throttle data
-    boost_streamer.AddData(driver_inputs.m_braking);            // brake data
-    boost_streamer.AddData(driver_inputs.m_steering);           // steering data
-    std::cout << "lead_count:" << lead_count << std::endl;
+    if (step_number % 10 == 0)
+    {
+      // Stream out data
+      boost_streamer.AddData(vehicle.GetSystem()->GetChTime()); // sim time
+      boost_streamer.AddData(vehicle.GetSpeed() * MS_TO_MPH);   // vehicle speed
+      boost_streamer.AddData(vehicle.GetEngine()->GetMotorSpeed() *
+                             rads2rpm);                           // RPM
+      boost_streamer.AddData(vehicle.GetChassis()->GetPos().x()); // vehicle x pos
+      boost_streamer.AddData(vehicle.GetChassis()->GetPos().y()); // vehicle y pos
+      boost_streamer.AddData(driver_inputs.m_throttle);           // throttle data
+      boost_streamer.AddData(driver_inputs.m_braking);            // brake data
+      boost_streamer.AddData(driver_inputs.m_steering);           // steering data
+      std::cout << "lead_count:" << lead_count << std::endl;
 
-    for(int i = 0; i < lead_count; i++){
-      // if lead count isn't 0, treat it as lead vehicle
-      boost_streamer.AddData(lead_vec[i]->GetPos().x()); // lead vehicle x pos
-      boost_streamer.AddData(lead_vec[i]->GetPos().y()); // lead vehicle y pos
-      boost_streamer.AddData(
-          lead_vec[i]->GetVel().x()); // lead vehicle x velocity
-      boost_streamer.AddData(
-          lead_vec[i]->GetVel().y()); // lead vehicle y velocity
-      boost_streamer.AddData(lead_vec[i]->GetDriverInputs().m_throttle);
-      // lead vehicle throttle data
-      boost_streamer.AddData(lead_vec[i]->GetDriverInputs().m_braking);
-      // lead vehicle braking data
-      boost_streamer.AddData(lead_vec[i]->GetDriverInputs().m_steering);
-      // lead vehicle steering data
+      for (int i = 0; i < lead_count; i++)
+      {
+        // if lead count isn't 0, treat it as lead vehicle
+        boost_streamer.AddData(lead_vec[i]->GetPos().x()); // lead vehicle x pos
+        boost_streamer.AddData(lead_vec[i]->GetPos().y()); // lead vehicle y pos
+        boost_streamer.AddData(
+            lead_vec[i]->GetVel().x()); // lead vehicle x velocity
+        boost_streamer.AddData(
+            lead_vec[i]->GetVel().y()); // lead vehicle y velocity
+        boost_streamer.AddData(lead_vec[i]->GetDriverInputs().m_throttle);
+        // lead vehicle throttle data
+        boost_streamer.AddData(lead_vec[i]->GetDriverInputs().m_braking);
+        // lead vehicle braking data
+        boost_streamer.AddData(lead_vec[i]->GetDriverInputs().m_steering);
+        // lead vehicle steering data
+      }
+
+      boost_streamer.Synchronize();
+
+      in_streamer.Synchronize();
+      recv_data = in_streamer.GetRecvData();
+      std::cout << recv_data[0] << std::endl;
+      if ((int)recv_data[0] == 0)
+      {
+        driver_mode = HUMAN;
+      }
+      else
+      {
+        driver_mode = AUTONOMOUS;
+      }
     }
-
-
-    boost_streamer.Synchronize();
 
     // Increment frame number
     step_number++;
 
-    if (step_number % 5 == 0 && enable_realtime) {
+    if (step_number % 5 == 0 && enable_realtime)
+    {
       auto tt0 = high_resolution_clock::now();
       realtime_timer.Spin(sim_time);
       auto tt1 = high_resolution_clock::now();
@@ -971,7 +1100,8 @@ int main(int argc, char *argv[]) {
   return 0;
 }
 
-void AddTrees(ChSystem *chsystem) {
+void AddTrees(ChSystem *chsystem)
+{
   // add in tress next to road
   auto tree_mesh_0 = chrono_types::make_shared<ChTriangleMeshConnected>();
   tree_mesh_0->LoadWavefrontMesh(
@@ -1016,8 +1146,10 @@ void AddTrees(ChSystem *chsystem) {
   double x_start = 4000.0 - 45; // initLoc.x()-38;
   double y_start = -10000.0;    // initLoc.y()-7500;
 
-  for (int i = 0; i < x_count; i++) {
-    for (int j = 0; j < y_count; j++) {
+  for (int i = 0; i < x_count; i++)
+  {
+    for (int j = 0; j < y_count; j++)
+    {
       auto trimesh_shape =
           chrono_types::make_shared<ChVisualShapeTriangleMesh>();
       trimesh_shape->SetMesh(
@@ -1044,8 +1176,10 @@ void AddTrees(ChSystem *chsystem) {
   x_start = -4052.0 - 45; // initLoc.x()-38;
   y_start = -10000.0;     // initLoc.y()-7500;
 
-  for (int i = 0; i < x_count; i++) {
-    for (int j = 0; j < y_count; j++) {
+  for (int i = 0; i < x_count; i++)
+  {
+    for (int j = 0; j < y_count; j++)
+    {
       auto trimesh_shape =
           chrono_types::make_shared<ChVisualShapeTriangleMesh>();
       trimesh_shape->SetMesh(
@@ -1070,7 +1204,8 @@ void AddTrees(ChSystem *chsystem) {
   }
 }
 
-void AddRoadway(ChSystem *chsystem) {
+void AddRoadway(ChSystem *chsystem)
+{
   std::vector<std::string> environment_meshes = {
       "/Environments/Iowa/signs/mile_markers_inner.obj",
       "/Environments/Iowa/signs/mile_markers_outer.obj",
@@ -1079,7 +1214,8 @@ void AddRoadway(ChSystem *chsystem) {
       {0, 0, -128.22}, {0, 0, 0.0}, {0, 0, 0.01}};
 
   for (int i = 0; i < environment_meshes.size();
-       i++) { // auto file_name : environment_meshes) {
+       i++)
+  { // auto file_name : environment_meshes) {
     // additional environment assets
     auto trimesh = chrono_types::make_shared<ChTriangleMeshConnected>();
     trimesh->LoadWavefrontMesh(demo_data_path + environment_meshes[i], true,
@@ -1091,7 +1227,8 @@ void AddRoadway(ChSystem *chsystem) {
     trimesh_shape->SetName(environment_meshes[i]);
     trimesh_shape->SetMutable(false);
 
-    if (i == 2) {
+    if (i == 2)
+    {
       auto road_tex = chrono_types::make_shared<ChVisualMaterial>();
       road_tex->SetKdTexture(
           demo_data_path +
@@ -1138,7 +1275,8 @@ void AddRoadway(ChSystem *chsystem) {
   }
 }
 
-void AddBuildings(ChSystem *chsystem) {
+void AddBuildings(ChSystem *chsystem)
+{
   std::vector<std::string> environment_meshes = {
       "/Environments/Iowa/buildings/farm_01.obj", //
       "/Environments/Iowa/buildings/farm_02.obj", //
@@ -1202,11 +1340,13 @@ void AddBuildings(ChSystem *chsystem) {
       {-2922, -14611, 0.0}        // water tower
   };
 
-  if (offsets.size() != environment_meshes.size()) {
+  if (offsets.size() != environment_meshes.size())
+  {
     std::cout << "ERROR: incorrect number of offsets for building meshes\n";
     return;
   }
-  for (int i = 0; i < environment_meshes.size(); i++) {
+  for (int i = 0; i < environment_meshes.size(); i++)
+  {
     // additional environment assets
     auto trimesh = chrono_types::make_shared<ChTriangleMeshConnected>();
     trimesh->LoadWavefrontMesh(demo_data_path + environment_meshes[i], false,
@@ -1231,7 +1371,8 @@ void AddBuildings(ChSystem *chsystem) {
   }
 }
 
-void AddTerrain(ChSystem *chsystem) {
+void AddTerrain(ChSystem *chsystem)
+{
   // add terrain with weighted textures
   auto terrain_mesh = chrono_types::make_shared<ChTriangleMeshConnected>();
   terrain_mesh->LoadWavefrontMesh(
@@ -1310,19 +1451,25 @@ void AddTerrain(ChSystem *chsystem) {
 
 float ControlFindSpeed_x_y(std::vector<float> time_vec,
                            std::vector<float> speed_vec, float time,
-                           float default_speed) {
+                           float default_speed)
+{
   int n = time_vec.size();
   int target_idx = n;
   // find out which range the 'time' argument falls into
-  for (int i = 0; i < n; i++) {
-    if (time <= time_vec[i]) {
+  for (int i = 0; i < n; i++)
+  {
+    if (time <= time_vec[i])
+    {
       target_idx = i;
       break;
     }
   }
-  if (target_idx == 0) {
+  if (target_idx == 0)
+  {
     return default_speed;
-  } else {
+  }
+  else
+  {
     return speed_vec[target_idx - 1];
   }
 }

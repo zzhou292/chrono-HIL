@@ -76,6 +76,7 @@
         "typeinfo": "cpp",
         "variant": "cpp",
         "*.ipp": "cpp",
-        "*.txx": "cpp"
+        "*.txx": "cpp",
+        "forward_list": "cpp"
     }
 }
