@@ -48,6 +48,7 @@
 
 #include "chrono/utils/ChFilters.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
+#include "chrono/core/ChRandom.h"
 
 #include <fstream>
 #include <iomanip>
@@ -70,7 +71,9 @@ using namespace chrono::hil;
 // rad to RPM conversion parameters
 // -----------------------------------------------------------------------------
 const double rads2rpm = 30 / CH_PI;
-
+const double RADS_2_RPM = 30 / CH_PI;
+const double RADS_2_DEG = 180 / CH_PI;
+const double DEG_2_RADS = CH_PI/180;
 // -----------------------------------------------------------------------------
 // Vehicle parameters
 // -----------------------------------------------------------------------------
@@ -78,11 +81,11 @@ const double rads2rpm = 30 / CH_PI;
 // Initial vehicle location and orientation
 ChVector3<> initLoc(5011.5, -445, 100.75); // near mile marker
 
-ChQuaternion<> initRot = SetFromAngleZ(-CH_PI_2);
+ChQuaternion<> initRot;
 
 ChVector3<> driver_eye(-.3, .4, .98);
 
-ChQuaternion<> driver_view_direction = SetFromAngleAxis(0, {1, 0, 0});
+ChQuaternion<> driver_view_direction;
 
 enum DriverMode { HUMAN, AUTONOMOUS };
 DriverMode driver_mode = AUTONOMOUS;
@@ -344,7 +347,7 @@ void ReadParameterFiles() {
         super_samples = camera_params["SuperSamples"].GetInt();
       }
       if (camera_params.HasMember("FieldOfView")) {
-        cam_fov = camera_params["FieldOfView"].GetFloat() * CH_C_DEG_TO_RAD;
+        cam_fov = camera_params["FieldOfView"].GetFloat() * DEG_2_RADS;
       }
     }
     if (d.HasMember("Fog")) {
@@ -373,8 +376,8 @@ void ReadParameterFiles() {
               vehicle::ReadVectorJSON(rearview_params["Position"]);
         }
         if (rearview_params.HasMember("Rotation")) {
-          mirror_rearview_rot = SetFromCardanAnglesXYZ(
-              CH_C_DEG_TO_RAD *
+          mirror_rearview_rot.SetFromCardanAnglesXYZ(
+              DEG_2_RADS *
               vehicle::ReadVectorJSON(rearview_params["Rotation"]));
         }
       }
@@ -385,8 +388,8 @@ void ReadParameterFiles() {
               vehicle::ReadVectorJSON(wingleft_params["Position"]);
         }
         if (wingleft_params.HasMember("Rotation")) {
-          mirror_wingleft_rot = SetFromCardanAnglesXYZ(
-              CH_C_DEG_TO_RAD *
+          mirror_wingleft_rot.SetFromCardanAnglesXYZ(
+              DEG_2_RADS *
               vehicle::ReadVectorJSON(wingleft_params["Rotation"]));
         }
       }
@@ -397,8 +400,8 @@ void ReadParameterFiles() {
               vehicle::ReadVectorJSON(wingright_params["Position"]);
         }
         if (wingright_params.HasMember("Rotation")) {
-          mirror_wingright_rot = SetFromCardanAnglesXYZ(
-              CH_C_DEG_TO_RAD *
+          mirror_wingright_rot.SetFromCardanAnglesXYZ(
+              DEG_2_RADS *
               vehicle::ReadVectorJSON(wingright_params["Rotation"]));
         }
       }
@@ -447,8 +450,8 @@ void ReadParameterFiles() {
             vehicle::ReadVectorJSON(arrived_sign_params["Position"]);
       }
       if (arrived_sign_params.HasMember("Rotation")) {
-        arrived_sign_rot = SetFromCardanAnglesXYZ(
-            CH_C_DEG_TO_RAD *
+        arrived_sign_rot.SetFromCardanAnglesXYZ(
+            DEG_2_RADS *
             vehicle::ReadVectorJSON(arrived_sign_params["Rotation"]));
       }
     }
@@ -683,6 +686,11 @@ void AddCommandLineOptions(ChCLI &cli) {
 }
 
 int main(int argc, char *argv[]) {
+  // mitigation and adapt to api change
+  initRot.SetFromAngleZ(-CH_PI_2);
+  driver_view_direction.SetFromAngleAxis(0, {1, 0, 0});
+
+
   // create cli tool
   ChCLI cli(argv[0]);
   AddCommandLineOptions(cli);
@@ -748,19 +756,19 @@ int main(int argc, char *argv[]) {
 
   std::string outer_path_file =
       demo_data_path + "/Environments/Iowa/Driver/OnOuterLane.txt";
-  auto outer_path = ChBezierCurve::read(outer_path_file, true);
+  auto outer_path = ChBezierCurve::Read(outer_path_file, true);
   auto inner_path_file =
       demo_data_path + "/Environments/Iowa/Driver/OnInnerLane.txt";
-  auto inner_path = ChBezierCurve::read(inner_path_file, true);
+  auto inner_path = ChBezierCurve::Read(inner_path_file, true);
 
   // IG vehicle lane number tracker
   // lane 1 - inner lane; lane 2 - outer lanes
   auto lane_0_path_file =
       demo_data_path + "/Environments/Iowa/Driver/OnInnerLane.txt";
-  auto lane_0_path = ChBezierCurve::read(lane_0_path_file, true);
+  auto lane_0_path = ChBezierCurve::Read(lane_0_path_file, true);
   auto lane_1_path_file =
       demo_data_path + "/Environments/Iowa/Driver/OnOuterLane.txt";
-  auto lane_1_path = ChBezierCurve::read(lane_1_path_file, true);
+  auto lane_1_path = ChBezierCurve::Read(lane_1_path_file, true);
 
   WheeledVehicle vehicle(vehicle_filename, ChContactMethod::SMC);
   auto ego_chassis = vehicle.GetChassis();
@@ -919,7 +927,7 @@ int main(int argc, char *argv[]) {
   lateral.Normalize();
   ChVector3<> forward = Vcross(lateral, up);
   ChMatrix33<> rot;
-  rot.Set_A_axis(forward, lateral, up);
+  rot.SetFromDirectionAxes(forward, lateral, up);
 
   std::shared_ptr<RigidTerrain::Patch> patch;
   switch (terrain_model) {
@@ -1206,12 +1214,13 @@ int main(int argc, char *argv[]) {
   // ------------------------------------------------
   // Create a camera and add it to the sensor manager
   // ------------------------------------------------
-
+  ChQuaternion<> cam_rot;
+  cam_rot.SetFromAngleAxis(CH_PI_2, {0, 1, 0});
   auto cam = chrono_types::make_shared<ChCameraSensor>(
       vehicle.GetChassisBody(), // body camera is attached to
       10,                       // update rate in Hz
       chrono::ChFrame<double>(
-          {0, 0, 3000}, SetFromAngleAxis(CH_PI_2, {0, 1, 0})), // offset pose
+          {0, 0, 3000},cam_rot ), // offset pose
       1920,                                                    // image width
       1080,                                                    // image height
       CH_PI_4,
@@ -1536,7 +1545,7 @@ int main(int argc, char *argv[]) {
           ChVector3<> dist_v =
               lead_vehicles[0]->GetChassis()->GetPos() - ego_chassis->GetPos();
           ChVector3<> car_xaxis =
-              ChMatrix33<>(ego_chassis->GetRot()).Get_A_Xaxis();
+              ChMatrix33<>(ego_chassis->GetRot()).GetAxisX();
           double proj_dist = (dist_v ^ car_xaxis) - AUDI_LENGTH;
           buffer << proj_dist << ","; // Projected distance bumper-to-bumber
         }
@@ -1650,8 +1659,6 @@ void AddTrees(ChSystem *chsystem) {
   std::vector<std::shared_ptr<ChTriangleMeshConnected>> tree_meshes = {
       tree_mesh_0, tree_mesh_1, tree_mesh_2, tree_mesh_3};
 
-  ChSetRandomSeed(4);
-
   // tree placement parameters
   double x_step = 90;
   double y_step = 400;
@@ -1670,17 +1677,19 @@ void AddTrees(ChSystem *chsystem) {
       auto trimesh_shape =
           chrono_types::make_shared<ChVisualShapeTriangleMesh>();
       trimesh_shape->SetMesh(
-          tree_meshes[int(ChRandom() * tree_meshes.size() - .001)]);
+          tree_meshes[int((float)ChRandom::Get() * tree_meshes.size() - .001)]);
       trimesh_shape->SetName("Tree");
-      float scale = scale_nominal + scale_variation * (ChRandom() - .5);
+      float scale = scale_nominal + scale_variation * ((float)ChRandom::Get() - .5);
       trimesh_shape->SetScale({scale, scale, scale});
       trimesh_shape->SetMutable(false);
 
       auto mesh_body = chrono_types::make_shared<ChBody>();
-      mesh_body->SetPos({i * x_step + x_start + x_variation * (ChRandom() - .5),
-                         j * y_step + y_start + y_variation * (ChRandom() - .5),
+      mesh_body->SetPos({i * x_step + x_start + x_variation * ((float)ChRandom::Get() - .5),
+                         j * y_step + y_start + y_variation * ((float)ChRandom::Get() - .5),
                          0.0});
-      mesh_body->SetRot(SetFromAngleZ(CH_PI_2 * ChRandom()));
+      ChQuaternion<> mesh_rot;
+      mesh_rot.SetFromAngleZ(CH_PI_2 * (float)ChRandom::Get());
+      mesh_body->SetRot(mesh_rot);
       mesh_body->AddVisualShape(trimesh_shape);
       mesh_body->SetFixed(true);
       mesh_body->EnableCollision(false);
@@ -1696,17 +1705,19 @@ void AddTrees(ChSystem *chsystem) {
       auto trimesh_shape =
           chrono_types::make_shared<ChVisualShapeTriangleMesh>();
       trimesh_shape->SetMesh(
-          tree_meshes[int(ChRandom() * tree_meshes.size() - .001)]);
+          tree_meshes[int((float)ChRandom::Get() * tree_meshes.size() - .001)]);
       trimesh_shape->SetName("Tree");
-      float scale = scale_nominal + scale_variation * (ChRandom() - .5);
+      float scale = scale_nominal + scale_variation * (ChRandom::Get() - .5);
       trimesh_shape->SetScale({scale, scale, scale});
       trimesh_shape->SetMutable(false);
 
       auto mesh_body = chrono_types::make_shared<ChBody>();
-      mesh_body->SetPos({i * x_step + x_start + x_variation * (ChRandom() - .5),
-                         j * y_step + y_start + y_variation * (ChRandom() - .5),
+      mesh_body->SetPos({i * x_step + x_start + x_variation * ((float)ChRandom::Get() - .5),
+                         j * y_step + y_start + y_variation * ((float)ChRandom::Get() - .5),
                          0.0});
-      mesh_body->SetRot(SetFromAngleZ(CH_PI_2 * ChRandom()));
+      ChQuaternion<> mesh_rot;
+      mesh_rot.SetFromAngleZ(CH_PI_2 * (float)ChRandom::Get());
+      mesh_body->SetRot(mesh_rot);
       mesh_body->AddVisualShape(trimesh_shape);
       mesh_body->SetFixed(true);
       mesh_body->EnableCollision(false);
@@ -1865,7 +1876,9 @@ void AddBuildings(ChSystem *chsystem) {
     trimesh_shape->SetScale({3, 3, 3});
     auto mesh_body = chrono_types::make_shared<ChBody>();
     mesh_body->SetPos(offsets[i]);
-    mesh_body->SetRot(SetFromAngleZ(CH_C_2PI * ChRandom()));
+    ChQuaternion<> mesh_rot;
+    mesh_rot.SetFromAngleZ(CH_2PI * (float)ChRandom::Get());
+    mesh_body->SetRot(mesh_rot);
     mesh_body->AddVisualShape(trimesh_shape);
     mesh_body->SetFixed(true);
     mesh_body->EnableCollision(false);
@@ -2002,7 +2015,9 @@ void UpdateDummy(std::shared_ptr<ChBodyAuxRef> dummy_vehicle,
   float angle = atan2(vel_dir[1], vel_dir[0]);
 
   // finally update dummy vehicle position and rotated direction
-  dummy_vehicle->SetRot(SetFromCardanAnglesXYZ(ChVector3<>(0, 0, angle)));
+  ChQuaternion<> dummy_rot;
+  dummy_rot.SetFromCardanAnglesXYZ(ChVector3<>(0, 0, angle));
+  dummy_vehicle->SetRot(dummy_rot);
   dummy_vehicle->SetPos(target);
 
   // update distance and previous position
