@@ -106,10 +106,8 @@ void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
 
 // =============================================================================
 
-int main(int argc, char *argv[]) {
-  GetLog() << "Copyright (c) 2017 projectchrono.org\nChrono version: "
-           << CHRONO_VERSION << "\n\n";
-
+int main(int argc, char *argv[])
+{
   SetChronoDataPath(CHRONO_DATA_DIR);
   vehicle::SetDataPath(CHRONO_DATA_DIR + std::string("vehicle/"));
 
@@ -145,7 +143,8 @@ int main(int argc, char *argv[]) {
   auto patch_mat = minfo.CreateMaterial(contact_method);
 
   std::shared_ptr<RigidTerrain::Patch> patch;
-  switch (terrain_model) {
+  switch (terrain_model)
+  {
   case RigidTerrain::PatchType::BOX:
     patch = terrain.AddPatch(patch_mat, CSYSNORM, terrainLength, terrainWidth);
     patch->SetTexture(vehicle::GetDataFile("terrain/textures/tile4.jpg"), 20,
@@ -195,14 +194,14 @@ int main(int argc, char *argv[]) {
       "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj"  //
   };
   std::vector<ChVector3<>> cone_pos = {
-      ChVector3<>(6.5, -0.3, 0.005),  ChVector3<>(6.5, 0.70, 0.005),
+      ChVector3<>(6.5, -0.3, 0.005), ChVector3<>(6.5, 0.70, 0.005),
       ChVector3<>(6.0, -0.35, 0.005), ChVector3<>(6.0, 0.65, 0.005),
-      ChVector3<>(5.5, -0.4, 0.005),  ChVector3<>(5.5, 0.6, 0.005),
+      ChVector3<>(5.5, -0.4, 0.005), ChVector3<>(5.5, 0.6, 0.005),
       ChVector3<>(5.0, -0.45, 0.005), ChVector3<>(5.0, 0.55, 0.005),
-      ChVector3<>(4.5, -0.5, 0.005),  ChVector3<>(4.5, 0.5, 0.005), //
-      ChVector3<>(4.0, -0.5, 0.005),  ChVector3<>(4.0, 0.5, 0.005), //
-      ChVector3<>(3.5, -0.5, 0.005),  ChVector3<>(3.5, 0.5, 0.005), //
-      ChVector3<>(3.0, -0.5, 0.005),  ChVector3<>(3.0, 0.5, 0.005)  //
+      ChVector3<>(4.5, -0.5, 0.005), ChVector3<>(4.5, 0.5, 0.005), //
+      ChVector3<>(4.0, -0.5, 0.005), ChVector3<>(4.0, 0.5, 0.005), //
+      ChVector3<>(3.5, -0.5, 0.005), ChVector3<>(3.5, 0.5, 0.005), //
+      ChVector3<>(3.0, -0.5, 0.005), ChVector3<>(3.0, 0.5, 0.005)  //
   };
 
   addCones((*my_rccar.GetSystem()), cone_meshfile, cone_pos);
@@ -223,14 +222,15 @@ int main(int argc, char *argv[]) {
   // ------------------------------------------------
   // Create a camera and add it to the sensor manager
   // ------------------------------------------------
-
+  ChQuaternion<> cam_rot;
+  cam_rot.SetFromAngleAxis(0, {0, 1, 0});
   auto cam = chrono_types::make_shared<ChCameraSensor>(
       my_rccar.GetVehicle().GetChassisBody(), // body camera is attached to
       25,                                     // update rate in Hz
       chrono::ChFrame<double>({-0.05, 0, 0.07},
-                              SetFromAngleAxis(0, {0, 1, 0})), // offset pose
-      1280,                                                  // image width
-      720,                                                   // image height
+                              cam_rot), // offset pose
+      1280,                             // image width
+      720,                              // image height
       CH_PI_4,
       1); // fov, lag, exposure
   cam->SetName("Camera Sensor");
@@ -242,14 +242,15 @@ int main(int argc, char *argv[]) {
   // ------------------------------------------------
   // Create a back-view camera and add it to the sensor manager
   // ------------------------------------------------
-
+  ChQuaternion<> cam_rot2;
+  cam_rot2.SetFromAngleAxis(CH_PI, {0, 0, 1});
   auto cam2 = chrono_types::make_shared<ChCameraSensor>(
       my_rccar.GetVehicle().GetChassisBody(), // body camera is attached to
       25,                                     // update rate in Hz
       chrono::ChFrame<double>(
-          {-0.1, 0, 0.07}, SetFromAngleAxis(CH_PI, {0, 0, 1})), // offset pose
-      1280,                                                     // image width
-      720,                                                      // image height
+          {-0.1, 0, 0.07}, cam_rot2), // offset pose
+      1280,                           // image width
+      720,                            // image height
       CH_PI_4,
       1); // fov, lag, exposure
   cam2->SetName("Camera Sensor - back");
@@ -262,12 +263,15 @@ int main(int argc, char *argv[]) {
   // Initialize output
   // -----------------
 
-  if (!filesystem::create_directory(filesystem::path(out_dir))) {
+  if (!filesystem::create_directory(filesystem::path(out_dir)))
+  {
     std::cout << "Error creating directory " << out_dir << std::endl;
     return 1;
   }
-  if (povray_output) {
-    if (!filesystem::create_directory(filesystem::path(pov_dir))) {
+  if (povray_output)
+  {
+    if (!filesystem::create_directory(filesystem::path(pov_dir)))
+    {
       std::cout << "Error creating directory " << pov_dir << std::endl;
       return 1;
     }
@@ -300,7 +304,8 @@ int main(int argc, char *argv[]) {
   int step_number = 0;
   int render_frame = 0;
 
-  if (contact_vis) {
+  if (contact_vis)
+  {
     vis->SetSymbolScale(1e-4);
     vis->EnableContactDrawing(ContactsDrawMode::CONTACT_FORCES);
   }
@@ -309,17 +314,20 @@ int main(int argc, char *argv[]) {
 
   ChRealtimeCumulative realtime_timer;
 
-  while (true) {
+  while (true)
+  {
     double time = my_rccar.GetSystem()->GetChTime();
 
     // std::cout << cam->GetLag() << std::endl;
-    if (step_number == 5000) {
+    if (step_number == 5000)
+    {
       cam->SetLag(0.08f);
     }
 
     manager->Update();
 
-    if (step_number == 0) {
+    if (step_number == 0)
+    {
       realtime_timer.Reset();
     }
 
@@ -328,12 +336,14 @@ int main(int argc, char *argv[]) {
       break;
 
     // Render scene and output POV-Ray data
-    if (step_number % render_steps == 0) {
+    if (step_number % render_steps == 0)
+    {
       vis->BeginScene();
       vis->Render();
       vis->EndScene();
 
-      if (povray_output) {
+      if (povray_output)
+      {
         char filename[100];
         sprintf(filename, "%s/data_%03d.dat", pov_dir.c_str(),
                 render_frame + 1);
@@ -341,13 +351,6 @@ int main(int argc, char *argv[]) {
       }
 
       render_frame++;
-    }
-
-    // Debug logging
-    if (debug_output && step_number % debug_steps == 0) {
-      GetLog() << "\n\n============ System Information ============\n";
-      GetLog() << "Time = " << time << "\n\n";
-      my_rccar.DebugLog(OUT_SPRINGS | OUT_SHOCKS | OUT_CONSTRAINTS);
     }
 
     // get the controls for this time step
@@ -372,7 +375,8 @@ int main(int argc, char *argv[]) {
 
     realtime_timer.Spin(time);
 
-    if (SDLDriver.Synchronize() == 1) {
+    if (SDLDriver.Synchronize() == 1)
+    {
       break;
     }
   }
@@ -381,14 +385,16 @@ int main(int argc, char *argv[]) {
 }
 
 void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
-              std::vector<ChVector3<>> &cone_pos) {
+              std::vector<ChVector3<>> &cone_pos)
+{
   SetChronoDataPath(CHRONO_DATA_DIR);
   std::vector<std::shared_ptr<ChBodyAuxRef>> cone;
   double cone_density = 900;
-  std::shared_ptr<ChMaterialSurface> rock_mat =
-      ChMaterialSurface::DefaultMaterial(sys.GetContactMethod());
+  std::shared_ptr<ChContactMaterial> rock_mat =
+      ChContactMaterial::DefaultMaterial(sys.GetContactMethod());
 
-  for (int i = 0; i < cone_files.size(); i++) {
+  for (int i = 0; i < cone_files.size(); i++)
+  {
     auto mesh = ChTriangleMeshConnected::CreateFromWavefrontFile(
         GetChronoDataFile(cone_files[i]), false, true);
 
@@ -404,8 +410,8 @@ void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
     auto body = chrono_types::make_shared<ChBodyAuxRef>();
     sys.Add(body);
     body->SetFixed(true);
-    body->SetFrame_REF_to_abs(ChFrame<>(ChVector3<>(cone_pos[i]), QUNIT));
-    body->SetFrame_COG_to_REF(ChFrame<>(cog, principal_inertia_rot));
+    body->SetFrameRefToAbs(ChFrame<>(ChVector3<>(cone_pos[i]), QUNIT));
+    body->SetFrameCOMToRef(ChFrame<>(cog, principal_inertia_rot));
     body->SetMass(mass * cone_density);
     body->SetInertiaXX(cone_density * principal_I);
 

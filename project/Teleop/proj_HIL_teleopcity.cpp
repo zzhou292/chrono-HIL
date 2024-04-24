@@ -50,6 +50,7 @@
 #include "chrono_thirdparty/filesystem/path.h"
 #include "chrono_vehicle/ChTransmission.h"
 #include "chrono_vehicle/powertrain/ChAutomaticTransmissionSimpleMap.h"
+#include "chrono/physics/ChInertiaUtils.h"
 
 #include "chrono_hil/network/udp/ChBoostInStreamer.h"
 #include "chrono_hil/network/udp/ChBoostOutStreamer.h"
@@ -95,8 +96,53 @@ const int UNITY_PORT_OUT = 1209;
 const double rads2rpm = 30 / CH_PI;
 
 // =============================================================================
+std::string scenario_filename = "test_parameters_1.json";
+std::vector<ChVector3<>> cone_pos;
+// =============================================================================
+void AddCommandLineOptions(ChCLI &cli)
+{
+  cli.AddOption<std::string>("Simulation", "sim_params",
+                             "Path to simulation configuration file",
+                             scenario_filename);
+}
+// =============================================================================
+void ReadParameterFiles()
+{
+  { // Scenario parameter file
+    rapidjson::Document d;
+    vehicle::ReadFileJSON(std::string(STRINGIFY(HIL_DATA_DIR)) + std::string("/Environments/nads/parameters/") + scenario_filename, d);
+    if (d.HasMember("cone_positions"))
+    {
+      auto marr = d["cone_positions"].GetArray();
+      for (int i = 0; i < marr.Size(); i++)
+      {
+        ChVector3<> temp_pos;
+        for (int j = 0; j < 3; j++)
+        {
+          temp_pos[j] = marr[i][j].GetDouble();
+        }
+        cone_pos.push_back(temp_pos);
+      }
+    }
+  }
+}
+
+// =============================================================================
+void addCones(ChSystem &sys,
+              std::vector<ChVector3<>> &cone_pos);
+
+// =============================================================================
 void AddCommandLineOptions(ChCLI &cli);
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
+  // get cli
+  ChCLI cli(argv[0]);
+  AddCommandLineOptions(cli);
+
+  if (!cli.Parse(argc, argv, true))
+    return 0;
+
+  ReadParameterFiles();
 
   SetChronoDataPath(CHRONO_DATA_DIR);
   vehicle::SetDataPath(CHRONO_DATA_DIR + std::string("vehicle/"));
@@ -133,8 +179,10 @@ int main(int argc, char *argv[]) {
   my_vehicle.SetWheelVisualizationType(VisualizationType::MESH);
 
   // Create and initialize the tires
-  for (auto &axle : my_vehicle.GetAxles()) {
-    for (auto &wheel : axle->GetWheels()) {
+  for (auto &axle : my_vehicle.GetAxles())
+  {
+    for (auto &wheel : axle->GetWheels())
+    {
       auto tire = ReadTireJSON(tire_filename);
       tire->SetStepsize(tire_step_size);
       my_vehicle.InitializeTire(tire, wheel, VisualizationType::MESH);
@@ -232,14 +280,16 @@ int main(int argc, char *argv[]) {
   manager->scene->SetOriginOffsetThreshold(500.f);
 
   // camera at driver's eye location for Audi
+  ChQuaternion<> driver_cam_rot;
+  driver_cam_rot.SetFromAngleAxis(0, {0, 1, 0});
   auto driver_cam = chrono_types::make_shared<ChCameraSensor>(
       my_vehicle.GetChassisBody(), // body camera is attached to
       35,                          // update rate in Hz
       chrono::ChFrame<double>({0.54, .381, 1.04},
-                              SetFromAngleAxis(0, {0, 1, 0})), // offset pose
-      5760,                                                  // image width
-      1080,                                                  // image height
-      3.14 / 1.5,                                            // fov
+                              driver_cam_rot), // offset pose
+      5760,                                    // image width
+      1080,                                    // image height
+      3.14 / 1.5,                              // fov
       1);
 
   driver_cam->SetName("DriverCam");
@@ -264,8 +314,11 @@ int main(int argc, char *argv[]) {
 
   DriverInputs driver_inputs;
 
+  addCones(*my_vehicle.GetSystem(), cone_pos);
+
   // simulation loop
-  while (true) {
+  while (true)
+  {
     auto now = std::chrono::high_resolution_clock::now();
     auto dds_time_stamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
                               now.time_since_epoch())
@@ -275,10 +328,11 @@ int main(int argc, char *argv[]) {
     ChVector3<> pos = my_vehicle.GetChassis()->GetPos();
     ChQuaternion<> rot = my_vehicle.GetChassis()->GetRot();
 
-    auto euler_rot = GetCardanAnglesXYZ(rot);
+    auto euler_rot = rot.GetCardanAnglesXYZ();
     euler_rot.x() = 0.0;
     euler_rot.y() = 0.0;
-    auto y_0_rot = SetFromCardanAnglesXYZ(euler_rot);
+    ChQuaternion<> y_0_rot;
+    y_0_rot.SetFromCardanAnglesXYZ(euler_rot);
 
     attached_body->SetPos(pos);
     attached_body->SetRot(y_0_rot);
@@ -290,7 +344,8 @@ int main(int argc, char *argv[]) {
 
     // Get driver inputs
 
-    if (step_number % 50 == 0) {
+    if (step_number % 50 == 0)
+    {
       in_streamer.Synchronize();
 
       std::vector<float> recv_data = in_streamer.GetRecvData();
@@ -318,14 +373,16 @@ int main(int argc, char *argv[]) {
     // Increment frame number
     step_number++;
 
-    if (step_number == 0) {
+    if (step_number == 0)
+    {
       realtime_timer.Reset();
     }
 
     // if (step_number % 10 == 0) {
     realtime_timer.Spin(time);
 
-    if (step_number % 50 == 0) {
+    if (step_number % 50 == 0)
+    {
 
       // Stream out data
       boost_streamer.AddData(my_vehicle.GetSystem()->GetChTime()); // sim time
@@ -344,7 +401,8 @@ int main(int argc, char *argv[]) {
       boost_streamer.Synchronize();
     }
 
-    if (SDLDriver.Synchronize() == 1) {
+    if (SDLDriver.Synchronize() == 1)
+    {
       break;
     }
 
@@ -356,4 +414,46 @@ int main(int argc, char *argv[]) {
     // }
   }
   return 0;
+}
+
+void addCones(ChSystem &sys,
+              std::vector<ChVector3<>> &cone_pos)
+{
+
+  std::string cone_file(std::string(STRINGIFY(HIL_DATA_DIR)) +
+                        "/Environments/nads/foliage/cone/cone.obj");
+
+  for (int i = 0; i < cone_pos.size(); i++)
+  {
+    double cone_density = 900;
+    std::shared_ptr<ChContactMaterial> rock_mat =
+        ChContactMaterial::DefaultMaterial(sys.GetContactMethod());
+
+    auto mesh = ChTriangleMeshConnected::CreateFromWavefrontFile(
+        cone_file, false, true);
+
+    double mass;
+    ChVector3<> cog;
+    ChMatrix33<> inertia;
+    mesh->ComputeMassProperties(true, mass, cog, inertia);
+
+    mesh->Transform(ChVector3<>(0, 0, 0), ChMatrix33<>(0.5));
+    ChMatrix33<> principal_inertia_rot;
+    ChVector3<> principal_I;
+    ChInertiaUtils::PrincipalInertia(inertia, principal_I,
+                                     principal_inertia_rot);
+
+    auto body = chrono_types::make_shared<ChBodyAuxRef>();
+    sys.Add(body);
+    body->SetFixed(true);
+    body->SetFrameRefToAbs(ChFrame<>(ChVector3<>(cone_pos[i]), QUNIT));
+    body->SetFrameCOMToRef(ChFrame<>(cog, principal_inertia_rot));
+    body->SetMass(mass * cone_density);
+    body->SetInertiaXX(cone_density * principal_I);
+
+    auto mesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
+    mesh_shape->SetMesh(mesh);
+    mesh_shape->SetBackfaceCull(true);
+    body->AddVisualShape(mesh_shape);
+  }
 }
