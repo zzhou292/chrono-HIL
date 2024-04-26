@@ -42,6 +42,9 @@
 #include "chrono_sensor/filters/ChFilterVisualize.h"
 #include "chrono_sensor/sensors/ChCameraSensor.h"
 
+#include "chrono_hil/network/udp/ChBoostInStreamer.h"
+#include "chrono_hil/network/udp/ChBoostOutStreamer.h"
+
 using namespace chrono;
 using namespace chrono::irrlicht;
 using namespace chrono::vehicle;
@@ -52,7 +55,7 @@ using namespace chrono::sensor;
 // =============================================================================
 
 // Initial vehicle location and orientation
-ChVector3<> initLoc(0, 0, 0.5);
+ChVector3<> initLoc(0, 0, 0.2);
 ChQuaternion<> initRot(1, 0, 0, 0);
 
 // Visualization type for vehicle parts (PRIMITIVES, MESH, or NONE)
@@ -68,7 +71,7 @@ CollisionType chassis_collision_type = CollisionType::NONE;
 TireModelType tire_model = TireModelType::TMEASY;
 
 // Rigid terrain
-RigidTerrain::PatchType terrain_model = RigidTerrain::PatchType::BOX;
+RigidTerrain::PatchType terrain_model = RigidTerrain::PatchType::MESH;
 double terrainHeight = 0;     // terrain height (FLAT terrain only)
 double terrainLength = 100.0; // size in X direction
 double terrainWidth = 100.0;  // size in Y direction
@@ -125,6 +128,12 @@ int main(int argc, char *argv[])
   my_rccar.SetTireStepSize(tire_step_size);
   my_rccar.Initialize();
 
+  my_rccar.GetSystem()->SetCollisionSystemType(ChCollisionSystem::Type::BULLET);
+  my_rccar.GetSystem()->SetGravitationalAcceleration(ChVector3d(0, 0, -9.81));
+  my_rccar.GetSystem()->SetSolverType(ChSolver::Type::BARZILAIBORWEIN);
+  my_rccar.GetSystem()->GetSolver()->AsIterative()->SetMaxIterations(150);
+  my_rccar.GetSystem()->SetMaxPenetrationRecoverySpeed(4.0);
+
   VisualizationType tire_vis_type = VisualizationType::MESH;
 
   my_rccar.SetChassisVisualizationType(chassis_vis_type);
@@ -159,9 +168,7 @@ int main(int argc, char *argv[])
     break;
   case RigidTerrain::PatchType::MESH:
     patch = terrain.AddPatch(patch_mat, CSYSNORM,
-                             vehicle::GetDataFile("terrain/meshes/test.obj"));
-    patch->SetTexture(vehicle::GetDataFile("terrain/textures/grass.jpg"), 100,
-                      100);
+                             std::string(STRINGIFY(HIL_DATA_DIR)) + std::string("/Environments/me3038/rm3038_v1.obj"));
     break;
   }
   patch->SetColor(ChColor(0.8f, 0.8f, 0.5f));
@@ -191,19 +198,123 @@ int main(int argc, char *argv[])
       "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
       "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
       "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
-      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj"  //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+
+      "sensor/cones/green_cone.obj", "sensor/cones/red_cone.obj", //
+      "sensor/cones/red_cone.obj",                                //
+      "sensor/cones/red_cone.obj",                                //
+      "sensor/cones/red_cone.obj",                                //
+      "sensor/cones/red_cone.obj",                                //
+      "sensor/cones/red_cone.obj",                                //
+      "sensor/cones/red_cone.obj",                                //
+      "sensor/cones/red_cone.obj",                                //
   };
   std::vector<ChVector3<>> cone_pos = {
-      ChVector3<>(6.5, -0.3, 0.005), ChVector3<>(6.5, 0.70, 0.005),
-      ChVector3<>(6.0, -0.35, 0.005), ChVector3<>(6.0, 0.65, 0.005),
-      ChVector3<>(5.5, -0.4, 0.005), ChVector3<>(5.5, 0.6, 0.005),
-      ChVector3<>(5.0, -0.45, 0.005), ChVector3<>(5.0, 0.55, 0.005),
-      ChVector3<>(4.5, -0.5, 0.005), ChVector3<>(4.5, 0.5, 0.005), //
-      ChVector3<>(4.0, -0.5, 0.005), ChVector3<>(4.0, 0.5, 0.005), //
-      ChVector3<>(3.5, -0.5, 0.005), ChVector3<>(3.5, 0.5, 0.005), //
-      ChVector3<>(3.0, -0.5, 0.005), ChVector3<>(3.0, 0.5, 0.005)  //
-  };
+      ChVector3<>(-1.48, -4.54, -0.24),
+      ChVector3<>(-4.0872, -2.0322, -0.24),
+      ChVector3<>(-1.42, -3.53, -0.24),
+      ChVector3<>(-4.07, -0.97672, -0.24),
+      ChVector3<>(-1.7255, -2.8225, -0.24),
+      ChVector3<>(-3.9574, 0.50855, -0.24),
+      ChVector3<>(-1.9213, -1.9518, -0.24),
+      ChVector3<>(-3.9172, 2.2994, -0.24),
+      ChVector3<>(-2.207, -1.0438, -0.24),
+      ChVector3<>(-2.4924, 2.778, -0.24),
+      ChVector3<>(-2.6502, -0.5412, -0.24),
+      ChVector3<>(-0.89042, 2.7256, -0.24),
+      ChVector3<>(-2.6556, 0.23594, -0.24),
+      ChVector3<>(0.24018, 1.5736, -0.24),
+      ChVector3<>(-2.30, 1.077, -0.24),
+      ChVector3<>(0.94455, 0.85916, -0.24),
 
+      ChVector3<>(-1.7513, 0.88291, -0.24),
+      ChVector3<>(-1.2546, 0.08584, -0.24),
+      ChVector3<>(-1.0548, 0.6463, -0.24),
+      ChVector3<>(1.3596, -0.71367, -0.24),
+      ChVector3<>(-0.422, 0.49659, -0.24),
+      ChVector3<>(1.7232, -1.5822, -0.24),
+      ChVector3<>(0.048359, 0.21137, -0.24),
+      ChVector3<>(1.5273, -2.5145, -0.24),
+      ChVector3<>(0.26932, -0.4039, -0.24),
+      ChVector3<>(1.4294, -3.7086, -0.24),
+      ChVector3<>(0.45935, -1.3053, -0.24),
+      ChVector3<>(1.4357, -5.4693, -0.24),
+      ChVector3<>(0.43702, -2.2048, -0.24),
+      ChVector3<>(0.42572, -5.9832, -0.24),
+      ChVector3<>(0.29, -2.9696, -0.24),
+      ChVector3<>(-0.31011, -6.2391, -0.24),
+
+      ChVector3<>(0.2511, -4.6653, -0.24),
+      ChVector3<>(-0.84832, -6.4183, -0.24),
+      ChVector3<>(-0.17387, -5.0, -0.24),
+      ChVector3<>(-1.4886, -6.2794, -0.24),
+      ChVector3<>(-0.519, -5.2637, -0.24),
+      ChVector3<>(-2.7153, -5.7845, -0.24),
+      ChVector3<>(-0.8987, -5.3569, -0.24),
+      ChVector3<>(-3.455, -5.6976, -0.24),
+      ChVector3<>(-1.5731, -5.4358, -0.24),
+      ChVector3<>(-3.8393, -5.4056, -0.24),
+      ChVector3<>(-2.0647, -5.16, -0.24),
+      ChVector3<>(-4.4641, -5.2733, -0.24),
+      ChVector3<>(-2.4413, -5.164, -0.24),
+      ChVector3<>(-4.8451, -4.9955, -0.24),
+      ChVector3<>(-2.8449, -5.1021, -0.24),
+      ChVector3<>(-5.1941, -4.6861, -0.24),
+
+      ChVector3<>(-3.5, -4.9796, -0.24),
+      ChVector3<>(-0.84832, -6.4183, -0.24),
+      ChVector3<>(-3.8379, -4.7264, -0.24),
+      ChVector3<>(-1.4886, -6.2794, -0.24),
+      ChVector3<>(-4.1242, -4.572, -0.24),
+      ChVector3<>(-2.7153, -5.7845, -0.24),
+      ChVector3<>(-4.5491, -4.2879, -0.24),
+      ChVector3<>(-3.455, -5.6976, -0.24),
+      ChVector3<>(-4.4093, -4.2266, -0.24),
+      ChVector3<>(-3.8393, -5.4056, -0.24),
+      ChVector3<>(-4.1837, -4.3619, -0.24),
+      ChVector3<>(-4.4641, -5.2733, -0.24),
+      ChVector3<>(-3.7624, -4.6589, -0.24),
+      ChVector3<>(-4.8451, -4.9955, -0.24),
+      ChVector3<>(-3.0384, -4.9674, -0.24),
+      ChVector3<>(-5.1941, -4.6861, -0.24),
+
+      ChVector3<>(-2.351, -4.9441, -0.24),
+      ChVector3<>(-5.2459, -3.9942, -0.24),
+      ChVector3<>(-5.1885, -3.3619, -0.24),
+      ChVector3<>(-4.6484, -3.0405, -0.24),
+      ChVector3<>(-4.0247, -3.2546, -0.24),
+      ChVector3<>(-3.5223, -3.6743, -0.24),
+      ChVector3<>(-3.0137, -4.0342, -0.24),
+      ChVector3<>(-3.2747, -3.6302, -0.24),
+      ChVector3<>(-3.9402, -2.6624, -0.24),
+  };
   addCones((*my_rccar.GetSystem()), cone_meshfile, cone_pos);
 
   // ---------------------------------------------
@@ -226,13 +337,13 @@ int main(int argc, char *argv[])
   cam_rot.SetFromAngleAxis(0, {0, 1, 0});
   auto cam = chrono_types::make_shared<ChCameraSensor>(
       my_rccar.GetVehicle().GetChassisBody(), // body camera is attached to
-      25,                                     // update rate in Hz
-      chrono::ChFrame<double>({-0.05, 0, 0.07},
+      35,                                     // update rate in Hz
+      chrono::ChFrame<double>({-0.02, 0, 0.07},
                               cam_rot), // offset pose
       1280,                             // image width
       720,                              // image height
-      CH_PI_4,
-      1); // fov, lag, exposure
+      CH_PI_2 / 1.5,
+      2); // fov, lag, exposure
   cam->SetName("Camera Sensor");
   cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
       1280, 720, "Driver View - front", false));
@@ -242,22 +353,22 @@ int main(int argc, char *argv[])
   // ------------------------------------------------
   // Create a back-view camera and add it to the sensor manager
   // ------------------------------------------------
-  ChQuaternion<> cam_rot2;
-  cam_rot2.SetFromAngleAxis(CH_PI, {0, 0, 1});
-  auto cam2 = chrono_types::make_shared<ChCameraSensor>(
-      my_rccar.GetVehicle().GetChassisBody(), // body camera is attached to
-      25,                                     // update rate in Hz
-      chrono::ChFrame<double>(
-          {-0.1, 0, 0.07}, cam_rot2), // offset pose
-      1280,                           // image width
-      720,                            // image height
-      CH_PI_4,
-      1); // fov, lag, exposure
-  cam2->SetName("Camera Sensor - back");
-  cam2->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
-      1280, 720, "Driver View - back", false));
-  cam2->SetLag(0.05f);
-  manager->AddSensor(cam2);
+  // ChQuaternion<> cam_rot2;
+  // cam_rot2.SetFromAngleAxis(CH_PI, {0, 0, 1});
+  // auto cam2 = chrono_types::make_shared<ChCameraSensor>(
+  //     my_rccar.GetVehicle().GetChassisBody(), // body camera is attached to
+  //     25,                                     // update rate in Hz
+  //     chrono::ChFrame<double>(
+  //         {-0.1, 0, 0.07}, cam_rot2), // offset pose
+  //     1280,                           // image width
+  //     720,                            // image height
+  //     CH_PI_4,
+  //     1); // fov, lag, exposure
+  // cam2->SetName("Camera Sensor - back");
+  // cam2->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
+  //     1280, 720, "Driver View - back", false));
+  // cam2->SetLag(0.05f);
+  // manager->AddSensor(cam2);
 
   // -----------------
   // Initialize output
@@ -278,17 +389,7 @@ int main(int argc, char *argv[])
     terrain.ExportMeshPovray(out_dir);
   }
 
-  // ------------------------
-  // Create the driver system
-  // ------------------------
-  ChSDLInterface SDLDriver;
-  // Set the time response for steering and throttle keyboard inputs.
-
-  SDLDriver.Initialize();
-
-  std::string joystick_file =
-      (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
-  SDLDriver.SetJoystickConfigFile(joystick_file);
+  ChBoostInStreamer in_streamer(1214, 3);
 
   // ---------------
   // Simulation loop
@@ -313,6 +414,8 @@ int main(int argc, char *argv[])
   my_rccar.GetVehicle().EnableRealtime(false);
 
   ChRealtimeCumulative realtime_timer;
+
+  DriverInputs driver_inputs;
 
   while (true)
   {
@@ -354,12 +457,18 @@ int main(int argc, char *argv[])
     }
 
     // get the controls for this time step
-    // Driver inputs
-    DriverInputs driver_inputs;
-    driver_inputs.m_steering = SDLDriver.GetSteering();
-    driver_inputs.m_throttle = SDLDriver.GetThrottle();
-    driver_inputs.m_braking = SDLDriver.GetBraking();
+    // Get driver inputs
 
+    if (step_number % 50 == 0)
+    {
+      in_streamer.Synchronize();
+
+      std::vector<float> recv_data = in_streamer.GetRecvData();
+
+      driver_inputs.m_steering = recv_data[0];
+      driver_inputs.m_throttle = recv_data[1];
+      driver_inputs.m_braking = recv_data[2];
+    }
     // Update modules (process inputs from other modules)
     terrain.Synchronize(time);
     my_rccar.Synchronize(time, driver_inputs, terrain);
@@ -374,11 +483,6 @@ int main(int argc, char *argv[])
     step_number++;
 
     realtime_timer.Spin(time);
-
-    if (SDLDriver.Synchronize() == 1)
-    {
-      break;
-    }
   }
 
   return 0;
@@ -414,6 +518,7 @@ void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
     body->SetFrameCOMToRef(ChFrame<>(cog, principal_inertia_rot));
     body->SetMass(mass * cone_density);
     body->SetInertiaXX(cone_density * principal_I);
+    body->EnableCollision(false);
 
     auto mesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     mesh_shape->SetMesh(mesh);

@@ -25,7 +25,8 @@ using namespace chrono::hil;
 // This program shows how to work with joysticks using SDL2.
 // This example shows how to do it by manually polling the joystick
 // rather than using the sdl event queue.
-int main() {
+int main()
+{
   ChSDLInterface SDLDriver;
   // Set the time response for steering and throttle keyboard inputs.
 
@@ -38,7 +39,8 @@ int main() {
   // create boost data streaming interface
   ChBoostOutStreamer boost_streamer(IP_OUT, PORT_OUT);
 
-  while (true) {
+  while (true)
+  {
 
     // get the controls for this time step
     // Driver inputs
@@ -57,9 +59,10 @@ int main() {
 
     boost_streamer.Synchronize();
 
-    usleep(100000);
+    usleep(50000);
 
-    if (SDLDriver.Synchronize() == 1) {
+    if (SDLDriver.Synchronize() == 1)
+    {
       break;
     }
   }
