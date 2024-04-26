@@ -42,8 +42,7 @@
 #include "chrono_sensor/filters/ChFilterVisualize.h"
 #include "chrono_sensor/sensors/ChCameraSensor.h"
 
-#include "chrono_hil/network/udp/ChBoostInStreamer.h"
-#include "chrono_hil/network/udp/ChBoostOutStreamer.h"
+#include "chrono_hil/network/sim/ChDelaySim.h"
 
 using namespace chrono;
 using namespace chrono::irrlicht;
@@ -108,7 +107,35 @@ void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
               std::vector<ChVector3<>> &cone_pos);
 
 // =============================================================================
+std::vector<char> serializeFloats(const std::vector<float> &floatVec)
+{
+  std::vector<char> byteVec(floatVec.size() * sizeof(float));
+  char *bytePointer = byteVec.data();
 
+  for (const float &value : floatVec)
+  {
+    std::memcpy(bytePointer, &value, sizeof(float));
+    bytePointer += sizeof(float);
+  }
+
+  return byteVec;
+}
+
+std::vector<float> deserializeFloats(const std::vector<char> &byteVec)
+{
+  std::vector<float> floatVec(byteVec.size() / sizeof(float));
+  const char *bytePointer = byteVec.data();
+
+  for (float &value : floatVec)
+  {
+    std::memcpy(&value, bytePointer, sizeof(float));
+    bytePointer += sizeof(float);
+  }
+
+  return floatVec;
+}
+
+// =============================================================================
 int main(int argc, char *argv[])
 {
   SetChronoDataPath(CHRONO_DATA_DIR);
@@ -389,7 +416,17 @@ int main(int argc, char *argv[])
     terrain.ExportMeshPovray(out_dir);
   }
 
-  ChBoostInStreamer in_streamer(1214, 3);
+  // ------------------------
+  // Create the driver system
+  // ------------------------
+  ChSDLInterface SDLDriver;
+  // Set the time response for steering and throttle keyboard inputs.
+
+  SDLDriver.Initialize();
+
+  std::string joystick_file =
+      (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
+  SDLDriver.SetJoystickConfigFile(joystick_file);
 
   // ---------------
   // Simulation loop
@@ -416,6 +453,8 @@ int main(int argc, char *argv[])
   ChRealtimeCumulative realtime_timer;
 
   DriverInputs driver_inputs;
+
+  ChDelaySim sim(400);
 
   while (true)
   {
@@ -459,15 +498,25 @@ int main(int argc, char *argv[])
     // get the controls for this time step
     // Get driver inputs
 
-    if (step_number % 50 == 0)
+    if (step_number % 10 == 0)
     {
-      in_streamer.Synchronize();
+      // Create a vector of floats
+      std::vector<float> floats = {SDLDriver.GetSteering(), SDLDriver.GetThrottle(), SDLDriver.GetBraking()};
 
-      std::vector<float> recv_data = in_streamer.GetRecvData();
+      // Serialize the vector of floats to a vector of chars
+      std::vector<char> serializedData = serializeFloats(floats);
+      sim.addPacket(serializedData);
 
-      driver_inputs.m_steering = recv_data[0];
-      driver_inputs.m_throttle = recv_data[1];
-      driver_inputs.m_braking = recv_data[2];
+      // Get the packet back
+      std::vector<char> receivedData = sim.getDelayedPacket();
+      if (!receivedData.empty())
+      {
+        // Deserialize the data back to floats
+        std::vector<float> receivedFloats = deserializeFloats(receivedData);
+        driver_inputs.m_steering = receivedFloats[0];
+        driver_inputs.m_throttle = receivedFloats[1] * 0.2;
+        driver_inputs.m_braking = receivedFloats[2];
+      }
     }
     // Update modules (process inputs from other modules)
     terrain.Synchronize(time);
@@ -483,6 +532,11 @@ int main(int argc, char *argv[])
     step_number++;
 
     realtime_timer.Spin(time);
+
+    if (SDLDriver.Synchronize() == 1)
+    {
+      break;
+    }
   }
 
   return 0;

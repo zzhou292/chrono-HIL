@@ -5,17 +5,17 @@
 #include <chrono>
 #include <cstring> // for memcpy
 #include <utility> // for std::pair
+#include <mutex>
 
 const int SOURCE_PORT = 1213;
 const int DESTINATION_PORT = 1214;
 const int PACKET_SIZE = sizeof(float) * 3;
-const int BUFFER_SIZE = 100000;
-const std::chrono::milliseconds PROCESSING_INTERVAL(50); // 20Hz = every 50ms
-const std::chrono::milliseconds DELAY_INTERVAL(500);
-const std::chrono::milliseconds DELAY_THRESHOLD(1200);
+const int BUFFER_SIZE = 50000;
+const float DELAY_INTERVAL(100.0);
+
+std::mutex queue_mutex;
 
 std::queue<std::pair<std::chrono::steady_clock::time_point, std::vector<char>>> packet_queue;
-bool first_packet_received = false;
 
 void display_data(const std::vector<char> &data, const std::string &prefix)
 {
@@ -23,27 +23,40 @@ void display_data(const std::vector<char> &data, const std::string &prefix)
     std::memcpy(values, data.data(), PACKET_SIZE);
     std::cout << prefix << ": [" << values[0] << ", " << values[1] << ", " << values[2] << "]" << std::endl;
 }
-
 void process_packets(asio::ip::udp::socket &send_socket, asio::ip::udp::endpoint &send_endpoint)
 {
     while (true)
     {
-
+        std::unique_lock<std::mutex> lock(queue_mutex);
         if (!packet_queue.empty())
         {
             auto &front = packet_queue.front();
             auto &packet = front.second;
-
-            while (std::chrono::steady_clock::now() - packet_queue.front().first >= DELAY_INTERVAL)
+            auto time_since_received = std::chrono::steady_clock::now() - front.first;
+            auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(time_since_received).count();
+            if (milliseconds >= DELAY_INTERVAL)
             {
-                send_socket.send_to(asio::buffer(packet), send_endpoint);
-                display_data(packet, "Sent data");
-                packet_queue.pop();
+                try
+                {
+                    send_socket.send_to(asio::buffer(packet), send_endpoint);
+                    display_data(packet, "Sent data");
+                    packet_queue.pop();
+                }
+                catch (const std::exception &e)
+                {
+                    std::cerr << "Failed to send packet: " << e.what() << std::endl;
+                }
             }
+            lock.unlock();
+            std::this_thread::sleep_for(std::chrono::microseconds(1)); // Reduce sleep time to improve responsiveness
+        }
+        else
+        {
+            lock.unlock();
+            std::this_thread::sleep_for(std::chrono::microseconds(1));
         }
     }
 }
-
 void handle_receive_from(const asio::error_code &error, std::size_t /*bytes_transferred*/, asio::ip::udp::socket &receive_socket, asio::ip::udp::endpoint &sender_endpoint, std::vector<char> &recv_buffer)
 {
     if (error)
@@ -53,7 +66,15 @@ void handle_receive_from(const asio::error_code &error, std::size_t /*bytes_tran
     }
 
     display_data(recv_buffer, "Received data");
-    packet_queue.push({std::chrono::steady_clock::now(), recv_buffer});
+
+    {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        if (packet_queue.size() < BUFFER_SIZE)
+        {
+            packet_queue.push({std::chrono::steady_clock::now(), recv_buffer});
+        }
+        lock.unlock();
+    }
 
     recv_buffer.resize(PACKET_SIZE);
     receive_socket.async_receive_from(asio::buffer(recv_buffer), sender_endpoint,

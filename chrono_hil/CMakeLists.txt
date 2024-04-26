@@ -64,6 +64,9 @@ set(NETWORK_FILES
     network/tcp/ChTCPClient.cpp
     network/tcp/ChTCPServer.h
     network/tcp/ChTCPServer.cpp
+
+    network/sim/ChDelaySim.h
+    network/sim/ChDelaySim.cpp
     )
 source_group("network" FILES ${NETWORK_FILES})
 
