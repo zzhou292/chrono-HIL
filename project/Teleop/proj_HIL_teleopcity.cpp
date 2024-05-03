@@ -52,8 +52,8 @@
 #include "chrono_vehicle/powertrain/ChAutomaticTransmissionSimpleMap.h"
 #include "chrono/physics/ChInertiaUtils.h"
 
-#include "chrono_hil/network/udp/ChBoostInStreamer.h"
 #include "chrono_hil/network/udp/ChBoostOutStreamer.h"
+#include "chrono_hil/network/sim/ChDelaySim.h"
 
 using namespace chrono;
 using namespace chrono::irrlicht;
@@ -97,13 +97,18 @@ const double rads2rpm = 30 / CH_PI;
 
 // =============================================================================
 std::string scenario_filename = "test_parameters_1.json";
-std::vector<ChVector3<>> cone_pos;
+std::vector<std::string> obj_filenames;
+std::vector<ChVector3<>> obj_pos;
+std::vector<ChVector3<>> obj_rot;
+std::vector<double> obj_scale;
+float delay_val = 0.0;
 // =============================================================================
 void AddCommandLineOptions(ChCLI &cli)
 {
   cli.AddOption<std::string>("Simulation", "sim_params",
                              "Path to simulation configuration file",
                              scenario_filename);
+  cli.AddOption<float>("Simulation", "delay_val", "Delay value", std::to_string(delay_val));
 }
 // =============================================================================
 void ReadParameterFiles()
@@ -111,28 +116,83 @@ void ReadParameterFiles()
   { // Scenario parameter file
     rapidjson::Document d;
     vehicle::ReadFileJSON(std::string(STRINGIFY(HIL_DATA_DIR)) + std::string("/Environments/nads/parameters/") + scenario_filename, d);
-    if (d.HasMember("cone_positions"))
+    int mesh_ct = 0;
+    std::string meshname = "object" + std::to_string(mesh_ct);
+    while (d.HasMember(meshname.c_str()))
     {
-      auto marr = d["cone_positions"].GetArray();
-      for (int i = 0; i < marr.Size(); i++)
+      if (d[meshname.c_str()].HasMember("filename"))
       {
+        obj_filenames.push_back(d[meshname.c_str()]["filename"].GetString());
+      }
+      if (d[meshname.c_str()].HasMember("positions"))
+      {
+        auto marr = d[meshname.c_str()]["positions"].GetArray();
+
         ChVector3<> temp_pos;
         for (int j = 0; j < 3; j++)
         {
-          temp_pos[j] = marr[i][j].GetDouble();
+          temp_pos[j] = marr[j].GetDouble();
         }
-        cone_pos.push_back(temp_pos);
+        obj_pos.push_back(temp_pos);
       }
+      if (d[meshname.c_str()].HasMember("rotations"))
+      {
+        auto marr = d[meshname.c_str()]["rotations"].GetArray();
+        ChVector3<> temp_rot;
+        for (int j = 0; j < 3; j++)
+        {
+          temp_rot[j] = marr[j].GetDouble();
+        }
+        obj_rot.push_back(temp_rot);
+      }
+      if (d[meshname.c_str()].HasMember("scales"))
+      {
+        obj_scale.push_back(d[meshname.c_str()]["scales"].GetDouble());
+      }
+
+      mesh_ct++;
+      meshname = "object" + std::to_string(mesh_ct);
     }
   }
 }
 
 // =============================================================================
-void addCones(ChSystem &sys,
-              std::vector<ChVector3<>> &cone_pos);
+void addObjs(ChSystem &sys);
 
 // =============================================================================
 void AddCommandLineOptions(ChCLI &cli);
+
+// =============================================================================
+std::vector<char> serializeFloats(const std::vector<float> &floatVec)
+{
+  std::vector<char> byteVec(floatVec.size() * sizeof(float));
+  char *bytePointer = byteVec.data();
+
+  for (const float &value : floatVec)
+  {
+    std::memcpy(bytePointer, &value, sizeof(float));
+    bytePointer += sizeof(float);
+  }
+
+  return byteVec;
+}
+
+std::vector<float> deserializeFloats(const std::vector<char> &byteVec)
+{
+  std::vector<float> floatVec(byteVec.size() / sizeof(float));
+  const char *bytePointer = byteVec.data();
+
+  for (float &value : floatVec)
+  {
+    std::memcpy(&value, bytePointer, sizeof(float));
+    bytePointer += sizeof(float);
+  }
+
+  return floatVec;
+}
+
+// =============================================================================
+
 int main(int argc, char *argv[])
 {
   // get cli
@@ -156,6 +216,8 @@ int main(int argc, char *argv[])
   std::string tire_filename =
       vehicle::GetDataFile("audi/json/audi_TMeasyTire.json");
 
+  scenario_filename = cli.GetAsType<std::string>("sim_params");
+  delay_val = cli.GetAsType<float>("delay_val");
   // --------------
   // Create systems
   // --------------
@@ -309,12 +371,13 @@ int main(int argc, char *argv[])
       std::chrono::high_resolution_clock::now();
   double last_time = 0;
 
-  ChBoostInStreamer in_streamer(1214, 3);
   ChBoostOutStreamer boost_streamer(UNITY_IP_OUT, UNITY_PORT_OUT);
 
   DriverInputs driver_inputs;
 
-  addCones(*my_vehicle.GetSystem(), cone_pos);
+  addObjs(*my_vehicle.GetSystem());
+
+  ChDelaySim sim(delay_val);
 
   // simulation loop
   while (true)
@@ -342,17 +405,25 @@ int main(int argc, char *argv[])
       break;
 #endif
 
-    // Get driver inputs
-
-    if (step_number % 50 == 0)
+    if (step_number % 10 == 0)
     {
-      in_streamer.Synchronize();
+      // Create a vector of floats
+      std::vector<float> floats = {SDLDriver.GetSteering(), SDLDriver.GetThrottle(), SDLDriver.GetBraking()};
 
-      std::vector<float> recv_data = in_streamer.GetRecvData();
+      // Serialize the vector of floats to a vector of chars
+      std::vector<char> serializedData = serializeFloats(floats);
+      sim.addPacket(serializedData);
 
-      driver_inputs.m_steering = recv_data[0];
-      driver_inputs.m_throttle = recv_data[1];
-      driver_inputs.m_braking = recv_data[2];
+      // Get the packet back
+      std::vector<char> receivedData = sim.getDelayedPacket();
+      if (!receivedData.empty())
+      {
+        // Deserialize the data back to floats
+        std::vector<float> receivedFloats = deserializeFloats(receivedData);
+        driver_inputs.m_steering = receivedFloats[0];
+        driver_inputs.m_throttle = receivedFloats[1];
+        driver_inputs.m_braking = receivedFloats[2];
+      }
     }
 
     // =======================
@@ -416,28 +487,25 @@ int main(int argc, char *argv[])
   return 0;
 }
 
-void addCones(ChSystem &sys,
-              std::vector<ChVector3<>> &cone_pos)
+void addObjs(ChSystem &sys)
 {
 
-  std::string cone_file(std::string(STRINGIFY(HIL_DATA_DIR)) +
-                        "/Environments/nads/foliage/cone/cone.obj");
-
-  for (int i = 0; i < cone_pos.size(); i++)
+  for (int i = 0; i < obj_filenames.size(); i++)
   {
+
     double cone_density = 900;
     std::shared_ptr<ChContactMaterial> rock_mat =
         ChContactMaterial::DefaultMaterial(sys.GetContactMethod());
 
     auto mesh = ChTriangleMeshConnected::CreateFromWavefrontFile(
-        cone_file, false, true);
+        obj_filenames[i], false, true);
 
     double mass;
     ChVector3<> cog;
     ChMatrix33<> inertia;
     mesh->ComputeMassProperties(true, mass, cog, inertia);
 
-    mesh->Transform(ChVector3<>(0, 0, 0), ChMatrix33<>(0.5));
+    mesh->Transform(ChVector3<>(0, 0, 0), ChMatrix33<>(obj_scale[i]));
     ChMatrix33<> principal_inertia_rot;
     ChVector3<> principal_I;
     ChInertiaUtils::PrincipalInertia(inertia, principal_I,
@@ -446,7 +514,10 @@ void addCones(ChSystem &sys,
     auto body = chrono_types::make_shared<ChBodyAuxRef>();
     sys.Add(body);
     body->SetFixed(true);
-    body->SetFrameRefToAbs(ChFrame<>(ChVector3<>(cone_pos[i]), QUNIT));
+    ChQuaternion<> body_rot(1, 0, 0, 0);
+    body_rot.SetFromCardanAnglesXYZ(obj_rot[i]);
+
+    body->SetFrameRefToAbs(ChFrame<>(ChVector3<>(obj_pos[i]), body_rot));
     body->SetFrameCOMToRef(ChFrame<>(cog, principal_inertia_rot));
     body->SetMass(mass * cone_density);
     body->SetInertiaXX(cone_density * principal_I);
