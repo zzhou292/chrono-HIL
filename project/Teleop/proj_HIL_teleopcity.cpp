@@ -116,6 +116,27 @@ void ReadParameterFiles()
   { // Scenario parameter file
     rapidjson::Document d;
     vehicle::ReadFileJSON(std::string(STRINGIFY(HIL_DATA_DIR)) + std::string("/Environments/nads/parameters/") + scenario_filename, d);
+
+    if (d.HasMember("ego_loc"))
+    {
+      auto marr = d["ego_loc"].GetArray();
+      for (int j = 0; j < 3; j++)
+      {
+        initLoc[j] = marr[j].GetDouble();
+      }
+    }
+
+    if (d.HasMember("ego_rot"))
+    {
+      auto marr = d["ego_rot"].GetArray();
+      ChVector3<> euler_rot;
+      for (int j = 0; j < 3; j++)
+      {
+        euler_rot[j] = marr[j].GetDouble();
+      }
+      initRot.SetFromCardanAnglesXYZ(euler_rot);
+    }
+
     int mesh_ct = 0;
     std::string meshname = "object" + std::to_string(mesh_ct);
     while (d.HasMember(meshname.c_str()))
