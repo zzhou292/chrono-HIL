@@ -454,7 +454,9 @@ int main(int argc, char *argv[])
 
   DriverInputs driver_inputs;
 
-  ChDelaySim sim(400);
+  auto normalDist = std::make_shared<chrono::hil::NormalDistribution>(200.0f, 10.0f);
+  // Initialize delay simulator with normal distribution
+  ChDelaySim sim(normalDist, 50.f);
 
   while (true)
   {

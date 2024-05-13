@@ -1,18 +1,3 @@
-// =============================================================================
-// CHRONO-HIL - https://github.com/zzhou292/chrono-HIL
-//
-// Copyright (c) 2014 projectchrono.org
-// All rights reserved.
-//
-// Use of this source code is governed by a BSD-style license that can be found
-// in the LICENSE file at the top level of the distribution
-//
-// =============================================================================
-// Authors: Jason Zhou
-// =============================================================================
-// This is a stream-based input driver interface based on boost TCP networking
-// =============================================================================
-
 #include "ChDelaySim.h"
 
 namespace chrono
@@ -20,9 +5,11 @@ namespace chrono
     namespace hil
     {
 
-        ChDelaySim::ChDelaySim(float delayInterval)
-            : delayInterval(delayInterval)
+        ChDelaySim::ChDelaySim(std::shared_ptr<DelayDistribution> distribution, float bandwidthLimit)
+            : delayDistribution(distribution), bandwidthLimit(bandwidthLimit)
         {
+            std::random_device rd;
+            generator.seed(rd());
         }
 
         ChDelaySim::~ChDelaySim()
@@ -33,25 +20,47 @@ namespace chrono
         void ChDelaySim::addPacket(const std::vector<char> &data)
         {
             std::unique_lock<std::mutex> lock(queueMutex);
-            packetQueue.push({std::chrono::steady_clock::now(), data});
+            auto currentTime = std::chrono::steady_clock::now();
+            auto expectedDelay = delayDistribution->sample(generator);
+            float currentBandwidth = packetQueue.size() / (expectedDelay * 1e-3);
+
+            if (currentBandwidth < bandwidthLimit)
+            {
+                packetQueue.push({currentTime, data});
+            }
+            else
+            {
+                std::cout << "Bandwidth limit exceeded, packet not added." << std::endl;
+            }
         }
 
         std::vector<char> ChDelaySim::getDelayedPacket()
         {
             std::unique_lock<std::mutex> lock(queueMutex);
-            if (!packetQueue.empty())
+            auto currentTime = std::chrono::steady_clock::now();
+            auto expectedDelay = delayDistribution->sample(generator);
+
+            while (!packetQueue.empty())
             {
                 auto &front = packetQueue.front();
-                auto currentTime = std::chrono::steady_clock::now();
                 auto delay = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - front.first).count();
-                if (delay >= delayInterval)
+
+                if (delay >= expectedDelay)
                 {
-                    std::vector<char> data = front.second;
+                    latestData = front.second;
                     packetQueue.pop();
-                    return data;
+                }
+                else
+                {
+                    break; // Stop processing if the next packet is not ready yet
                 }
             }
-            return std::vector<char>(); // Return empty vector if no packet is ready
+            return latestData;
+        }
+
+        void ChDelaySim::changeDistribution(std::shared_ptr<DelayDistribution> newDistribution)
+        {
+            delayDistribution = newDistribution;
         }
 
         void ChDelaySim::displayData(const std::vector<char> &data)
@@ -64,5 +73,5 @@ namespace chrono
             std::cout << std::endl;
         }
 
-    }
-}
+    } // namespace hil
+} // namespace chrono

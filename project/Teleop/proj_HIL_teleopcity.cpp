@@ -407,7 +407,9 @@ int main(int argc, char *argv[])
 
   addObjs(*my_vehicle.GetSystem());
 
-  ChDelaySim sim(delay_val);
+  auto normalDist = std::make_shared<chrono::hil::NormalDistribution>(delay_val, 0.001f);
+  // Initialize delay simulator with normal distribution
+  ChDelaySim sim(normalDist, 1000000000.f);
 
   std::vector<int> check_button_idx;
   std::vector<int> check_button_val;
