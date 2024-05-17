@@ -21,8 +21,7 @@ namespace chrono
         {
             std::unique_lock<std::mutex> lock(queueMutex);
             auto currentTime = std::chrono::steady_clock::now();
-            auto expectedDelay = delayDistribution->sample(generator);
-            float currentBandwidth = packetQueue.size() / (expectedDelay * 1e-3);
+            float currentBandwidth = packetQueue.size() * 8 / (expectedDelay * 1e-3);
 
             if (currentBandwidth < bandwidthLimit)
             {
@@ -30,7 +29,11 @@ namespace chrono
             }
             else
             {
-                std::cout << "Bandwidth limit exceeded, packet not added." << std::endl;
+                if (enableLogging)
+                {
+                    std::cout << "Packet dropped due to bandwidth limit. Current bandwidth: " << currentBandwidth << " packets/s" << std::endl;
+                    packetDropCount_buffer++;
+                }
             }
         }
 
@@ -38,12 +41,16 @@ namespace chrono
         {
             std::unique_lock<std::mutex> lock(queueMutex);
             auto currentTime = std::chrono::steady_clock::now();
-            auto expectedDelay = delayDistribution->sample(generator);
+            expectedDelay = delayDistribution->sample(generator);
 
             while (!packetQueue.empty())
             {
                 auto &front = packetQueue.front();
                 auto delay = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - front.first).count();
+                if (enableLogging)
+                {
+                    delay_buffer.push_back(delay);
+                }
 
                 if (delay >= expectedDelay)
                 {
@@ -71,6 +78,22 @@ namespace chrono
                 std::cout << static_cast<int>(byte) << " ";
             }
             std::cout << std::endl;
+        }
+
+        int ChDelaySim::getPacketDropCount()
+        {
+            int res = packetDropCount_buffer;
+            packetDropCount_buffer = 0;
+            return res;
+        }
+
+        std::vector<float> ChDelaySim::getDelayBuffer()
+        {
+            std::vector<float> res;
+            res = delay_buffer;
+            delay_buffer.clear();
+            delay_buffer.resize(0);
+            return res;
         }
 
     } // namespace hil

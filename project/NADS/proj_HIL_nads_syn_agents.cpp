@@ -93,7 +93,8 @@ double t_end = 1000;
 
 // =============================================================================
 void AddCommandLineOptions(ChCLI &cli);
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
 
   ChCLI cli(argv[0]);
 
@@ -124,7 +125,8 @@ int main(int argc, char *argv[]) {
   qos.wire_protocol().builtin.avoid_builtin_multicast = false;
 
   // Set the initialPeersList
-  for (const auto &ip : ip_list) {
+  for (const auto &ip : ip_list)
+  {
     Locator_t locator;
     locator.kind = LOCATOR_KIND_UDPv4;
     IPLocator::setIPv4(locator, ip);
@@ -158,13 +160,20 @@ int main(int argc, char *argv[]) {
   // Create the Sedan vehicle, set parameters, and initialize
   WheeledVehicle my_vehicle(vehicle_filename, ChContactMethod::SMC);
   auto ego_chassis = my_vehicle.GetChassis();
-  if (node_id == 1) {
+  if (node_id == 1)
+  {
     initLoc = ChVector3<>(-80.788, 98.647, 0.25);
-  } else if (node_id == 2) {
+  }
+  else if (node_id == 2)
+  {
     initLoc = ChVector3<>(-70.788, 98.647, 0.25);
-  } else if (node_id == 3) {
+  }
+  else if (node_id == 3)
+  {
     initLoc = ChVector3<>(-60.788, 98.647, 0.25);
-  } else if (node_id == 4) {
+  }
+  else if (node_id == 4)
+  {
     initLoc = ChVector3<>(-50.788, 98.647, 0.25);
   }
   my_vehicle.SetCollisionSystemType(ChCollisionSystem::Type::BULLET);
@@ -183,8 +192,10 @@ int main(int argc, char *argv[]) {
   my_vehicle.SetWheelVisualizationType(VisualizationType::MESH);
 
   // Create and initialize the tires
-  for (auto &axle : my_vehicle.GetAxles()) {
-    for (auto &wheel : axle->GetWheels()) {
+  for (auto &axle : my_vehicle.GetAxles())
+  {
+    for (auto &wheel : axle->GetWheels())
+    {
       auto tire = ReadTireJSON(tire_filename);
       tire->SetStepsize(tire_step_size);
       my_vehicle.InitializeTire(tire, wheel, VisualizationType::MESH);
@@ -269,7 +280,8 @@ int main(int argc, char *argv[]) {
   DriverInputs driver_inputs = {0, 0, 0};
 
   // simulation loop
-  while (syn_manager.IsOk()) {
+  while (syn_manager.IsOk())
+  {
     double time = my_vehicle.GetSystem()->GetChTime();
 
     ChVector3<> pos = my_vehicle.GetChassis()->GetPos();
@@ -315,7 +327,8 @@ int main(int argc, char *argv[]) {
   return 0;
 }
 
-void AddCommandLineOptions(ChCLI &cli) {
+void AddCommandLineOptions(ChCLI &cli)
+{
   // DDS Specific
   cli.AddOption<int>("DDS", "d,node_id", "ID for this Node", "1");
   cli.AddOption<int>("DDS", "n,num_nodes", "Number of Nodes", "2");

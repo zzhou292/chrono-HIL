@@ -86,7 +86,8 @@ const double RADS_2_RPM = 30 / CH_PI;
 const double MS_2_MPH = 2.2369;
 // =====================================================
 
-struct rom_item {
+struct rom_item
+{
   int type;
   ChVector3<double> pos;
   ChVector3<double> rot;
@@ -102,14 +103,17 @@ void AddCommandLineOptions(ChCLI &cli);
 
 void readvectors(std::vector<float> &throttle_ref,
                  std::vector<float> &brakes_ref,
-                 std::vector<float> &steerings_ref) {
+                 std::vector<float> &steerings_ref)
+{
   std::vector<std::vector<std::string>> content;
   std::vector<std::string> row;
   std::string line, word;
 
   std::fstream file("input.csv", std::ios::in);
-  if (file.is_open()) {
-    while (getline(file, line)) {
+  if (file.is_open())
+  {
+    while (getline(file, line))
+    {
       row.clear();
 
       std::stringstream str(line);
@@ -118,10 +122,12 @@ void readvectors(std::vector<float> &throttle_ref,
         row.push_back(word);
       content.push_back(row);
     }
-  } else
+  }
+  else
     std::cout << "Could not open the file\n";
 
-  for (int i = 0; i < content.size(); i++) {
+  for (int i = 0; i < content.size(); i++)
+  {
     throttle_ref.push_back(std::stof(content[i][0]));
     brakes_ref.push_back(std::stof(content[i][1]));
     steerings_ref.push_back(std::stof(content[i][2]));
@@ -143,7 +149,15 @@ VisualizationType tire_vis_type = VisualizationType::MESH;
 TireModelType tire_model = TireModelType::TMEASY;
 
 // Type of vehicle
-enum VehicleType { HMMWV, SEDAN, CITYBUS, AUDI, SUV, TRUCK };
+enum VehicleType
+{
+  HMMWV,
+  SEDAN,
+  CITYBUS,
+  AUDI,
+  SUV,
+  TRUCK
+};
 
 // Point on chassis tracked by the camera
 ChVector3<> trackPoint(0.0, 0.0, 1.75);
@@ -201,7 +215,8 @@ void VehicleProcessMessageCallback(
 
 // =============================================================================
 
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
 
   ChCLI cli(argv[0]);
 
@@ -235,7 +250,8 @@ int main(int argc, char *argv[]) {
   qos.wire_protocol().builtin.avoid_builtin_multicast = false;
 
   // Set the initialPeersList
-  for (const auto &ip : ip_list) {
+  for (const auto &ip : ip_list)
+  {
     Locator_t locator;
     locator.kind = LOCATOR_KIND_UDPv4;
     IPLocator::setIPv4(locator, ip);
@@ -260,7 +276,8 @@ int main(int argc, char *argv[]) {
   std::cout << filename << std::endl;
   ReadRomInitFile(filename, rom_data);
 
-  if (record == 2) {
+  if (record == 2)
+  {
     readvectors(throttles, brakes, steerings);
   }
 
@@ -280,13 +297,18 @@ int main(int argc, char *argv[]) {
   // Initial vehicle location and orientation
   ChVector3<> initLoc;
   ChQuaternion<> initRot;
-  if (node_id == 0) {
+  if (node_id == 0)
+  {
     initLoc = ChVector3<>(930.434, 0, -65.2);
     initRot = SetFromAngleZ(3.14 / 2);
-  } else if (node_id == 1) {
+  }
+  else if (node_id == 1)
+  {
     initLoc = ChVector3<>(930.434, -50.87, -65.2);
     initRot = SetFromAngleZ(3.14 / 2);
-  } else if (node_id == 2) {
+  }
+  else if (node_id == 2)
+  {
     initLoc = ChVector3<>(930.434, -150.87, -65.2);
     initRot = SetFromAngleZ(3.14 / 2);
   }
@@ -304,8 +326,10 @@ int main(int argc, char *argv[]) {
   my_vehicle.SetWheelVisualizationType(VisualizationType::MESH);
 
   // Create and initialize the tires
-  for (auto &axle : my_vehicle.GetAxles()) {
-    for (auto &wheel : axle->GetWheels()) {
+  for (auto &axle : my_vehicle.GetAxles())
+  {
+    for (auto &wheel : axle->GetWheels())
+    {
       auto tire = ReadTireJSON(tire_filename);
       tire->SetStepsize(step_size / 5.f);
       my_vehicle.InitializeTire(tire, wheel, VisualizationType::MESH);
@@ -374,15 +398,23 @@ int main(int argc, char *argv[]) {
       std::string(STRINGIFY(HIL_DATA_DIR)) + "/rom/audi/audi_rom.json";
 
   std::vector<std::shared_ptr<Ch_8DOF_zombie>> zombie_vec;
-  for (int i = 0; i < num_rom; i++) {
+  for (int i = 0; i < num_rom; i++)
+  {
     std::string rom_json;
-    if (rom_data[i].type == 0) {
+    if (rom_data[i].type == 0)
+    {
       rom_json = hmmwv_json;
-    } else if (rom_data[i].type == 1) {
+    }
+    else if (rom_data[i].type == 1)
+    {
       rom_json = sedan_json;
-    } else if (rom_data[i].type == 2) {
+    }
+    else if (rom_data[i].type == 2)
+    {
       rom_json = patrol_json;
-    } else if (rom_data[i].type == 3) {
+    }
+    else if (rom_data[i].type == 3)
+    {
       rom_json = audi_json;
     }
 
@@ -399,7 +431,8 @@ int main(int argc, char *argv[]) {
   // add a sensor manager
   std::shared_ptr<ChSensorManager> manager;
 
-  if (node_id == 0) {
+  if (node_id == 0)
+  {
     /*
     // mirrors position and rotations
     ChVector3<> mirror_rearview_pos = {0.253, 0.0, 1.10};
@@ -531,9 +564,9 @@ int main(int argc, char *argv[]) {
         25,                          // scanning rate in Hz
         chrono::ChFrame<double>({0.0, 0.0, 3.5},
                                 SetFromAngleAxis(0.0, {0, 1, 0})), // offset pose
-        1280,                 // number of horizontal samples
-        720,                  // numberof vertical channels
-        (float)(2 * CH_PI), // horizontal field of view
+        1280,                                                      // number of horizontal samples
+        720,                                                       // numberof vertical channels
+        (float)(2 * CH_PI),                                        // horizontal field of view
         (float)CH_PI / 12, (float)-CH_PI / 3,
         200.0f // vertical field of view
     );
@@ -564,7 +597,8 @@ int main(int argc, char *argv[]) {
 
   ChSDLInterface SDLDriver;
 
-  if (node_id == 1) {
+  if (node_id == 1)
+  {
     SDLDriver.Initialize();
 
     SDLDriver.SetJoystickConfigFile(
@@ -574,7 +608,7 @@ int main(int argc, char *argv[]) {
 
   std::string path_file("paths/output.txt");
 
-  auto path = ChBezierCurve::read(demo_data_path + "/paths/output.txt", true);
+  auto path = ChBezierCurve::Read(demo_data_path + "/paths/output.txt", true);
 
   ChPathFollowerDriver driver(my_vehicle, path, "my_path", 6.0);
   driver.GetSteeringController().SetLookAheadDistance(5);
@@ -606,15 +640,20 @@ int main(int argc, char *argv[]) {
   ChTCPClient chrono_2("127.0.0.1", 1206,
                        num_rom * 11); // create a TCP client for rank 2
 
-  if (node_id == 0) {
+  if (node_id == 0)
+  {
     chrono_0.Initialize(); // initialize TCP connection for rank 1
-  } else if (node_id == 1) {
+  }
+  else if (node_id == 1)
+  {
     std::this_thread::sleep_for(std::chrono::milliseconds(
-        5000)); // wait for 2000 seconds to prevent duplicated connection
+        5000));            // wait for 2000 seconds to prevent duplicated connection
     chrono_1.Initialize(); // initialize TCP connection for rank 2
-  } else if (node_id == 2) {
+  }
+  else if (node_id == 2)
+  {
     std::this_thread::sleep_for(std::chrono::milliseconds(
-        10000)); // wait for 2000 seconds to prevent duplicated connection
+        10000));           // wait for 2000 seconds to prevent duplicated connection
     chrono_2.Initialize(); // initialize TCP connection for rank 2
   }
 
@@ -636,41 +675,51 @@ int main(int argc, char *argv[]) {
   std::chrono::high_resolution_clock::time_point start =
       std::chrono::high_resolution_clock::now();
 
-  while (syn_manager.IsOk()) {
+  while (syn_manager.IsOk())
+  {
     sim_time = my_vehicle.GetSystem()->GetChTime();
 
     // Get driver inputs
     DriverInputs driver_inputs;
 
-    if (node_id == 1) {
-      if (record == 2) {
+    if (node_id == 1)
+    {
+      if (record == 2)
+      {
         driver_inputs.m_throttle = throttles[step_number];
         driver_inputs.m_steering = steerings[step_number];
         driver_inputs.m_braking = brakes[step_number];
-
-      } else {
+      }
+      else
+      {
         driver_inputs.m_throttle = SDLDriver.GetThrottle();
         driver_inputs.m_steering = SDLDriver.GetSteering();
         driver_inputs.m_braking = SDLDriver.GetBraking();
       }
-
-    } else if (node_id == 0) {
+    }
+    else if (node_id == 0)
+    {
       driver_inputs = driver.GetInputs();
-    } else if (node_id == 2) {
+    }
+    else if (node_id == 2)
+    {
       driver_inputs = idm_driver.GetInputs();
     }
 
-    if (node_id == 1) {
+    if (node_id == 1)
+    {
       if (SDLDriver.Synchronize() == 1)
         break;
     }
 
     // obtain map
-    if (step_number == 0 && node_id == 2) {
+    if (step_number == 0 && node_id == 2)
+    {
       zombie_map = syn_manager.GetZombies();
       for (std::map<AgentKey, std::shared_ptr<SynAgent>>::iterator it =
                zombie_map.begin();
-           it != zombie_map.end(); ++it) {
+           it != zombie_map.end(); ++it)
+      {
         std::shared_ptr<SynAgent> temp_ptr = it->second;
         std::shared_ptr<SynWheeledVehicleAgent> converted_ptr =
             std::dynamic_pointer_cast<SynWheeledVehicleAgent>(temp_ptr);
@@ -679,9 +728,11 @@ int main(int argc, char *argv[]) {
     }
 
     // update necessary zombie info for IDM
-    if (step_number % int(heartbeat / step_size) == 0 && node_id == 2) {
+    if (step_number % int(heartbeat / step_size) == 0 && node_id == 2)
+    {
       ego_cur_pos = id_map.at(1)->GetZombiePos();
-      if (step_number == 0) {
+      if (step_number == 0)
+      {
         ego_prev_pos = ego_cur_pos;
       }
       ego_spd = (ego_cur_pos - ego_prev_pos).Length() / heartbeat;
@@ -700,30 +751,40 @@ int main(int argc, char *argv[]) {
     syn_manager.Synchronize(sim_time);
 
     // Advance simulation for one timestep for all modules
-    if (node_id == 0) {
+    if (node_id == 0)
+    {
       driver.Advance(step_size);
-    } else if (node_id == 2) {
+    }
+    else if (node_id == 2)
+    {
       idm_driver.Advance(step_size);
     }
 
     my_vehicle.Advance(step_size);
     terrain.Advance(step_size);
 
-    if (node_id == 0 && step_number % int(heartbeat / step_size) == 0) {
+    if (node_id == 0 && step_number % int(heartbeat / step_size) == 0)
+    {
       manager->Update();
     }
 
     // Synchronize
-    if (step_number == 0) {
+    if (step_number == 0)
+    {
       std::vector<float> data_to_send;
       data_to_send.push_back(1.0);
       data_to_send.push_back(1.0);
       data_to_send.push_back(1.0);
-      if (node_id == 0) {
+      if (node_id == 0)
+      {
         chrono_0.Write(data_to_send);
-      } else if (node_id == 1) {
+      }
+      else if (node_id == 1)
+      {
         chrono_1.Write(data_to_send);
-      } else if (node_id == 2) {
+      }
+      else if (node_id == 2)
+      {
         chrono_2.Write(data_to_send);
       }
     }
@@ -733,30 +794,42 @@ int main(int argc, char *argv[]) {
     // TCP Synchronization Section
     // ==================================================
     // read data from rom distributor 1
-    if (step_number % 20 == 0) {
-      if (node_id == 0) {
+    if (step_number % 20 == 0)
+    {
+      if (node_id == 0)
+      {
         chrono_0.Read();
-      } else if (node_id == 1) {
+      }
+      else if (node_id == 1)
+      {
         chrono_1.Read();
-      } else if (node_id == 2) {
+      }
+      else if (node_id == 2)
+      {
         chrono_2.Read();
       }
 
       std::vector<float> recv_data;
-      if (node_id == 0) {
+      if (node_id == 0)
+      {
         recv_data = chrono_0.GetRecvData();
-      } else if (node_id == 1) {
+      }
+      else if (node_id == 1)
+      {
         recv_data = chrono_1.GetRecvData();
-      } else if (node_id == 2) {
+      }
+      else if (node_id == 2)
+      {
         recv_data = chrono_2.GetRecvData();
       }
 
-      for (int i = 0; i < num_rom; i++) {
+      for (int i = 0; i < num_rom; i++)
+      {
         zombie_vec[i]->Update(
             ChVector3<>(recv_data[0 + i * 11], recv_data[1 + i * 11],
-                       recv_data[2 + i * 11]),
+                        recv_data[2 + i * 11]),
             ChVector3<>(recv_data[3 + i * 11], recv_data[4 + i * 11],
-                       recv_data[5 + i * 11]),
+                        recv_data[5 + i * 11]),
             recv_data[6 + i * 11], recv_data[7 + i * 11], recv_data[8 + i * 11],
             recv_data[9 + i * 11], recv_data[10 + i * 11]);
       }
@@ -767,16 +840,22 @@ int main(int argc, char *argv[]) {
       data_to_send.push_back(my_vehicle.GetChassis()->GetPos().y());
       data_to_send.push_back(my_vehicle.GetChassis()->GetPos().z());
 
-      if (node_id == 0) {
+      if (node_id == 0)
+      {
         chrono_0.Write(data_to_send);
-      } else if (node_id == 1) {
+      }
+      else if (node_id == 1)
+      {
         chrono_1.Write(data_to_send);
-      } else if (node_id == 2) {
+      }
+      else if (node_id == 2)
+      {
         chrono_2.Write(data_to_send);
       }
     }
 
-    if (output_state == 1 && step_number % 20 == 0) {
+    if (output_state == 1 && step_number % 20 == 0)
+    {
       output_buffer << sim_time << ",";
       output_buffer << my_vehicle.GetSpeed() << ",";
       ChQuaternion<> temp_qua = my_vehicle.GetRot();
@@ -790,7 +869,8 @@ int main(int argc, char *argv[]) {
       output_buffer << my_vehicle.GetPowertrain()->GetMotorSpeed() << ",";
       output_buffer << my_vehicle.GetPowertrain()->GetCurrentTransmissionGear();
       output_buffer << std::endl;
-      if (step_number % 10000 == 0) {
+      if (step_number % 10000 == 0)
+      {
         std::cout << "Writing to output file..." << std::endl;
         output_filestream << output_buffer.rdbuf();
         output_buffer.str("");
@@ -801,7 +881,8 @@ int main(int argc, char *argv[]) {
     step_number++;
 
     // Log clock time
-    if (step_number % 500 == 0) {
+    if (step_number % 500 == 0)
+    {
       std::chrono::high_resolution_clock::time_point end =
           std::chrono::high_resolution_clock::now();
       std::chrono::duration<double> wall_time =
@@ -813,12 +894,14 @@ int main(int argc, char *argv[]) {
       start = std::chrono::high_resolution_clock::now();
     }
 
-    if (record == 1) {
+    if (record == 1)
+    {
       record_buffer << std::to_string(driver_inputs.m_throttle) + ",";
       record_buffer << std::to_string(driver_inputs.m_braking) + ",";
       record_buffer << std::to_string(driver_inputs.m_steering);
       record_buffer << std::endl;
-      if (step_number % 5000 == 0) {
+      if (step_number % 5000 == 0)
+      {
         SynLog() << ("Writing to record file...") << "\n";
         record_filestream << record_buffer.rdbuf();
         record_buffer.str("");
@@ -830,7 +913,8 @@ int main(int argc, char *argv[]) {
   return 0;
 }
 
-void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
+void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain)
+{
   // load all meshes in input file, using instancing where possible
   std::string base_path =
       GetChronoDataFile("/Environments/SanFrancisco/components_new/");
@@ -855,19 +939,25 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
   int mesh_offset = 0;
   int num_meshes = 20000;
 
-  if (infile.good()) {
+  if (infile.good())
+  {
     int mesh_count = 0;
     int mesh_limit = mesh_offset + num_meshes;
 
-    while (std::getline(infile, line) && mesh_count < mesh_limit) {
+    while (std::getline(infile, line) && mesh_count < mesh_limit)
+    {
 
-      if (mesh_count < mesh_offset) {
+      if (mesh_count < mesh_offset)
+      {
         mesh_count++;
-      } else {
+      }
+      else
+      {
         mesh_count++;
         result.clear();
         std::stringstream ss(line);
-        while (std::getline(ss, col, ',')) {
+        while (std::getline(ss, col, ','))
+        {
           result.push_back(col);
         }
         std::string mesh_name = result[0];
@@ -875,21 +965,27 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
 
         // std::cout << mesh_name << std::endl;
         if (mesh_name.find("EmissionOn") ==
-            std::string::npos) { // exlude items with
-                                 // emission on
+            std::string::npos)
+        { // exlude items with
+          // emission on
 
-          if (true || mesh_name.find("Road") != std::string::npos) {
+          if (true || mesh_name.find("Road") != std::string::npos)
+          {
             ChVector3<double> pos = {std::stod(result[2]), std::stod(result[3]),
-                                    std::stod(result[4])};
+                                     std::stod(result[4])};
 
-            if ((pos - simulation_center).Length() < loading_radius) {
+            if ((pos - simulation_center).Length() < loading_radius)
+            {
               // check if mesh is in map
               bool instance_found = false;
               std::shared_ptr<ChTriangleMeshConnected> mmesh;
-              if (mesh_map.find(mesh_obj) != mesh_map.end()) {
+              if (mesh_map.find(mesh_obj) != mesh_map.end())
+              {
                 mmesh = mesh_map[mesh_obj];
                 instance_found = true;
-              } else {
+              }
+              else
+              {
                 mmesh = chrono_types::make_shared<ChTriangleMeshConnected>();
                 mmesh->LoadWavefrontMesh(mesh_obj, false, true);
                 mesh_map[mesh_obj] = mmesh;
@@ -899,8 +995,8 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
                   std::stod(result[5]), std::stod(result[6]),
                   std::stod(result[7]), std::stod(result[8])};
               ChVector3<double> scale = {std::stod(result[9]),
-                                        std::stod(result[10]),
-                                        std::stod(result[11])};
+                                         std::stod(result[10]),
+                                         std::stod(result[11])};
 
               // if not road, only add visualization with new pos,rot,scale
               auto trimesh_shape =
@@ -923,10 +1019,12 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
   }
 }
 
-void ReadRomInitFile(std::string csv_filename, std::vector<rom_item> &rom_vec) {
+void ReadRomInitFile(std::string csv_filename, std::vector<rom_item> &rom_vec)
+{
   std::ifstream inputFile(csv_filename);
 
-  if (!inputFile.is_open()) {
+  if (!inputFile.is_open())
+  {
     std::cout << "Failed to open the file." << std::endl;
   }
 
@@ -936,17 +1034,23 @@ void ReadRomInitFile(std::string csv_filename, std::vector<rom_item> &rom_vec) {
 
   int line_count = 0;
 
-  while (std::getline(inputFile, line)) {
-    if (line_count != 0) {
+  while (std::getline(inputFile, line))
+  {
+    if (line_count != 0)
+    {
       std::istringstream iss(line);
       std::string token;
       std::vector<float> row; // Vector to store a row of float numbers
-      while (std::getline(iss, token, ',')) { // Assuming comma as the delimiter
+      while (std::getline(iss, token, ','))
+      { // Assuming comma as the delimiter
         float number;
-        try {
+        try
+        {
           number = std::stof(token); // Convert string to float
           row.push_back(number);     // Store the float number in the row vector
-        } catch (const std::exception &e) {
+        }
+        catch (const std::exception &e)
+        {
           // Failed to convert to float, ignore and continue
         }
       }
@@ -958,7 +1062,8 @@ void ReadRomInitFile(std::string csv_filename, std::vector<rom_item> &rom_vec) {
 
   inputFile.close(); // Close the input file
 
-  for (int i = 0; i < data.size(); i++) {
+  for (int i = 0; i < data.size(); i++)
+  {
     rom_item temp_struct;
     temp_struct.type = int(data[i][1]);
     temp_struct.pos =
@@ -975,13 +1080,15 @@ void ReadRomInitFile(std::string csv_filename, std::vector<rom_item> &rom_vec) {
 
   // Print the float numbers in the 2D vector
   std::cout << "test struct print" << std::endl;
-  for (auto temp_data : rom_vec) {
+  for (auto temp_data : rom_vec)
+  {
     std::cout << temp_data.type << ", " << temp_data.pos << ", "
               << temp_data.rot << ", " << temp_data.path << std::endl;
   }
 }
 
-void AddCommandLineOptions(ChCLI &cli) {
+void AddCommandLineOptions(ChCLI &cli)
+{
   // DDS Specific
   cli.AddOption<int>("DDS", "d,node_id", "ID for this Node", "1");
   cli.AddOption<int>("DDS", "n,num_nodes", "Number of Nodes", "2");

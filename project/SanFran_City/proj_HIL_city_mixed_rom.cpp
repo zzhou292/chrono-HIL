@@ -116,7 +116,8 @@ std::string demo_data_path = std::string(STRINGIFY(HIL_DATA_DIR));
 
 // =====================================================
 
-struct rom_item {
+struct rom_item
+{
   int type;
   ChVector3<double> pos;
   ChVector3<double> rot;
@@ -131,7 +132,8 @@ void ReadRomInitFile(std::string csv_filename, std::vector<rom_item> &rom_arr);
 
 // =====================================================
 
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
 
   std::vector<rom_item> rom_data;
   std::string filename = std::string(STRINGIFY(HIL_DATA_DIR)) +
@@ -165,15 +167,23 @@ int main(int argc, char *argv[]) {
   std::vector<DriverInputs> input_record;
 
   // initialize vehicle and drivers
-  for (int i = 0; i < rom_data.size(); i++) {
+  for (int i = 0; i < rom_data.size(); i++)
+  {
     std::string rom_json;
-    if (rom_data[i].type == 0) {
+    if (rom_data[i].type == 0)
+    {
       rom_json = hmmwv_json;
-    } else if (rom_data[i].type == 1) {
+    }
+    else if (rom_data[i].type == 1)
+    {
       rom_json = sedan_json;
-    } else if (rom_data[i].type == 2) {
+    }
+    else if (rom_data[i].type == 2)
+    {
       rom_json = patrol_json;
-    } else if (rom_data[i].type == 3) {
+    }
+    else if (rom_data[i].type == 3)
+    {
       rom_json = audi_json;
     }
 
@@ -188,25 +198,39 @@ int main(int argc, char *argv[]) {
 
     // DRIVER
     std::shared_ptr<ChBezierCurve> path;
-    if (rom_data[i].path == 2) {
-      path = ChBezierCurve::read(demo_data_path + "/paths/2.txt", true);
-    } else if (rom_data[i].path == 3) {
-      path = ChBezierCurve::read(demo_data_path + "/paths/3.txt", true);
-    } else if (rom_data[i].path == 5) {
-      path = ChBezierCurve::read(demo_data_path + "/paths/5.txt", true);
-    } else if (rom_data[i].path == 1) {
-      path = ChBezierCurve::read(demo_data_path + "/paths/1.txt", true);
-    } else if (rom_data[i].path == 6) {
-      path = ChBezierCurve::read(demo_data_path + "/paths/6.txt", true);
-    } else if (rom_data[i].path == 7) {
-      path = ChBezierCurve::read(demo_data_path + "/paths/7.txt", true);
+    if (rom_data[i].path == 2)
+    {
+      path = ChBezierCurve::Read(demo_data_path + "/paths/2.txt", true);
+    }
+    else if (rom_data[i].path == 3)
+    {
+      path = ChBezierCurve::Read(demo_data_path + "/paths/3.txt", true);
+    }
+    else if (rom_data[i].path == 5)
+    {
+      path = ChBezierCurve::Read(demo_data_path + "/paths/5.txt", true);
+    }
+    else if (rom_data[i].path == 1)
+    {
+      path = ChBezierCurve::Read(demo_data_path + "/paths/1.txt", true);
+    }
+    else if (rom_data[i].path == 6)
+    {
+      path = ChBezierCurve::Read(demo_data_path + "/paths/6.txt", true);
+    }
+    else if (rom_data[i].path == 7)
+    {
+      path = ChBezierCurve::Read(demo_data_path + "/paths/7.txt", true);
     }
 
     std::shared_ptr<ChROM_PathFollowerDriver> driver;
-    if (rom_data[i].path == 3) {
+    if (rom_data[i].path == 3)
+    {
       driver = chrono_types::make_shared<ChROM_PathFollowerDriver>(
           rom_vec[i], path, 6.0, 10.0, 0.1, 0.0, 0.0, 0.5, 0.0, 0.0);
-    } else {
+    }
+    else
+    {
       driver = chrono_types::make_shared<ChROM_PathFollowerDriver>(
           rom_vec[i], path, 6.0, 10.0, 0.3, 0.0, 0.0, 0.5, 0.0, 0.0);
     }
@@ -214,7 +238,8 @@ int main(int argc, char *argv[]) {
     driver_vec.push_back(driver);
 
     std::vector<double> params;
-    if (rom_data[i].idm_type == 0) {
+    if (rom_data[i].idm_type == 0)
+    {
       params.push_back(10.0);
       params.push_back(0.1);
       params.push_back(5.0);
@@ -222,8 +247,9 @@ int main(int argc, char *argv[]) {
       params.push_back(2.5);
       params.push_back(4.0);
       params.push_back(6.0);
-
-    } else if (rom_data[i].idm_type == 1) {
+    }
+    else if (rom_data[i].idm_type == 1)
+    {
       params.push_back(9.0);
       params.push_back(0.2);
       params.push_back(6.0);
@@ -231,7 +257,9 @@ int main(int argc, char *argv[]) {
       params.push_back(2.1);
       params.push_back(4.0);
       params.push_back(6.0);
-    } else if (rom_data[i].idm_type == 2) {
+    }
+    else if (rom_data[i].idm_type == 2)
+    {
       params.push_back(7.5);
       params.push_back(0.7);
       params.push_back(8.0);
@@ -294,9 +322,11 @@ int main(int argc, char *argv[]) {
   rom_distributor_1.Initialize(); // initialize connection to synchrono rank 2
   rom_distributor_2.Initialize(); // initialize connection to synchrono rank 2
 
-  while (true) {
+  while (true)
+  {
 
-    if (step_number == 0) {
+    if (step_number == 0)
+    {
       rom_distributor_0.Read();
       std::vector<float> recv_data_0;
       recv_data_0 = rom_distributor_0.GetRecvData();
@@ -312,18 +342,23 @@ int main(int argc, char *argv[]) {
 
     time = my_system.GetChTime();
 
-    if (step_number == 1) {
+    if (step_number == 1)
+    {
       realtime_timer.Reset();
-    } else if (step_number != 1 && step_number != 0) {
+    }
+    else if (step_number != 1 && step_number != 0)
+    {
       realtime_timer.Spin(time);
     }
 
     // Advance simulation for one timestep for all modules
 
     std::vector<float> data_to_send;
-    if (step_number % 20 == 0) {
+    if (step_number % 20 == 0)
+    {
       // send data to chrono
-      for (int i = 0; i < rom_data.size(); i++) {
+      for (int i = 0; i < rom_data.size(); i++)
+      {
         ChVector3<> rom_pos = rom_vec[i]->GetPos();
         ChQuaternion<> rom_rot = rom_vec[i]->GetRot();
         ChVector3<> rom_rot_vec = rom_rot.GetCardanAnglesXYZ();
@@ -362,7 +397,8 @@ int main(int argc, char *argv[]) {
       recv_data_2 = rom_distributor_2.GetRecvData();
     }
 
-    for (int i = 0; i < rom_data.size(); i++) {
+    for (int i = 0; i < rom_data.size(); i++)
+    {
       // Driver inputs
       DriverInputs driver_inputs;
       idm_vec[i]->Synchronize(
@@ -373,17 +409,21 @@ int main(int argc, char *argv[]) {
       // driver_vec[i]->Advance(step_size);
       driver_inputs = driver_vec[i]->GetDriverInput();
       if (abs(driver_inputs.m_steering) > 0.05 &&
-          rom_vec[i]->GetVel().Length() > 4.0) {
+          rom_vec[i]->GetVel().Length() > 4.0)
+      {
         driver_inputs.m_throttle = 0.0;
         driver_inputs.m_braking = 0.2;
       }
 
-      if (output == 1) {
+      if (output == 1)
+      {
         if (i == focus_idx[0] || i == focus_idx[1] || i == focus_idx[2] ||
             i == focus_idx[3] || i == focus_idx[4] || i == focus_idx[5] ||
             i == focus_idx[6] || i == focus_idx[7] || i == focus_idx[8] ||
-            i == focus_idx[9]) {
-          if (step_number % 20 == 0) {
+            i == focus_idx[9])
+        {
+          if (step_number % 20 == 0)
+          {
             input_record.push_back(driver_inputs);
           }
         }
@@ -397,11 +437,14 @@ int main(int argc, char *argv[]) {
 
     std::cout << "time:" << time << std::endl;
 
-    if (output == 1) {
-      if (step_number % 20 == 0) {
+    if (output == 1)
+    {
+      if (step_number % 20 == 0)
+      {
         output_buffer << time << ",";
 
-        for (int j = 0; j < 10; j++) {
+        for (int j = 0; j < 10; j++)
+        {
           output_buffer << (rom_vec[focus_idx[j]]->GetVel()).Length() << ",";
 
           output_buffer << input_record[j].m_throttle << ",";
@@ -420,7 +463,8 @@ int main(int argc, char *argv[]) {
         input_record.clear();
       }
 
-      if (step_number % 10000 == 0) {
+      if (step_number % 10000 == 0)
+      {
         std::cout << "Writing to output file..." << std::endl;
         output_filestream << output_buffer.rdbuf();
         output_buffer.str("");
@@ -432,10 +476,12 @@ int main(int argc, char *argv[]) {
   }
 }
 
-void ReadRomInitFile(std::string csv_filename, std::vector<rom_item> &rom_vec) {
+void ReadRomInitFile(std::string csv_filename, std::vector<rom_item> &rom_vec)
+{
   std::ifstream inputFile(csv_filename);
 
-  if (!inputFile.is_open()) {
+  if (!inputFile.is_open())
+  {
     std::cout << "Failed to open the file." << std::endl;
   }
 
@@ -445,17 +491,23 @@ void ReadRomInitFile(std::string csv_filename, std::vector<rom_item> &rom_vec) {
 
   int line_count = 0;
 
-  while (std::getline(inputFile, line)) {
-    if (line_count != 0) {
+  while (std::getline(inputFile, line))
+  {
+    if (line_count != 0)
+    {
       std::istringstream iss(line);
       std::string token;
       std::vector<float> row; // Vector to store a row of float numbers
-      while (std::getline(iss, token, ',')) { // Assuming comma as the delimiter
+      while (std::getline(iss, token, ','))
+      { // Assuming comma as the delimiter
         float number;
-        try {
+        try
+        {
           number = std::stof(token); // Convert string to float
           row.push_back(number);     // Store the float number in the row vector
-        } catch (const std::exception &e) {
+        }
+        catch (const std::exception &e)
+        {
           // Failed to convert to float, ignore and continue
         }
       }
@@ -467,7 +519,8 @@ void ReadRomInitFile(std::string csv_filename, std::vector<rom_item> &rom_vec) {
 
   inputFile.close(); // Close the input file
 
-  for (int i = 0; i < data.size(); i++) {
+  for (int i = 0; i < data.size(); i++)
+  {
     rom_item temp_struct;
     temp_struct.type = int(data[i][1]);
     temp_struct.pos =
@@ -484,7 +537,8 @@ void ReadRomInitFile(std::string csv_filename, std::vector<rom_item> &rom_vec) {
 
   // Print the float numbers in the 2D vector
   std::cout << "test struct print" << std::endl;
-  for (auto temp_data : rom_vec) {
+  for (auto temp_data : rom_vec)
+  {
     std::cout << temp_data.type << ", " << temp_data.pos << ", "
               << temp_data.rot << ", " << temp_data.path << std::endl;
   }

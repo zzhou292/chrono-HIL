@@ -97,7 +97,15 @@ VisualizationType tire_vis_type = VisualizationType::MESH;
 TireModelType tire_model = TireModelType::TMEASY;
 
 // Type of vehicle
-enum VehicleType { SEDAN, AUDI, SUV, VAN, TRUCK, CITYBUS };
+enum VehicleType
+{
+  SEDAN,
+  AUDI,
+  SUV,
+  VAN,
+  TRUCK,
+  CITYBUS
+};
 
 // Point on chassis tracked by the camera
 ChVector3<> trackPoint(0.0, 0.0, 1.75);
@@ -131,7 +139,8 @@ std::string joystick_filename;
 
 std::string demo_data_path = std::string(STRINGIFY(HIL_DATA_DIR));
 
-struct PathVehicleSetup {
+struct PathVehicleSetup
+{
   VehicleType vehicle_type;
   ChVector3<double> pos;
   ChQuaternion<double> rot;
@@ -414,7 +423,8 @@ void VehicleProcessMessageCallback(
 
 // =============================================================================
 
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
   // -----------------------------------------------------
   // CLI SETUP - Get most parameters from the command line
   // -----------------------------------------------------
@@ -431,7 +441,8 @@ int main(int argc, char *argv[]) {
 #ifdef USE_FAST_DDS
   int node_id, num_nodes;
   std::shared_ptr<SynCommunicator> communicator;
-  if (cli.GetAsType<bool>("dds")) {
+  if (cli.GetAsType<bool>("dds"))
+  {
     node_id = cli.GetAsType<int>("node_id");
     num_nodes = cli.GetAsType<int>("num_nodes");
 
@@ -447,7 +458,8 @@ int main(int argc, char *argv[]) {
 
     // Set up the initial peers list
     std::vector<std::string> ip_list = {"10.8.0.2", "127.0.0.1"};
-    for (auto &ip : ip_list) {
+    for (auto &ip : ip_list)
+    {
       Locator_t peer;
       IPLocator::setIPv4(peer, ip);
       peer.port = 0;
@@ -457,7 +469,9 @@ int main(int argc, char *argv[]) {
     auto dds_communicator =
         chrono_types::make_shared<SynDDSCommunicator>(node_id);
     communicator = dds_communicator;
-  } else {
+  }
+  else
+  {
     auto mpi_communicator =
         chrono_types::make_shared<SynMPICommunicator>(argc, argv);
 
@@ -519,11 +533,14 @@ int main(int argc, char *argv[]) {
       zombie_filename;
   ChVector3<> lidar_pos;
 
-  if (node_id == leader) {
+  if (node_id == leader)
+  {
     GetVehicleModelFiles(rank0_vehicle, vehicle_filename, powertrain_filename,
                          tire_filename, zombie_filename, lidar_pos,
                          cam_distance);
-  } else {
+  }
+  else
+  {
     GetVehicleModelFiles(demo_config[node_id].vehicle_type, vehicle_filename,
                          powertrain_filename, tire_filename, zombie_filename,
                          lidar_pos, cam_distance);
@@ -531,10 +548,13 @@ int main(int argc, char *argv[]) {
 
   // Create the vehicle, set parameters, and initialize
   WheeledVehicle vehicle(vehicle_filename, contact_method);
-  if (node_id < demo_config.size()) {
+  if (node_id < demo_config.size())
+  {
     vehicle.Initialize(
         ChCoordsys<>(demo_config[node_id].pos, demo_config[node_id].rot));
-  } else {
+  }
+  else
+  {
     vehicle.Initialize(ChCoordsys<>(demo_config[0].pos, demo_config[0].rot));
   }
 
@@ -549,8 +569,10 @@ int main(int argc, char *argv[]) {
   vehicle.InitializePowertrain(powertrain);
 
   // Create and initialize the tires
-  for (auto &axle : vehicle.GetAxles()) {
-    for (auto &wheel : axle->GetWheels()) {
+  for (auto &axle : vehicle.GetAxles())
+  {
+    for (auto &wheel : axle->GetWheels())
+    {
       auto tire = ReadTireJSON(tire_filename);
       vehicle.InitializeTire(tire, wheel, tire_vis_type);
     }
@@ -594,7 +616,8 @@ int main(int argc, char *argv[]) {
   std::shared_ptr<ChCameraSensor> camera;
   std::shared_ptr<ChSensorManager> manager;
 
-  if (node_id == leader) {
+  if (node_id == leader)
+  {
     // add a sensor manager
     manager = chrono_types::make_shared<ChSensorManager>(vehicle.GetSystem());
     // manager->SetRayRecursions(11);
@@ -617,9 +640,9 @@ int main(int argc, char *argv[]) {
         25,                       // update rate in Hz
         chrono::ChFrame<double>({0.54, .381, 1.04},
                                 SetFromAngleAxis(0, {0, 1, 0})), // offset pose
-        image_width,                                           // image width
-        image_height,                                          // image height
-        3.14 / 1.5,                                            // fov
+        image_width,                                             // image width
+        image_height,                                            // image height
+        3.14 / 1.5,                                              // fov
         supersample);
 
     driver_cam->SetName("DriverCam");
@@ -630,15 +653,16 @@ int main(int argc, char *argv[]) {
           chrono_types::make_shared<ChFilterSave>("DEMO_OUTPUT/driver_cam/"));
     manager->AddSensor(driver_cam);
 
-    if (!no_sensing) {
+    if (!no_sensing)
+    {
       lidar = chrono_types::make_shared<ChLidarSensor>(
           vehicle.GetChassisBody(), // body lidar is attached to
           20.f,                     // scanning rate in Hz
           chrono::ChFrame<double>(lidar_pos,
                                   SetFromAngleAxis(0, {0, 1, 0})), // offset pose
-          900,           // number of horizontal samples
-          16,            // number of vertical channels
-          6.28318530718, // horizontal field of view
+          900,                                                     // number of horizontal samples
+          16,                                                      // number of vertical channels
+          6.28318530718,                                           // horizontal field of view
           0.261799,
           -0.261799,                        // vertical field of view
           100.f,                            // max distance
@@ -676,17 +700,22 @@ int main(int argc, char *argv[]) {
   std::shared_ptr<ChDriver> driver;
   ChSDLInterface SDLDriver;
 
-  if (node_id == leader && replay_inputs) {
+  if (node_id == leader && replay_inputs)
+  {
     auto data_driver =
         chrono_types::make_shared<ChDataDriver>(vehicle, driver_file, true);
     data_driver->Initialize();
     driver = data_driver;
-  } else if (node_id == leader) {
+  }
+  else if (node_id == leader)
+  {
     // Create the interactive driver system
     SDLDriver.Initialize();
     SDLDriver.SetJoystickConfigFile(joystick_filename);
-  } else {
-    auto path = ChBezierCurve::read(
+  }
+  else
+  {
+    auto path = ChBezierCurve::Read(
         GetChronoDataFile(demo_config[node_id].path_file), true);
     double target_speed = 11.2;
     double following_time = 4.0;
@@ -700,7 +729,8 @@ int main(int argc, char *argv[]) {
                           demo_config[node_id].speed_gain_p, 0.01, 0.0);
     path_driver->Initialize();
 
-    if (no_sensing) {
+    if (no_sensing)
+    {
       // Set the callback so that we can check the state of other vehicles
       auto callback =
           std::bind(&VehicleProcessMessageCallback, std::placeholders::_1,
@@ -726,23 +756,28 @@ int main(int argc, char *argv[]) {
   float orbit_rate = .25;
   double time = 0;
 
-  while (syn_manager.IsOk() && time < end_time) {
+  while (syn_manager.IsOk() && time < end_time)
+  {
 
     time = vehicle.GetSystem()->GetChTime();
 
     // Get driver inputs
     DriverInputs driver_inputs;
 
-    if (node_id == leader && !replay_inputs) {
+    if (node_id == leader && !replay_inputs)
+    {
       // Create the interactive driver system
       driver_inputs.m_throttle = SDLDriver.GetThrottle();
       driver_inputs.m_steering = SDLDriver.GetSteering();
       driver_inputs.m_braking = SDLDriver.GetBraking();
-    } else {
+    }
+    else
+    {
       driver->GetInputs();
     }
 
-    if (node_id == leader && record_inputs) {
+    if (node_id == leader && record_inputs)
+    {
       driver_csv << time << driver_inputs.m_steering << driver_inputs.m_throttle
                  << driver_inputs.m_braking << std::endl;
     }
@@ -760,11 +795,13 @@ int main(int argc, char *argv[]) {
     vehicle.Advance(step_size);
     terrain.Advance(step_size);
 
-    if (node_id == leader) {
+    if (node_id == leader)
+    {
       manager->Update();
     }
 
-    if (node_id == leader) {
+    if (node_id == leader)
+    {
       if (SDLDriver.Synchronize() == 1)
         break;
     }
@@ -773,7 +810,8 @@ int main(int argc, char *argv[]) {
     step_number++;
 
     // Log clock time
-    if (step_number % 500 == 0 && node_id == leader) {
+    if (step_number % 500 == 0 && node_id == leader)
+    {
       std::chrono::high_resolution_clock::time_point end =
           std::chrono::high_resolution_clock::now();
       std::chrono::duration<double> wall_time =
@@ -785,7 +823,8 @@ int main(int argc, char *argv[]) {
       start = std::chrono::high_resolution_clock::now();
     }
   }
-  if (node_id == leader && record_inputs) {
+  if (node_id == leader && record_inputs)
+  {
     driver_csv.write_to_file(driver_file);
   }
 
@@ -795,7 +834,8 @@ int main(int argc, char *argv[]) {
   return 0;
 }
 
-void LogCopyright(bool show) {
+void LogCopyright(bool show)
+{
   if (!show)
     return;
 
@@ -803,7 +843,8 @@ void LogCopyright(bool show) {
   SynLog() << "Chrono version: " << CHRONO_VERSION << "\n\n";
 }
 
-void AddCommandLineOptions(ChCLI &cli) {
+void AddCommandLineOptions(ChCLI &cli)
+{
   // Standard demo options
   cli.AddOption<double>("Simulation", "s,step_size", "Step size",
                         std::to_string(step_size));
@@ -870,8 +911,10 @@ void AddCommandLineOptions(ChCLI &cli) {
 void GetVehicleModelFiles(VehicleType type, std::string &vehicle,
                           std::string &powertrain, std::string &tire,
                           std::string &zombie, ChVector3<> &lidar_pos,
-                          double &cam_distance) {
-  switch (type) {
+                          double &cam_distance)
+{
+  switch (type)
+  {
   case VehicleType::SEDAN:
     vehicle = vehicle::GetDataFile("sedan/vehicle/Sedan_Vehicle.json");
     powertrain =
@@ -927,7 +970,8 @@ void GetVehicleModelFiles(VehicleType type, std::string &vehicle,
   }
 }
 
-void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
+void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain)
+{
   // load all meshes in input file, using instancing where possible
   std::string base_path =
       GetChronoDataFile("/Environments/SanFrancisco/components_new/");
@@ -947,21 +991,27 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
   int mesh_offset = 0;
   int num_meshes = 20000;
 
-  if (infile.good()) {
+  if (infile.good())
+  {
     int mesh_count = 0;
     int mesh_limit = mesh_offset + num_meshes;
 
-    while (std::getline(infile, line) && mesh_count < mesh_limit) {
+    while (std::getline(infile, line) && mesh_count < mesh_limit)
+    {
 
       auto mesh_body = chrono_types::make_shared<ChBody>();
 
-      if (mesh_count < mesh_offset) {
+      if (mesh_count < mesh_offset)
+      {
         mesh_count++;
-      } else {
+      }
+      else
+      {
         mesh_count++;
         result.clear();
         std::stringstream ss(line);
-        while (std::getline(ss, col, ',')) {
+        while (std::getline(ss, col, ','))
+        {
           result.push_back(col);
         }
         // std::cout << "Name: " << result[0] << ", mesh: " << result[1] <<
@@ -971,21 +1021,27 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
 
         // std::cout << mesh_name << std::endl;
         if (mesh_name.find("EmissionOn") ==
-            std::string::npos) { // exlude items with
-                                 // emission on
+            std::string::npos)
+        { // exlude items with
+          // emission on
 
-          if (!load_roads_only || mesh_name.find("Road") != std::string::npos) {
+          if (!load_roads_only || mesh_name.find("Road") != std::string::npos)
+          {
             ChVector3<double> pos = {std::stod(result[2]), std::stod(result[3]),
-                                    std::stod(result[4])};
+                                     std::stod(result[4])};
 
-            if ((pos - simulation_center).Length() < loading_radius) {
+            if ((pos - simulation_center).Length() < loading_radius)
+            {
               // check if mesh is in map
               bool instance_found = false;
               std::shared_ptr<ChTriangleMeshConnected> mmesh;
-              if (mesh_map.find(mesh_obj) != mesh_map.end()) {
+              if (mesh_map.find(mesh_obj) != mesh_map.end())
+              {
                 mmesh = mesh_map[mesh_obj];
                 instance_found = true;
-              } else {
+              }
+              else
+              {
                 mmesh = chrono_types::make_shared<ChTriangleMeshConnected>();
                 mmesh->LoadWavefrontMesh(mesh_obj, true, true);
                 mesh_map[mesh_obj] = mmesh;
@@ -995,8 +1051,8 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
                   std::stod(result[5]), std::stod(result[6]),
                   std::stod(result[7]), std::stod(result[8])};
               ChVector3<double> scale = {std::stod(result[9]),
-                                        std::stod(result[10]),
-                                        std::stod(result[11])};
+                                         std::stod(result[10]),
+                                         std::stod(result[11])};
 
               // if not road, only add visualization with new pos,rot,scale
               auto trimesh_shape =
@@ -1028,9 +1084,11 @@ void AddSceneMeshes(ChSystem *chsystem, RigidTerrain *terrain) {
 void VehicleProcessMessageCallback(
     std::shared_ptr<SynMessage> message, WheeledVehicle &vehicle,
     std::shared_ptr<SynWheeledVehicleAgent> agent,
-    std::shared_ptr<ChLidarWaypointDriver> driver) {
+    std::shared_ptr<ChLidarWaypointDriver> driver)
+{
   if (auto vehicle_message =
-          std::dynamic_pointer_cast<SynWheeledVehicleStateMessage>(message)) {
+          std::dynamic_pointer_cast<SynWheeledVehicleStateMessage>(message))
+  {
     // The IsInsideBox function will determine whether the a passsed point is
     // inside a box defined by a front position, back position and the width of
     // the box. Rotation of the vectors are taken into account. The positions
@@ -1054,7 +1112,8 @@ void VehicleProcessMessageCallback(
     zombie_pos = q.RotateBack(vehicle.GetRot().RotateBack(zombie_pos));
 
     if (zombie_pos.x() < x_max && zombie_pos.x() > x_min &&
-        abs(zombie_pos.y()) < width / 2) {
+        abs(zombie_pos.y()) < width / 2)
+    {
       driver->SetCurrentDistance(zombie_pos.Length() - offset_for_chassis_size);
     }
   }

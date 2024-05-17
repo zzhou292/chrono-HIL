@@ -51,10 +51,16 @@ namespace chrono
             std::vector<char> getDelayedPacket();
             void changeDistribution(std::shared_ptr<DelayDistribution> newDistribution);
 
+            void setLogging(bool enable) { enableLogging = enable; }
+
+            int getPacketDropCount();
+            std::vector<float> getDelayBuffer();
+
         private:
             std::queue<std::pair<std::chrono::steady_clock::time_point, std::vector<char>>> packetQueue;
             std::mutex queueMutex;
             std::vector<char> latestData; // Store the latest packet data
+            float expectedDelay;          // Expected delay in milliseconds
 
             std::default_random_engine generator;
             std::shared_ptr<DelayDistribution> delayDistribution; // Use shared_ptr for flexibility
@@ -62,6 +68,11 @@ namespace chrono
             float bandwidthLimit; // Maximum bandwidth limit in packets per millisecond
 
             static void displayData(const std::vector<char> &data);
+
+            // logging related variables
+            bool enableLogging = false;
+            int packetDropCount_buffer = 0; // Count of dropped packets
+            std::vector<float> delay_buffer;
         };
     }
 }

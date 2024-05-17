@@ -105,6 +105,8 @@ std::vector<ChVector3<>> obj_pos;
 std::vector<ChVector3<>> obj_rot;
 std::vector<double> obj_scale;
 float delay_val = 0.0;
+float cam_delay_val = 0.2;
+int lane = 0;
 // =============================================================================
 void AddCommandLineOptions(ChCLI &cli)
 {
@@ -112,6 +114,7 @@ void AddCommandLineOptions(ChCLI &cli)
                              "Path to simulation configuration file",
                              scenario_filename);
   cli.AddOption<float>("Simulation", "delay_val", "Delay value", std::to_string(delay_val));
+  cli.AddOption<float>("Simulation", "cam_delay_val", "Camera Delay value", std::to_string(cam_delay_val));
 }
 // =============================================================================
 void ReadParameterFiles()
@@ -123,6 +126,11 @@ void ReadParameterFiles()
     if (d.HasMember("auto_speed"))
     {
       cruise_speed = d["auto_speed"].GetDouble();
+    }
+
+    if (d.HasMember("lane"))
+    {
+      lane = d["lane"].GetInt();
     }
 
     if (d.HasMember("ego_loc"))
@@ -247,6 +255,7 @@ int main(int argc, char *argv[])
 
   scenario_filename = cli.GetAsType<std::string>("sim_params");
   delay_val = cli.GetAsType<float>("delay_val");
+  cam_delay_val = cli.GetAsType<float>("cam_delay_val");
   // --------------
   // Create systems
   // --------------
@@ -326,10 +335,10 @@ int main(int argc, char *argv[])
   // ------------------------
   // Create a Irrlicht vis
   // ------------------------
-  ChVector3<> trackPoint(0.0, 0.0, 1.75);
+  // ChVector3<> trackPoint(0.0, 0.0, 1.75);
   // int render_step = 20;
   // auto vis =
-  // chrono_types::make_shared<ChWheeledVehicleVisualSystemIrrlicht>();
+  //     chrono_types::make_shared<ChWheeledVehicleVisualSystemIrrlicht>();
   // vis->SetWindowTitle("NADS");
   // vis->SetWindowSize(5760, 1080);
   // vis->SetChaseCamera(trackPoint, 6.0, 0.5);
@@ -387,7 +396,7 @@ int main(int argc, char *argv[])
   driver_cam->SetName("DriverCam");
   driver_cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
       5760, 1080, "Camera1", false));
-  driver_cam->SetLag(0.2f);
+  driver_cam->SetLag(cam_delay_val * 0.001);
   driver_cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
   manager->AddSensor(driver_cam);
 
@@ -417,14 +426,21 @@ int main(int argc, char *argv[])
 
   std::string steering_controller_file_IG_nl =
       std::string(STRINGIFY(HIL_DATA_DIR)) +
-      "/Environments/Iowa/Driver/SteeringController_IG_nl.json";
+      "/Environments/nads/Driver/SteeringController_IG_nl.json";
   std::string speed_controller_file_IG_nl =
-      std::string(STRINGIFY(HIL_DATA_DIR)) + "/Environments/Iowa/Driver/SpeedController_IG_nl.json";
-  std::string outer_path_file =
-      std::string(STRINGIFY(HIL_DATA_DIR)) +
-      "/Environments/nads/nads_path_5.txt";
+      std::string(STRINGIFY(HIL_DATA_DIR)) + "/Environments/nads/Driver/SpeedController_IG_nl.json";
+  std::string outer_path_file = "";
+
+  if (lane == 0)
+    outer_path_file = std::string(STRINGIFY(HIL_DATA_DIR)) +
+                      "/Environments/nads/bezier_curve_points.txt";
+  else if (lane == 1)
+    outer_path_file = std::string(STRINGIFY(HIL_DATA_DIR)) +
+                      "/Environments/nads/nads_path_5.txt";
+
   auto outer_path = ChBezierCurve::Read(outer_path_file, true);
-  std::vector<double> followerParam = {30, 1.5, 2.0, 5.0, 3.0, 4.0, AUDI_LENGTH};
+  std::vector<double>
+      followerParam = {30, 1.5, 2.0, 5.0, 3.0, 4.0, AUDI_LENGTH};
 
   std::shared_ptr<ChNSFFollowerDriver> PFdriver = chrono_types::make_shared<ChNSFFollowerDriver>(
       my_vehicle, steering_controller_file_IG_nl, speed_controller_file_IG_nl,
@@ -531,6 +547,7 @@ int main(int argc, char *argv[])
       boost_streamer.AddData(driver_inputs.m_throttle); // throttle data
       boost_streamer.AddData(driver_inputs.m_braking);  // brake data
       boost_streamer.AddData(driver_inputs.m_steering); // steering data
+      boost_streamer.AddData(auto_mode);                // auto mode
 
       boost_streamer.Synchronize();
     }
@@ -561,11 +578,12 @@ int main(int argc, char *argv[])
       break;
     }
 
-    // if (render == true && step_number % render_step == 0) {
-    //   // vis->BeginScene();
-    //   // vis->Render();
-    //   // vis->EndScene();
-    //   // vis->Synchronize(time, driver_inputs);
+    // if (render == true && step_number % render_step == 0)
+    // {
+    //   vis->BeginScene();
+    //   vis->Render();
+    //   vis->EndScene();
+    //   vis->Synchronize(time, driver_inputs);
     // }
   }
   return 0;
