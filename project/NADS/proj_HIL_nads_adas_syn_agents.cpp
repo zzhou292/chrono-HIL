@@ -93,7 +93,8 @@ double t_end = 1000;
 
 // =============================================================================
 void AddCommandLineOptions(ChCLI &cli);
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
 
   ChCLI cli(argv[0]);
 
@@ -124,7 +125,8 @@ int main(int argc, char *argv[]) {
   qos.wire_protocol().builtin.avoid_builtin_multicast = false;
 
   // Set the initialPeersList
-  for (const auto &ip : ip_list) {
+  for (const auto &ip : ip_list)
+  {
     Locator_t locator;
     locator.kind = LOCATOR_KIND_UDPv4;
     IPLocator::setIPv4(locator, ip);
@@ -158,13 +160,20 @@ int main(int argc, char *argv[]) {
   // Create the Sedan vehicle, set parameters, and initialize
   WheeledVehicle my_vehicle(vehicle_filename, ChContactMethod::SMC);
   auto ego_chassis = my_vehicle.GetChassis();
-  if (node_id == 1) {
+  if (node_id == 1)
+  {
     initLoc = ChVector3<>(-80.788, 98.647, 0.25);
-  } else if (node_id == 2) {
+  }
+  else if (node_id == 2)
+  {
     initLoc = ChVector3<>(-70.788, 98.647, 0.25);
-  } else if (node_id == 3) {
+  }
+  else if (node_id == 3)
+  {
     initLoc = ChVector3<>(-60.788, 98.647, 0.25);
-  } else if (node_id == 4) {
+  }
+  else if (node_id == 4)
+  {
     initLoc = ChVector3<>(-50.788, 98.647, 0.25);
   }
   my_vehicle.SetCollisionSystemType(ChCollisionSystem::Type::BULLET);
@@ -183,8 +192,10 @@ int main(int argc, char *argv[]) {
   my_vehicle.SetWheelVisualizationType(VisualizationType::MESH);
 
   // Create and initialize the tires
-  for (auto &axle : my_vehicle.GetAxles()) {
-    for (auto &wheel : axle->GetWheels()) {
+  for (auto &axle : my_vehicle.GetAxles())
+  {
+    for (auto &wheel : axle->GetWheels())
+    {
       auto tire = ReadTireJSON(tire_filename);
       tire->SetStepsize(tire_step_size);
       my_vehicle.InitializeTire(tire, wheel, VisualizationType::MESH);
@@ -221,14 +232,14 @@ int main(int argc, char *argv[]) {
                                                            "my_path", 4.0);
   driver->GetSteeringController().SetLookAheadDistance(2.0);
   driver->GetSteeringController().SetGains(1.0, 0, 0);
-  driver->GetSpeedController().SetGains(0.6, 0.05, 0);
+  driver->GetSpeedController().SetGains(0.5, 0.0, 0);
   driver->Initialize();
 
   driver2 = chrono_types::make_shared<ChPathFollowerDriver>(my_vehicle, path2,
-                                                            "my_path2", 6.0);
+                                                            "my_path2", 5.0);
   driver2->GetSteeringController().SetLookAheadDistance(25.0);
   driver2->GetSteeringController().SetGains(0.3, 0, 0);
-  driver2->GetSpeedController().SetGains(0.8, 0.05, 0);
+  driver2->GetSpeedController().SetGains(0.5, 0.0, 0);
   driver2->Initialize();
 
   // Create the terrain
@@ -281,9 +292,34 @@ int main(int argc, char *argv[]) {
 
   DriverInputs driver_inputs = {0, 0, 0};
 
+  // obtain and initiate all zombie instances
+  std::map<AgentKey, std::shared_ptr<SynAgent>> zombie_map;
+  std::map<int, std::shared_ptr<SynWheeledVehicleAgent>> id_map;
+
+  bool node_4_switch = false;
+
   // simulation loop
-  while (syn_manager.IsOk()) {
+  while (syn_manager.IsOk())
+  {
     double time = my_vehicle.GetSystem()->GetChTime();
+
+    // switch
+    if (step_number == 0)
+    {
+      zombie_map = syn_manager.GetZombies();
+      std::cout << "zombie size: " << zombie_map.size() << std::endl;
+      std::cout << "agent size: " << syn_manager.GetAgents().size()
+                << std::endl;
+      for (std::map<AgentKey, std::shared_ptr<SynAgent>>::iterator it =
+               zombie_map.begin();
+           it != zombie_map.end(); ++it)
+      {
+        std::shared_ptr<SynAgent> temp_ptr = it->second;
+        std::shared_ptr<SynWheeledVehicleAgent> converted_ptr =
+            std::dynamic_pointer_cast<SynWheeledVehicleAgent>(temp_ptr);
+        id_map.insert(std::make_pair(it->first.GetNodeID(), converted_ptr));
+      }
+    }
 
     ChVector3<> pos = my_vehicle.GetChassis()->GetPos();
     ChQuaternion<> rot = my_vehicle.GetChassis()->GetRot();
@@ -306,8 +342,21 @@ int main(int argc, char *argv[]) {
     // Get driver inputs
     driver_inputs = driver->GetInputs();
 
-    if (node_id == 4 && time > 20) {
+    if (time <= 15)
+    {
+      driver_inputs.m_throttle = 0.0;
+      driver_inputs.m_braking = 1.0;
+    }
+
+    if (node_4_switch)
+    {
       driver_inputs = driver2->GetInputs();
+    }
+
+    if (node_id == 4)
+    {
+      if ((id_map[0]->GetZombiePos() - pos).Length() < 16.0)
+        node_4_switch = true;
     }
 
     // =======================
@@ -323,7 +372,8 @@ int main(int argc, char *argv[]) {
     terrain.Advance(step_size);
     my_vehicle.Advance(step_size);
     driver->Advance(step_size);
-    if (node_id == 4) {
+    if (node_id == 4)
+    {
       driver2->Advance(step_size);
     }
 
@@ -334,7 +384,8 @@ int main(int argc, char *argv[]) {
   return 0;
 }
 
-void AddCommandLineOptions(ChCLI &cli) {
+void AddCommandLineOptions(ChCLI &cli)
+{
   // DDS Specific
   cli.AddOption<int>("DDS", "d,node_id", "ID for this Node", "1");
   cli.AddOption<int>("DDS", "n,num_nodes", "Number of Nodes", "2");

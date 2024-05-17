@@ -28,151 +28,168 @@
 #include <iostream>
 #include <sstream>
 
-namespace chrono {
-namespace hil {
+namespace chrono
+{
+  namespace hil
+  {
 
-// -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
-/*
-ChLidarWaypointDriver::ChLidarWaypointDriver(
-    ChVehicle &vehicle, std::shared_ptr<ChLidarSensor> lidar,
-    std::shared_ptr<ChBezierCurve> path, const std::string &path_name,
-    double target_speed,          ///< constant target speed
-    double target_following_time, ///< seconds of following time
-    double target_min_distance,   ///< min following distance
-    double current_distance,      ///< current distance to the vehicle in front
-    bool isClosedPath             ///< Treat the path as a closed loop
-    )
-    : ChDriver(vehicle), m_lidar(lidar), m_target_speed(target_speed),
-      m_path(path), m_current_distance(100.0) {
-  m_acc_driver = chrono_types::make_shared<ChPathFollowerACCDriver>(
-      vehicle, path, path_name, target_speed, target_following_time,
-      target_min_distance, current_distance, isClosedPath);
-  m_acc_driver->GetSpeedController().SetGains(0.5, 0, 0);
-  m_acc_driver->GetSteeringController().SetGains(0.5, 0, 0);
-  m_acc_driver->GetSteeringController().SetLookAheadDistance(8.0);
-  m_acc_driver->Initialize();
-  m_acc_driver->Reset();
-}*/
+    // -----------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------
+    /*
+    ChLidarWaypointDriver::ChLidarWaypointDriver(
+        ChVehicle &vehicle, std::shared_ptr<ChLidarSensor> lidar,
+        std::shared_ptr<ChBezierCurve> path, const std::string &path_name,
+        double target_speed,          ///< constant target speed
+        double target_following_time, ///< seconds of following time
+        double target_min_distance,   ///< min following distance
+        double current_distance,      ///< current distance to the vehicle in front
+        bool isClosedPath             ///< Treat the path as a closed loop
+        )
+        : ChDriver(vehicle), m_lidar(lidar), m_target_speed(target_speed),
+          m_path(path), m_current_distance(100.0) {
+      m_acc_driver = chrono_types::make_shared<ChPathFollowerACCDriver>(
+          vehicle, path, path_name, target_speed, target_following_time,
+          target_min_distance, current_distance, isClosedPath);
+      m_acc_driver->GetSpeedController().SetGains(0.5, 0, 0);
+      m_acc_driver->GetSteeringController().SetGains(0.5, 0, 0);
+      m_acc_driver->GetSteeringController().SetLookAheadDistance(8.0);
+      m_acc_driver->Initialize();
+      m_acc_driver->Reset();
+    }*/
 
-// -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------
 
-void ChLidarWaypointDriver::SetGains(double lookahead, double p_steer,
-                                     double i_steer, double d_steer,
-                                     double p_acc, double i_acc, double d_acc) {
-  m_acc_driver->GetSpeedController().SetGains(p_acc, i_acc, d_acc);
-  m_acc_driver->GetSteeringController().SetGains(p_steer, i_steer, d_steer);
-  m_acc_driver->GetSteeringController().SetLookAheadDistance(lookahead);
-}
+    void ChLidarWaypointDriver::SetGains(double lookahead, double p_steer,
+                                         double i_steer, double d_steer,
+                                         double p_acc, double i_acc, double d_acc)
+    {
+      m_acc_driver->GetSpeedController().SetGains(p_acc, i_acc, d_acc);
+      m_acc_driver->GetSteeringController().SetGains(p_steer, i_steer, d_steer);
+      m_acc_driver->GetSteeringController().SetLookAheadDistance(lookahead);
+    }
 
-// -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
-void ChLidarWaypointDriver::Synchronize(double time) {
-  m_current_time = time;
-  if (time > next_dist_reset_time && !m_lidar) {
-    next_dist_reset_time = time + 0.05;
-    m_current_distance = 100;
-  }
+    // -----------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------
+    void ChLidarWaypointDriver::Synchronize(double time)
+    {
+      m_current_time = time;
+      if (time > next_dist_reset_time && !m_lidar)
+      {
+        next_dist_reset_time = time + 0.05;
+        m_current_distance = 100;
+      }
 
-  m_acc_driver->Synchronize(time);
-}
+      m_acc_driver->Synchronize(time);
+    }
 
-void ChLidarWaypointDriver::MinDistFromLidar() {
-  // only do this at 20 Hz
-  double update_period = 0.05;
-  double min_distance = 100;
+    void ChLidarWaypointDriver::MinDistFromLidar()
+    {
+      // only do this at 20 Hz
+      double update_period = 0.05;
+      double min_distance = 100;
 
-  // box of interest
-  double x_min = .1;
-  double x_max = 100;
-  double y_min = -2.0;
-  double y_max = 2.0;
-  double z_min = -.1;
-  double z_max = 1.5;
+      // box of interest
+      double x_min = .1;
+      double x_max = 100;
+      double y_min = -2.0;
+      double y_max = 2.0;
+      double z_min = -.1;
+      double z_max = 1.5;
 
-  auto wheeled_vehicle = dynamic_cast<WheeledVehicle *>(&m_vehicle);
-  double max_angle = wheeled_vehicle->GetMaxSteeringAngle();
-  double curr_steering = m_steering;
-  ChQuaternion<> q = SetFromAngleZ(max_angle * curr_steering);
+      auto wheeled_vehicle = dynamic_cast<WheeledVehicle *>(&m_vehicle);
+      double max_angle = wheeled_vehicle->GetMaxSteeringAngle();
+      double curr_steering = m_steering;
+      ChQuaternion<> q = SetFromAngleZ(max_angle * curr_steering);
 
-  UserXYZIBufferPtr xyzi_buffer =
-      m_lidar->GetMostRecentBuffer<UserXYZIBufferPtr>();
-  if (xyzi_buffer->TimeStamp > m_last_lidar_time + update_period) {
-    m_last_lidar_time = xyzi_buffer->TimeStamp;
-    for (int i = 0; i < xyzi_buffer->Height; i++) {
-      for (int j = 0; j < xyzi_buffer->Width; j++) {
-        PixelXYZI xyzi = xyzi_buffer->Buffer[i * xyzi_buffer->Width + j];
-        ChVector3<> pt = {xyzi.x, xyzi.y, xyzi.z};
-        pt = q.RotateBack(pt);
-        // intensity threshold
-        if (xyzi.intensity > 0) {
-          // x threshold
-          if (pt.x() < std::min(x_max, min_distance) && pt.x() > x_min) {
-            if (pt.y() < y_max && pt.y() > y_min) {
-              if (pt.z() < z_max && pt.z() > z_min) {
-                min_distance = pt.x();
+      UserXYZIBufferPtr xyzi_buffer =
+          m_lidar->GetMostRecentBuffer<UserXYZIBufferPtr>();
+      if (xyzi_buffer->TimeStamp > m_last_lidar_time + update_period)
+      {
+        m_last_lidar_time = xyzi_buffer->TimeStamp;
+        for (int i = 0; i < xyzi_buffer->Height; i++)
+        {
+          for (int j = 0; j < xyzi_buffer->Width; j++)
+          {
+            PixelXYZI xyzi = xyzi_buffer->Buffer[i * xyzi_buffer->Width + j];
+            ChVector3<> pt = {xyzi.x, xyzi.y, xyzi.z};
+            pt = q.RotateBack(pt);
+            // intensity threshold
+            if (xyzi.intensity > 0)
+            {
+              // x threshold
+              if (pt.x() < std::min(x_max, min_distance) && pt.x() > x_min)
+              {
+                if (pt.y() < y_max && pt.y() > y_min)
+                {
+                  if (pt.z() < z_max && pt.z() > z_min)
+                  {
+                    min_distance = pt.x();
+                  }
+                }
               }
             }
           }
         }
+        m_current_distance = min_distance;
       }
     }
-    m_current_distance = min_distance;
-  }
-}
 
-// -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
-void ChLidarWaypointDriver::Advance(double step) {
-  // calculate a new current distance using the lidar
-  if (m_lidar) {
-    MinDistFromLidar();
-  }
+    // -----------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------
+    void ChLidarWaypointDriver::Advance(double step)
+    {
+      // calculate a new current distance using the lidar
+      if (m_lidar)
+      {
+        MinDistFromLidar();
+      }
 
-  // calculate a new current speed using the path curvature
-  double curve_location_const = 4.0;
+      // calculate a new current speed using the path curvature
+      double curve_location_const = 4.0;
 
-  ChVector3<double> curvature_location =
-      m_vehicle.GetPos() +
-      curve_location_const *
-          (m_acc_driver->GetSteeringController().GetTargetLocation() -
-           m_vehicle.GetPos());
+      ChVector3<double> curvature_location =
+          m_vehicle.GetPos() +
+          curve_location_const *
+              (m_acc_driver->GetSteeringController().GetTargetLocation() -
+               m_vehicle.GetPos());
 
-  double t;
-  double t_actual;
-  double min_dist = 1e6;
-  int segment = 0;
-  for (int i = 0; i < m_path->getNumPoints() - 1; i++) {
-    ChVector3<> loc = m_path->CalcClosestPoint(curvature_location, i, t);
-    double tmp_min_dist = (loc - curvature_location).Length();
-    if (tmp_min_dist < min_dist) {
-      min_dist = tmp_min_dist;
-      segment = i;
-      t_actual = t;
+      double t;
+      double t_actual;
+      double min_dist = 1e6;
+      int segment = 0;
+      for (int i = 0; i < m_path->getNumPoints() - 1; i++)
+      {
+        ChVector3<> loc = m_path->CalcClosestPoint(curvature_location, i, t);
+        double tmp_min_dist = (loc - curvature_location).Length();
+        if (tmp_min_dist < min_dist)
+        {
+          min_dist = tmp_min_dist;
+          segment = i;
+          t_actual = t;
+        }
+      }
+
+      ChVector3<> d = m_path->evalD(segment, t_actual);
+      d.Normalize();
+      ChVector3<> heading = m_vehicle.GetRot().Rotate({1, 0, 0});
+      double dotangle = d.Dot(heading);
+
+      m_acc_driver->SetDesiredSpeed(m_target_speed *
+                                    std::max(0.3, dotangle * 1.5 - .5));
+      // std::cout << "Speed: " << m_target_speed * std::max(0.3, dotangle * 2.0
+      // - 1.0) << std::endl;
+      m_acc_driver->SetCurrentDistance(m_current_distance);
+      m_acc_driver->Advance(step);
+
+      double max_dt = 0.01;
+      m_throttle = ChClamp(m_acc_driver->GetThrottle(), m_throttle - max_dt,
+                           m_throttle + max_dt);
+      m_steering = ChClamp(m_acc_driver->GetSteering(), m_steering - max_dt,
+                           m_steering + max_dt);
+      m_braking = ChClamp(m_acc_driver->GetBraking(), m_braking - max_dt,
+                          m_braking + max_dt);
     }
-  }
 
-  ChVector3<> d = m_path->evalD(segment, t_actual);
-  d.Normalize();
-  ChVector3<> heading = m_vehicle.GetRot().Rotate({1, 0, 0});
-  double dotangle = d.Dot(heading);
-
-  m_acc_driver->SetDesiredSpeed(m_target_speed *
-                                std::max(0.3, dotangle * 1.5 - .5));
-  // std::cout << "Speed: " << m_target_speed * std::max(0.3, dotangle * 2.0
-  // - 1.0) << std::endl;
-  m_acc_driver->SetCurrentDistance(m_current_distance);
-  m_acc_driver->Advance(step);
-
-  double max_dt = 0.01;
-  m_throttle = ChClamp(m_acc_driver->GetThrottle(), m_throttle - max_dt,
-                       m_throttle + max_dt);
-  m_steering = ChClamp(m_acc_driver->GetSteering(), m_steering - max_dt,
-                       m_steering + max_dt);
-  m_braking = ChClamp(m_acc_driver->GetBraking(), m_braking - max_dt,
-                      m_braking + max_dt);
-}
-
-} // namespace hil
+  } // namespace hil
 } // end namespace chrono

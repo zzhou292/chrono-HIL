@@ -20,6 +20,8 @@
 
 #include "chrono_hil/driver/ChIDM_Follower.h"
 #include "chrono_vehicle/driver/ChPathFollowerDriver.h"
+#include "chrono_hil/driver/ChCSLDriver.h"
+#include "chrono_hil/driver/ChNSF_Drivers.h"
 
 #include "chrono_hil/timer/ChRealtimeCumulative.h"
 
@@ -77,6 +79,7 @@ ChVector3<> driver_eyepoint(-0.45, 0.4, 0.98);
 // Initial vehicle location and orientation
 ChVector3<> initLoc(-91.788, 98.647, 0.25);
 ChQuaternion<> initRot(1, 0, 0, 0);
+double cruise_speed = 20.0;
 
 // Contact method
 ChContactMethod contact_method = ChContactMethod::SMC;
@@ -102,6 +105,8 @@ std::vector<ChVector3<>> obj_pos;
 std::vector<ChVector3<>> obj_rot;
 std::vector<double> obj_scale;
 float delay_val = 0.0;
+float cam_delay_val = 0.2;
+int lane = 0;
 // =============================================================================
 void AddCommandLineOptions(ChCLI &cli)
 {
@@ -109,6 +114,7 @@ void AddCommandLineOptions(ChCLI &cli)
                              "Path to simulation configuration file",
                              scenario_filename);
   cli.AddOption<float>("Simulation", "delay_val", "Delay value", std::to_string(delay_val));
+  cli.AddOption<float>("Simulation", "cam_delay_val", "Camera Delay value", std::to_string(cam_delay_val));
 }
 // =============================================================================
 void ReadParameterFiles()
@@ -116,6 +122,16 @@ void ReadParameterFiles()
   { // Scenario parameter file
     rapidjson::Document d;
     vehicle::ReadFileJSON(std::string(STRINGIFY(HIL_DATA_DIR)) + std::string("/Environments/nads/parameters/") + scenario_filename, d);
+
+    if (d.HasMember("auto_speed"))
+    {
+      cruise_speed = d["auto_speed"].GetDouble();
+    }
+
+    if (d.HasMember("lane"))
+    {
+      lane = d["lane"].GetInt();
+    }
 
     if (d.HasMember("ego_loc"))
     {
@@ -239,6 +255,7 @@ int main(int argc, char *argv[])
 
   scenario_filename = cli.GetAsType<std::string>("sim_params");
   delay_val = cli.GetAsType<float>("delay_val");
+  cam_delay_val = cli.GetAsType<float>("cam_delay_val");
   // --------------
   // Create systems
   // --------------
@@ -318,10 +335,10 @@ int main(int argc, char *argv[])
   // ------------------------
   // Create a Irrlicht vis
   // ------------------------
-  ChVector3<> trackPoint(0.0, 0.0, 1.75);
+  // ChVector3<> trackPoint(0.0, 0.0, 1.75);
   // int render_step = 20;
   // auto vis =
-  // chrono_types::make_shared<ChWheeledVehicleVisualSystemIrrlicht>();
+  //     chrono_types::make_shared<ChWheeledVehicleVisualSystemIrrlicht>();
   // vis->SetWindowTitle("NADS");
   // vis->SetWindowSize(5760, 1080);
   // vis->SetChaseCamera(trackPoint, 6.0, 0.5);
@@ -342,6 +359,7 @@ int main(int argc, char *argv[])
   std::string joystick_file =
       (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G29.json");
   SDLDriver.SetJoystickConfigFile(joystick_file);
+  SDLDriver.AddCallbackButtons(6);
 
   // ---------------------------------
   // Add sensor manager and simulation
@@ -378,7 +396,7 @@ int main(int argc, char *argv[])
   driver_cam->SetName("DriverCam");
   driver_cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
       5760, 1080, "Camera1", false));
-  driver_cam->SetLag(0.2f);
+  driver_cam->SetLag(cam_delay_val * 0.001);
   driver_cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
   manager->AddSensor(driver_cam);
 
@@ -398,7 +416,39 @@ int main(int argc, char *argv[])
 
   addObjs(*my_vehicle.GetSystem());
 
-  ChDelaySim sim(delay_val);
+  auto normalDist = std::make_shared<chrono::hil::NormalDistribution>(delay_val, 0.001f);
+  // Initialize delay simulator with normal distribution
+  ChDelaySim sim(normalDist, 1000000000.f);
+
+  std::vector<int> check_button_idx;
+  std::vector<int> check_button_val;
+  int auto_mode = 0;
+
+  std::string steering_controller_file_IG_nl =
+      std::string(STRINGIFY(HIL_DATA_DIR)) +
+      "/Environments/nads/Driver/SteeringController_IG_nl.json";
+  std::string speed_controller_file_IG_nl =
+      std::string(STRINGIFY(HIL_DATA_DIR)) + "/Environments/nads/Driver/SpeedController_IG_nl.json";
+  std::string outer_path_file = "";
+
+  if (lane == 0)
+    outer_path_file = std::string(STRINGIFY(HIL_DATA_DIR)) +
+                      "/Environments/nads/bezier_curve_points.txt";
+  else if (lane == 1)
+    outer_path_file = std::string(STRINGIFY(HIL_DATA_DIR)) +
+                      "/Environments/nads/nads_path_5.txt";
+
+  auto outer_path = ChBezierCurve::Read(outer_path_file, true);
+  std::vector<double>
+      followerParam = {30, 1.5, 2.0, 5.0, 3.0, 4.0, AUDI_LENGTH};
+
+  std::shared_ptr<ChNSFFollowerDriver> PFdriver = chrono_types::make_shared<ChNSFFollowerDriver>(
+      my_vehicle, steering_controller_file_IG_nl, speed_controller_file_IG_nl,
+      outer_path, "road", cruise_speed * MPH_TO_MS, followerParam);
+  PFdriver->Initialize();
+
+  static auto last_invoked_1 =
+      std::chrono::system_clock::now().time_since_epoch();
 
   // simulation loop
   while (true)
@@ -429,7 +479,7 @@ int main(int argc, char *argv[])
     if (step_number % 10 == 0)
     {
       // Create a vector of floats
-      std::vector<float> floats = {SDLDriver.GetSteering(), SDLDriver.GetThrottle(), SDLDriver.GetBraking()};
+      std::vector<float> floats = {auto_mode, SDLDriver.GetSteering(), SDLDriver.GetThrottle(), SDLDriver.GetBraking()};
 
       // Serialize the vector of floats to a vector of chars
       std::vector<char> serializedData = serializeFloats(floats);
@@ -441,9 +491,17 @@ int main(int argc, char *argv[])
       {
         // Deserialize the data back to floats
         std::vector<float> receivedFloats = deserializeFloats(receivedData);
-        driver_inputs.m_steering = receivedFloats[0];
-        driver_inputs.m_throttle = receivedFloats[1];
-        driver_inputs.m_braking = receivedFloats[2];
+        if (receivedFloats[0] == 0)
+        {
+          driver_inputs.m_steering = receivedFloats[1];
+          driver_inputs.m_throttle = receivedFloats[2];
+          driver_inputs.m_braking = receivedFloats[3];
+        }
+        else
+        {
+          driver_inputs = PFdriver->GetInputs();
+          // std::cout << driver_inputs.m_steering << " " << driver_inputs.m_throttle << " " << driver_inputs.m_braking << std::endl;
+        }
       }
     }
 
@@ -489,20 +547,43 @@ int main(int argc, char *argv[])
       boost_streamer.AddData(driver_inputs.m_throttle); // throttle data
       boost_streamer.AddData(driver_inputs.m_braking);  // brake data
       boost_streamer.AddData(driver_inputs.m_steering); // steering data
+      boost_streamer.AddData(auto_mode);                // auto mode
 
       boost_streamer.Synchronize();
     }
+
+    SDLDriver.GetButtonStatus(check_button_idx, check_button_val);
+    if (check_button_val[0] == 1)
+    {
+      auto current_invoke_1 =
+          std::chrono::system_clock::now().time_since_epoch();
+
+      if (std::chrono::duration_cast<std::chrono::seconds>(current_invoke_1 -
+                                                           last_invoked_1)
+              .count() >= 1.0)
+      {
+        auto_mode = ((int)(auto_mode + 1.0)) % 2;
+
+        last_invoked_1 = current_invoke_1;
+      }
+      last_invoked_1 =
+          std::chrono::system_clock::now().time_since_epoch();
+    }
+
+    PFdriver->Advance(step_size);
+    PFdriver->Synchronize(time, step_size);
 
     if (SDLDriver.Synchronize() == 1)
     {
       break;
     }
 
-    // if (render == true && step_number % render_step == 0) {
-    //   // vis->BeginScene();
-    //   // vis->Render();
-    //   // vis->EndScene();
-    //   // vis->Synchronize(time, driver_inputs);
+    // if (render == true && step_number % render_step == 0)
+    // {
+    //   vis->BeginScene();
+    //   vis->Render();
+    //   vis->EndScene();
+    //   vis->Synchronize(time, driver_inputs);
     // }
   }
   return 0;

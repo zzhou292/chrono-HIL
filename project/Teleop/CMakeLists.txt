@@ -10,7 +10,6 @@
 set(DEMOS
 	proj_HIL_teleoprc
   proj_HIL_teleopcity
-  proj_HIL_teleopcity_ctr
 )
 
 #--------------------------------------------------------------

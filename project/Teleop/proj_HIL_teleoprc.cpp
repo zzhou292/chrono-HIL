@@ -21,6 +21,7 @@
 
 #include "chrono/utils/ChUtilsInputOutput.h"
 
+#include "chrono/utils/ChUtilsInputOutput.h"
 #include "chrono_vehicle/ChConfigVehicle.h"
 #include "chrono_vehicle/ChVehicleModelData.h"
 #include "chrono_vehicle/driver/ChDataDriver.h"
@@ -93,15 +94,11 @@ double t_end = 1000;
 double render_step_size = 1.0 / 50; // FPS = 50
 
 // Output directories
-const std::string out_dir = GetChronoOutputPath() + "ARTCar";
-const std::string pov_dir = out_dir + "/POVRAY";
+const std::string out_dir = "ARTCar";
 
 // Debug logging
 bool debug_output = false;
 double debug_step_size = 1.0 / 1; // FPS = 1
-
-// POV-Ray output
-bool povray_output = false;
 
 void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
               std::vector<ChVector3<>> &cone_pos);
@@ -406,15 +403,9 @@ int main(int argc, char *argv[])
     std::cout << "Error creating directory " << out_dir << std::endl;
     return 1;
   }
-  if (povray_output)
-  {
-    if (!filesystem::create_directory(filesystem::path(pov_dir)))
-    {
-      std::cout << "Error creating directory " << pov_dir << std::endl;
-      return 1;
-    }
-    terrain.ExportMeshPovray(out_dir);
-  }
+
+  utils::ChWriterCSV csv_1(" ");
+  utils::ChWriterCSV csv_2(" ");
 
   // ------------------------
   // Create the driver system
@@ -454,7 +445,10 @@ int main(int argc, char *argv[])
 
   DriverInputs driver_inputs;
 
-  ChDelaySim sim(400);
+  auto normalDist = std::make_shared<chrono::hil::NormalDistribution>(600.0f, 8.0f);
+  // Initialize delay simulator with normal distribution
+  ChDelaySim sim(normalDist, 500.0f);
+  sim.setLogging(true);
 
   while (true)
   {
@@ -484,14 +478,6 @@ int main(int argc, char *argv[])
       vis->Render();
       vis->EndScene();
 
-      if (povray_output)
-      {
-        char filename[100];
-        sprintf(filename, "%s/data_%03d.dat", pov_dir.c_str(),
-                render_frame + 1);
-        utils::WriteVisualizationAssets(my_rccar.GetSystem(), filename);
-      }
-
       render_frame++;
     }
 
@@ -517,7 +503,22 @@ int main(int argc, char *argv[])
         driver_inputs.m_throttle = receivedFloats[1] * 0.2;
         driver_inputs.m_braking = receivedFloats[2];
       }
+
+      // write drive torques of all four wheels into file
+      std::vector<float> delay_buffer = sim.getDelayBuffer();
+
+      for (int i = 0; i < delay_buffer.size(); i++)
+      {
+        csv_1 << time << "," << delay_buffer[i] << std::endl;
+      }
     }
+
+    if (step_number % 100 == 0)
+    {
+      int drop_ct = sim.getPacketDropCount();
+      csv_2 << time << "," << drop_ct << std::endl;
+    }
+
     // Update modules (process inputs from other modules)
     terrain.Synchronize(time);
     my_rccar.Synchronize(time, driver_inputs, terrain);
@@ -539,6 +540,8 @@ int main(int argc, char *argv[])
     }
   }
 
+  csv_1.WriteToFile(out_dir + "/output1.dat");
+  csv_2.WriteToFile(out_dir + "/output2.dat");
   return 0;
 }
 
@@ -554,7 +557,7 @@ void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
   for (int i = 0; i < cone_files.size(); i++)
   {
     auto mesh = ChTriangleMeshConnected::CreateFromWavefrontFile(
-        GetChronoDataFile(cone_files[i]), false, true);
+        GetChronoDataFile(cone_files[i]), true, true);
 
     double mass;
     ChVector3<> cog;

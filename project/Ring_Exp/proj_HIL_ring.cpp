@@ -86,7 +86,12 @@ float radius = 50.f;
 ChVector3<> initLoc(0, radius, 0.5);
 ChQuaternion<> initRot = SetFromAngleZ(0);
 
-enum DriverMode { DEFAULT, RECORD, PLAYBACK };
+enum DriverMode
+{
+  DEFAULT,
+  RECORD,
+  PLAYBACK
+};
 DriverMode driver_mode = DEFAULT;
 
 // Visualization type for vehicle parts (PRIMITIVES, MESH, or NONE)
@@ -140,7 +145,8 @@ std::vector<float> brakes;
 std::vector<float> steerings;
 
 // =============================================================================
-void AddCommandLineOptions(ChCLI &cli) {
+void AddCommandLineOptions(ChCLI &cli)
+{
   // DDS Specific
   cli.AddOption<int>("DDS", "d,node_id", "ID for this Node", "1");
   cli.AddOption<int>("DDS", "n,num_nodes", "Number of Nodes", "2");
@@ -167,14 +173,17 @@ void AddCommandLineOptions(ChCLI &cli) {
 
 void readvectors(std::vector<float> &throttle_ref,
                  std::vector<float> &brakes_ref,
-                 std::vector<float> &steerings_ref) {
+                 std::vector<float> &steerings_ref)
+{
   std::vector<std::vector<std::string>> content;
   std::vector<std::string> row;
   std::string line, word;
 
   std::fstream file("input.csv", std::ios::in);
-  if (file.is_open()) {
-    while (getline(file, line)) {
+  if (file.is_open())
+  {
+    while (getline(file, line))
+    {
       row.clear();
 
       std::stringstream str(line);
@@ -183,10 +192,12 @@ void readvectors(std::vector<float> &throttle_ref,
         row.push_back(word);
       content.push_back(row);
     }
-  } else
+  }
+  else
     std::cout << "Could not open the file\n";
 
-  for (int i = 0; i < content.size(); i++) {
+  for (int i = 0; i < content.size(); i++)
+  {
     throttle_ref.push_back(std::stof(content[i][0]));
     brakes_ref.push_back(std::stof(content[i][1]));
     steerings_ref.push_back(std::stof(content[i][2]));
@@ -197,7 +208,8 @@ void readvectors(std::vector<float> &throttle_ref,
 
 // =============================================================================
 
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
   GetLog() << "Copyright (c) 2017 projectchrono.org\nChrono version: "
            << CHRONO_VERSION << "\n\n";
   ChCLI cli(argv[0]);
@@ -214,7 +226,8 @@ int main(int argc, char *argv[]) {
   const int record = cli.GetAsType<int>("record");
   const int output = cli.GetAsType<int>("output");
 
-  if (drive_type == 2) {
+  if (drive_type == 2)
+  {
     readvectors(throttles, brakes, steerings);
   }
 
@@ -230,19 +243,24 @@ int main(int argc, char *argv[]) {
       vehicle::GetDataFile("sedan/tire/Sedan_TMeasyTire.json");
   std::string zombie_filename = synchrono::GetDataFile("vehicle/Sedan.json");
 
-  if (vehicle_type == 1) {
+  if (vehicle_type == 1)
+  {
     vehicle_filename = vehicle::GetDataFile("sedan/vehicle/Sedan_Vehicle.json");
     tire_filename = vehicle::GetDataFile("sedan/tire/Sedan_TMeasyTire.json");
     powertrain_filename =
         vehicle::GetDataFile("sedan/powertrain/Sedan_SimpleMapPowertrain.json");
     zombie_filename = synchrono::GetDataFile("vehicle/Sedan.json");
-  } else if (vehicle_type == 2) {
+  }
+  else if (vehicle_type == 2)
+  {
     vehicle_filename = vehicle::GetDataFile("audi/json/audi_Vehicle.json");
     tire_filename = vehicle::GetDataFile("audi/json/audi_TMeasyTire.json");
     powertrain_filename =
         vehicle::GetDataFile("audi/json/audi_SimpleMapPowertrain.json");
     zombie_filename = synchrono::GetDataFile("vehicle/audi.json");
-  } else if (vehicle_type == 3) {
+  }
+  else if (vehicle_type == 3)
+  {
     vehicle_filename = vehicle::GetDataFile("hmmwv/vehicle/HMMWV_Vehicle.json");
     tire_filename = vehicle::GetDataFile("hmmwv/tire/HMMWV_TMeasyTire.json");
     powertrain_filename =
@@ -275,7 +293,8 @@ int main(int argc, char *argv[]) {
   qos.wire_protocol().builtin.avoid_builtin_multicast = false;
 
   // Set the initialPeersList
-  for (const auto &ip : ip_list) {
+  for (const auto &ip : ip_list)
+  {
     Locator_t locator;
     locator.kind = LOCATOR_KIND_UDPv4;
     IPLocator::setIPv4(locator, ip);
@@ -293,9 +312,10 @@ int main(int argc, char *argv[]) {
   float deg_sec = (CH_PI * 1.6) / num_nodes;
 
   initLoc = ChVector3<>(radius * cos(deg_sec * node_id),
-                       radius * sin(deg_sec * node_id), 0.5);
+                        radius * sin(deg_sec * node_id), 0.5);
   float rot_deg = deg_sec * node_id + CH_PI_2;
-  if (rot_deg > CH_C_2PI) {
+  if (rot_deg > CH_C_2PI)
+  {
     rot_deg = rot_deg - CH_C_2PI;
   }
   initRot = SetFromAngleZ(rot_deg);
@@ -317,8 +337,10 @@ int main(int argc, char *argv[]) {
   my_vehicle.SetWheelVisualizationType(VisualizationType::MESH);
 
   // Create and initialize the tires
-  for (auto &axle : my_vehicle.GetAxles()) {
-    for (auto &wheel : axle->GetWheels()) {
+  for (auto &axle : my_vehicle.GetAxles())
+  {
+    for (auto &wheel : axle->GetWheels())
+    {
       auto tire = ReadTireJSON(tire_filename);
       tire->SetStepsize(step_size / 2);
       my_vehicle.InitializeTire(tire, wheel, tire_vis_type);
@@ -382,7 +404,8 @@ int main(int argc, char *argv[]) {
   manager->scene->EnableDynamicOrigin(true);
   manager->scene->SetOriginOffsetThreshold(500.f);
 
-  if (render_scene == 1) {
+  if (render_scene == 1)
+  {
 
     auto cam = chrono_types::make_shared<ChCameraSensor>(
         attached_body, // body camera is attached to
@@ -390,8 +413,8 @@ int main(int argc, char *argv[]) {
         chrono::ChFrame<double>(
             ChVector3<>(0.0, 0.0, 100.0),
             SetFromCardanAnglesXYZ(ChVector3<>(0.0, CH_PI_2, 0.0))), // offset pose
-        1280,                                                  // image width
-        720,                                                   // image height
+        1280,                                                        // image width
+        720,                                                         // image height
         1.608f,
         1); // fov, lag, exposure
     cam->SetName("Camera Sensor");
@@ -405,8 +428,9 @@ int main(int argc, char *argv[]) {
     // cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
     // cam->PushFilter(chrono_types::make_shared<ChFilterSave>("cam1/"));
     manager->AddSensor(cam);
-
-  } else if (render_scene == 2) {
+  }
+  else if (render_scene == 2)
+  {
     // mirrors position and rotations
     ChVector3<> mirror_rearview_pos = {0.253, 0.0, 1.10};
     ChQuaternion<> mirror_rearview_rot = SetFromCardanAnglesXYZ(
@@ -500,8 +524,8 @@ int main(int argc, char *argv[]) {
         fps,                         // update rate in Hz
         chrono::ChFrame<double>(ChVector3<>(-.3, .4, .98),
                                 SetFromAngleAxis(0, {1, 0, 0})), // offset pose
-        1920 * 3,                                              // image width
-        1080,                                                  // image height
+        1920 * 3,                                                // image width
+        1080,                                                    // image height
         3.2f,
         1); // fov, lag, exposure
     cam->SetName("Camera Sensor");
@@ -510,7 +534,9 @@ int main(int argc, char *argv[]) {
 
     // add sensor to the manager
     manager->AddSensor(cam);
-  } else if (render_scene == 3) {
+  }
+  else if (render_scene == 3)
+  {
 
     auto cam = chrono_types::make_shared<ChCameraSensor>(
         attached_body, // body camera is attached to
@@ -518,8 +544,8 @@ int main(int argc, char *argv[]) {
         chrono::ChFrame<double>(
             ChVector3<>(0.0, 0.0, 100.0),
             SetFromCardanAnglesXYZ(ChVector3<>(0.0, CH_PI_2, 0.0))), // offset pose
-        1920,                                                  // image width
-        1080,                                                  // image height
+        1920,                                                        // image width
+        1080,                                                        // image height
         1.608f,
         2); // fov, lag, exposure
     cam->SetName("Camera Sensor");
@@ -541,9 +567,9 @@ int main(int argc, char *argv[]) {
         chrono::ChFrame<double>(
             ChVector3<>(-6.0, 0.0, 2.5),
             SetFromCardanAnglesXYZ(ChVector3<>(0.0, 0.3, 0.0))), // offset
-        1920,                                            // image width
-        1080,                                            // image
-        1.608f, 2); // fov, lag, exposure cam2->SetName("Camera Sensor
+        1920,                                                    // image width
+        1080,                                                    // image
+        1.608f, 2);                                              // fov, lag, exposure cam2->SetName("Camera Sensor
 
     // cam2->PushFilter(
     //     chrono_types::make_shared<ChFilterVisualize>(1920, 1080, "fov",
@@ -559,9 +585,9 @@ int main(int argc, char *argv[]) {
         chrono::ChFrame<double>(
             ChVector3<>(55.0, -55.0, 9.0),
             SetFromCardanAnglesXYZ(ChVector3<>(0.0, 0.3, CH_PI * 5 / 6))), // offset
-        1920,     // image width
-        1080,     // image
-        1.3f, 2); // fov, lag, exposure cam2->SetName("Camera Sensor
+        1920,                                                              // image width
+        1080,                                                              // image
+        1.3f, 2);                                                          // fov, lag, exposure cam2->SetName("Camera Sensor
 
     // cam3->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
     //     1920, 1080, "stand", false));
@@ -577,7 +603,8 @@ int main(int argc, char *argv[]) {
 
   // Initialize output
 
-  if (!filesystem::create_directory(filesystem::path(out_dir))) {
+  if (!filesystem::create_directory(filesystem::path(out_dir)))
+  {
     std::cout << "Error creating directory " << out_dir << std::endl;
     return 1;
   }
@@ -599,11 +626,12 @@ int main(int argc, char *argv[]) {
   // ------------------------
 
   // read from a bezier curve, and form a closed loop
-  auto path = ChBezierCurve::read(path_file, true);
+  auto path = ChBezierCurve::Read(path_file, true);
 
   // idm parameters
   std::vector<double> followerParam;
-  if (idm_type == 1) {
+  if (idm_type == 1)
+  {
     followerParam.push_back(8.9408);
     followerParam.push_back(0.1);
     followerParam.push_back(5.0);
@@ -611,8 +639,9 @@ int main(int argc, char *argv[]) {
     followerParam.push_back(2.5);
     followerParam.push_back(4.0);
     followerParam.push_back(4.86);
-
-  } else if (idm_type == 2) {
+  }
+  else if (idm_type == 2)
+  {
     followerParam.push_back(8.9408);
     followerParam.push_back(0.2);
     followerParam.push_back(6.0);
@@ -620,7 +649,9 @@ int main(int argc, char *argv[]) {
     followerParam.push_back(2.1);
     followerParam.push_back(4.0);
     followerParam.push_back(4.86);
-  } else if (idm_type == 3) {
+  }
+  else if (idm_type == 3)
+  {
     followerParam.push_back(8.9408);
     followerParam.push_back(0.7);
     followerParam.push_back(8.0);
@@ -640,7 +671,8 @@ int main(int argc, char *argv[]) {
   ChSDLInterface SDLDriver;
   driver.Initialize();
 
-  if (drive_type == 1) {
+  if (drive_type == 1)
+  {
     SDLDriver.Initialize();
     SDLDriver.SetJoystickConfigFile(std::string(STRINGIFY(HIL_DATA_DIR)) +
                                     "/joystick/controller_G29.json");
@@ -683,18 +715,24 @@ int main(int argc, char *argv[]) {
 
   manager->Update();
 
-  while (time <= sim_time && syn_manager.IsOk()) {
+  while (time <= sim_time && syn_manager.IsOk())
+  {
     time = my_vehicle.GetSystem()->GetChTime();
 
-    if (step_number == 1) {
+    if (step_number == 1)
+    {
       realtime_timer.Reset();
-    } else if (step_number != 1 && step_number != 0) {
-      if (real_time == 1) {
+    }
+    else if (step_number != 1 && step_number != 0)
+    {
+      if (real_time == 1)
+      {
         realtime_timer.Spin(time);
       }
     }
 
-    if (step_number % 500 == 0 && node_id == 0) {
+    if (step_number % 500 == 0 && node_id == 0)
+    {
       std::chrono::high_resolution_clock::time_point end =
           std::chrono::high_resolution_clock::now();
       std::chrono::duration<double> wall_time =
@@ -707,29 +745,37 @@ int main(int argc, char *argv[]) {
     }
 
     // slow-start control
-    if (use_control == 1 && drive_type == 0) {
+    if (use_control == 1 && drive_type == 0)
+    {
       float avg_speed = IG_speed_avg.Add(my_vehicle.GetSpeed());
-      if (avg_speed < (8.9408 / 4.0)) {
+      if (avg_speed < (8.9408 / 4.0))
+      {
         driver.Set_CruiseSpeed(8.9408 / 3.0);
         // std::cout << "spd:" << 8.9408 / 3.0 << std::endl;
-      } else if (avg_speed < (8.9408 / 3.0)) {
+      }
+      else if (avg_speed < (8.9408 / 3.0))
+      {
         driver.Set_CruiseSpeed(8.9408 / 2.0);
         // std::cout << "spd:" << 8.9408 / 2.0 << std::endl;
-      } else {
+      }
+      else
+      {
         driver.Set_CruiseSpeed(8.9408);
         // std::cout << "spd:" << 8.9408 << std::endl;
       }
     }
 
     // obtain map
-    if (step_number == 0) {
+    if (step_number == 0)
+    {
       zombie_map = syn_manager.GetZombies();
       std::cout << "zombie size: " << zombie_map.size() << std::endl;
       std::cout << "agent size: " << syn_manager.GetAgents().size()
                 << std::endl;
       for (std::map<AgentKey, std::shared_ptr<SynAgent>>::iterator it =
                zombie_map.begin();
-           it != zombie_map.end(); ++it) {
+           it != zombie_map.end(); ++it)
+      {
         std::shared_ptr<SynAgent> temp_ptr = it->second;
         std::shared_ptr<SynWheeledVehicleAgent> converted_ptr =
             std::dynamic_pointer_cast<SynWheeledVehicleAgent>(temp_ptr);
@@ -739,14 +785,18 @@ int main(int argc, char *argv[]) {
     }
 
     // update necessary zombie info for IDM
-    if (step_number % int(heartbeat / step_size) == 0) {
-      for (int i = 0; i < num_nodes; i++) {
-        if (i != node_id) {
+    if (step_number % int(heartbeat / step_size) == 0)
+    {
+      for (int i = 0; i < num_nodes; i++)
+      {
+        if (i != node_id)
+        {
           ChVector3<> temp_pos = id_map.at(i)->GetZombiePos();
           all_x[i] = temp_pos.x();
           all_y[i] = temp_pos.y();
 
-          if (step_number == 0) {
+          if (step_number == 0)
+          {
             all_prev_x[i] = all_x[i];
             all_prev_y[i] = all_y[i];
           }
@@ -770,9 +820,12 @@ int main(int argc, char *argv[]) {
                            (all_y[node_id] - all_y[lead_idx]) *
                                (all_y[node_id] - all_y[lead_idx]));
       float temp = 1 - (raw_dis * raw_dis) / (2.0 * radius * radius);
-      if (temp > 1) {
+      if (temp > 1)
+      {
         temp = 1;
-      } else if (temp < -1) {
+      }
+      else if (temp < -1)
+      {
         temp = -1;
       }
 
@@ -780,9 +833,12 @@ int main(int argc, char *argv[]) {
       act_dis = theta * radius;
 
       // store rendering data
-      if (render_scene == 4) {
-        for (int i = 0; i < num_nodes; i++) {
-          if (i != node_id) {
+      if (render_scene == 4)
+      {
+        for (int i = 0; i < num_nodes; i++)
+        {
+          if (i != node_id)
+          {
             // body
             ChVector3<> temp_pos = id_map.at(i)->GetZombiePos();
             ChQuaternion<> temp_rot = id_map.at(i)->GetZombieRot();
@@ -796,7 +852,8 @@ int main(int argc, char *argv[]) {
             render_buffer << std::to_string(temp_rot_euler.z()) + ",";
 
             // wheels
-            for (int j = 0; j < 4; j++) {
+            for (int j = 0; j < 4; j++)
+            {
               ChVector3<> temp_wheel_pos = id_map.at(i)->GetZombieWheelPos(j);
               ChQuaternion<> temp_wheel_rot =
                   id_map.at(i)->GetZombieWheelRot(j);
@@ -809,7 +866,9 @@ int main(int argc, char *argv[]) {
               render_buffer << std::to_string(temp_wheel_rot_euler.y()) + ",";
               render_buffer << std::to_string(temp_wheel_rot_euler.z()) + ",";
             }
-          } else {
+          }
+          else
+          {
             // ego body
             ChVector3<> temp_pos = my_vehicle.GetChassis()->GetPos();
             ChQuaternion<> temp_rot = my_vehicle.GetChassis()->GetRot();
@@ -823,11 +882,15 @@ int main(int argc, char *argv[]) {
             render_buffer << std::to_string(temp_rot_euler.z()) + ",";
 
             // ego_wheels
-            for (int j = 0; j < 4; j++) {
+            for (int j = 0; j < 4; j++)
+            {
               std::shared_ptr<ChWheel> temp_wheel;
-              if (j % 2 == 0) {
+              if (j % 2 == 0)
+              {
                 temp_wheel = my_vehicle.GetWheel(int(j / 2), VehicleSide::LEFT);
-              } else {
+              }
+              else
+              {
                 temp_wheel =
                     my_vehicle.GetWheel(int(j / 2), VehicleSide::RIGHT);
               }
@@ -855,30 +918,35 @@ int main(int argc, char *argv[]) {
     }
 
     // Render scene and output POV-Ray data
-    if (render_scene != 0 && (step_number % 20) == 0) {
+    if (render_scene != 0 && (step_number % 20) == 0)
+    {
       manager->Update();
     }
 
     // Get driver inputs
     DriverInputs driver_inputs = driver.GetInputs();
-    if (drive_type == 1) {
+    if (drive_type == 1)
+    {
       driver_inputs.m_throttle = SDLDriver.GetThrottle();
       driver_inputs.m_steering = SDLDriver.GetSteering();
       driver_inputs.m_braking = SDLDriver.GetBraking();
     }
 
-    if (drive_type == 2) {
+    if (drive_type == 2)
+    {
       driver_inputs.m_throttle = throttles[step_number];
       driver_inputs.m_steering = steerings[step_number];
       driver_inputs.m_braking = brakes[step_number];
     }
 
-    if (record == 1) {
+    if (record == 1)
+    {
       record_buffer << std::to_string(driver_inputs.m_throttle) + ",";
       record_buffer << std::to_string(driver_inputs.m_braking) + ",";
       record_buffer << std::to_string(driver_inputs.m_steering);
       record_buffer << std::endl;
-      if (step_number % 5000 == 0) {
+      if (step_number % 5000 == 0)
+      {
         SynLog() << ("Writing to record file...") << "\n";
         record_filestream << record_buffer.rdbuf();
         record_buffer.str("");
@@ -886,21 +954,26 @@ int main(int argc, char *argv[]) {
     }
 
     // record ring experiment output data
-    if (output == 1) {
-      if (step_number % 10 == 0) {
+    if (output == 1)
+    {
+      if (step_number % 10 == 0)
+      {
         output_buffer << time << ",";
-        for (int j = 0; j < num_nodes; j++) {
+        for (int j = 0; j < num_nodes; j++)
+        {
           output_buffer << std::to_string(all_x[j]) + ",";
           output_buffer << std::to_string(all_y[j]) + ",";
           output_buffer << std::to_string(all_speed[j]);
-          if (j != num_nodes - 1) {
+          if (j != num_nodes - 1)
+          {
             output_buffer << ",";
           }
         }
         output_buffer << std::endl;
       }
 
-      if (step_number % 10000 == 0) {
+      if (step_number % 10000 == 0)
+      {
         SynLog() << ("Writing to output file...") << "\n";
         output_filestream << output_buffer.rdbuf();
         output_buffer.str("");
@@ -919,8 +992,10 @@ int main(int argc, char *argv[]) {
     terrain.Advance(step_size);
     my_vehicle.Advance(step_size);
 
-    if (drive_type == 1 && (step_number % 20) == 0) {
-      if (SDLDriver.Synchronize() == 1) {
+    if (drive_type == 1 && (step_number % 20) == 0)
+    {
+      if (SDLDriver.Synchronize() == 1)
+      {
         break;
       }
     }
@@ -930,7 +1005,8 @@ int main(int argc, char *argv[]) {
     // Increment frame number
     step_number++;
 
-    if (!syn_manager.IsOk()) {
+    if (!syn_manager.IsOk())
+    {
       syn_manager.QuitSimulation();
     }
   }
