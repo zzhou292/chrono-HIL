@@ -95,7 +95,7 @@ const double MS_2_MPH = 2.2369;
 const double M_2_FT = 3.28084;
 const double G_2_MPSS = 9.81;
 
-#undef USENADS
+#define USENADS
 
 #ifdef USENADS
 #define PORT_IN 9090
@@ -174,7 +174,7 @@ int main(int argc, char *argv[]) {
   SynChronoManager syn_manager(node_id, num_nodes, communicator);
 
   // Change SynChronoManager settings
-  float heartbeat = 0.02f;
+  float heartbeat = 0.01f;
   syn_manager.SetHeartbeat(heartbeat);
 
   // ========================================================================
@@ -432,10 +432,19 @@ int main(int argc, char *argv[]) {
 
   // simulation loop
   while (vis->Run() && syn_manager.IsOk()) {
+  
+  
     auto now = std::chrono::high_resolution_clock::now();
     auto dds_time_stamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
                               now.time_since_epoch())
                               .count();
+    //cb
+    //if(step_number % 10 == 0) {
+    //	static long long prev_dds_time_stamp = 0;
+    	//std::cout << dds_time_stamp - prev_dds_time_stamp << std::endl;
+    //	prev_dds_time_stamp = dds_time_stamp;
+    //}
+    // end - cb
     double time = my_vehicle.GetSystem()->GetChTime();
 
     ChVector3<> pos = my_vehicle.GetChassis()->GetPos();
@@ -659,11 +668,17 @@ int main(int argc, char *argv[]) {
         id_map.insert(std::make_pair(it->first.GetNodeID(), converted_ptr));
       }
     }
-
+    
+    //frame 0: sync with agent happens
+    //frame 1: send udp with time stamp from frame 1
     // obtain map
     if (num_nodes > 1) {
-      if (step_number % 16 == 0) {
+      if (step_number % 10 == 1) {
         int traf_id = 1;
+        
+       	const long long period = 10000000;
+       	dds_time_stamp = ((dds_time_stamp+1000000)/period)*period-1000000;
+        
         for (std::map<int, std::shared_ptr<SynWheeledVehicleAgent>>::iterator
                  it = id_map.begin();
              it != id_map.end(); ++it) {

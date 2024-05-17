@@ -134,7 +134,7 @@ int main(int argc, char *argv[]) {
   SynChronoManager syn_manager(node_id, num_nodes, communicator);
 
   // Change SynChronoManager settings
-  float heartbeat = 0.02f;
+  float heartbeat = 0.01f;
   syn_manager.SetHeartbeat(heartbeat);
 
   // ========================================================================
