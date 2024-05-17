@@ -232,14 +232,14 @@ int main(int argc, char *argv[])
                                                            "my_path", 4.0);
   driver->GetSteeringController().SetLookAheadDistance(2.0);
   driver->GetSteeringController().SetGains(1.0, 0, 0);
-  driver->GetSpeedController().SetGains(0.6, 0.05, 0);
+  driver->GetSpeedController().SetGains(0.5, 0.0, 0);
   driver->Initialize();
 
   driver2 = chrono_types::make_shared<ChPathFollowerDriver>(my_vehicle, path2,
-                                                            "my_path2", 6.0);
+                                                            "my_path2", 5.0);
   driver2->GetSteeringController().SetLookAheadDistance(25.0);
   driver2->GetSteeringController().SetGains(0.3, 0, 0);
-  driver2->GetSpeedController().SetGains(0.8, 0.05, 0);
+  driver2->GetSpeedController().SetGains(0.5, 0.0, 0);
   driver2->Initialize();
 
   // Create the terrain
@@ -292,10 +292,34 @@ int main(int argc, char *argv[])
 
   DriverInputs driver_inputs = {0, 0, 0};
 
+  // obtain and initiate all zombie instances
+  std::map<AgentKey, std::shared_ptr<SynAgent>> zombie_map;
+  std::map<int, std::shared_ptr<SynWheeledVehicleAgent>> id_map;
+
+  bool node_4_switch = false;
+
   // simulation loop
   while (syn_manager.IsOk())
   {
     double time = my_vehicle.GetSystem()->GetChTime();
+
+    // switch
+    if (step_number == 0)
+    {
+      zombie_map = syn_manager.GetZombies();
+      std::cout << "zombie size: " << zombie_map.size() << std::endl;
+      std::cout << "agent size: " << syn_manager.GetAgents().size()
+                << std::endl;
+      for (std::map<AgentKey, std::shared_ptr<SynAgent>>::iterator it =
+               zombie_map.begin();
+           it != zombie_map.end(); ++it)
+      {
+        std::shared_ptr<SynAgent> temp_ptr = it->second;
+        std::shared_ptr<SynWheeledVehicleAgent> converted_ptr =
+            std::dynamic_pointer_cast<SynWheeledVehicleAgent>(temp_ptr);
+        id_map.insert(std::make_pair(it->first.GetNodeID(), converted_ptr));
+      }
+    }
 
     ChVector3<> pos = my_vehicle.GetChassis()->GetPos();
     ChQuaternion<> rot = my_vehicle.GetChassis()->GetRot();
@@ -318,9 +342,21 @@ int main(int argc, char *argv[])
     // Get driver inputs
     driver_inputs = driver->GetInputs();
 
-    if (node_id == 4 && time > 20)
+    if (time <= 15)
+    {
+      driver_inputs.m_throttle = 0.0;
+      driver_inputs.m_braking = 1.0;
+    }
+
+    if (node_4_switch)
     {
       driver_inputs = driver2->GetInputs();
+    }
+
+    if (node_id == 4)
+    {
+      if ((id_map[0]->GetZombiePos() - pos).Length() < 16.0)
+        node_4_switch = true;
     }
 
     // =======================
