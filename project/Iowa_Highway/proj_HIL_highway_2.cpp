@@ -54,7 +54,6 @@
 
 #include "chrono/utils/ChFilters.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
-#include "chrono_hil/network/udp/ChBoostInStreamer.h"
 #include "chrono_hil/network/udp/ChBoostOutStreamer.h"
 #include "chrono/core/ChRandom.h"
 
@@ -930,6 +929,9 @@ int main(int argc, char *argv[])
   std::string joystick_file =
       (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
   SDLDriver.SetJoystickConfigFile(joystick_file);
+  SDLDriver.AddCallbackButtons(6);
+  std::vector<int> check_button_idx;
+  std::vector<int> check_button_val;
 
   // ---------------
   // Simulate system
@@ -951,8 +953,10 @@ int main(int argc, char *argv[])
   // create boost data streaming interface
   ChBoostOutStreamer boost_streamer(IP_OUT, PORT_OUT);
 
-  ChBoostInStreamer in_streamer(PORT_IN, 1);
   std::vector<float> recv_data;
+
+  static auto last_invoked_1 =
+      std::chrono::system_clock::now().time_since_epoch();
 
   while (true)
   {
@@ -977,6 +981,31 @@ int main(int argc, char *argv[])
       driver_inputs.m_braking = SDLDriver.GetBraking();
     }
 
+    SDLDriver.GetButtonStatus(check_button_idx, check_button_val);
+    if (check_button_val[0] == 1)
+    {
+      auto current_invoke_1 =
+          std::chrono::system_clock::now().time_since_epoch();
+
+      if (std::chrono::duration_cast<std::chrono::seconds>(current_invoke_1 -
+                                                           last_invoked_1)
+              .count() >= 1.0)
+      {
+        if (driver_mode == AUTONOMOUS)
+        {
+          driver_mode = HUMAN;
+        }
+        else
+        {
+          driver_mode = AUTONOMOUS;
+        }
+
+        last_invoked_1 = current_invoke_1;
+      }
+      last_invoked_1 =
+          std::chrono::system_clock::now().time_since_epoch();
+    }
+
     auto ig_speed = vehicle.GetSpeed() * MS_TO_MPH;
     auto wall_time = high_resolution_clock::now();
     printf("Sim Time=%f, \tWall Time=%f, \tExtra Time=%f, \tIG_Speed mph=%f\n",
@@ -992,7 +1021,20 @@ int main(int argc, char *argv[])
     }
 
     if (driver_mode == AUTONOMOUS)
-      PFdriver->Synchronize(sim_time, step_size);
+    {
+      if (lead_count == 0)
+      {
+        PFdriver->Synchronize(sim_time, step_size);
+      }
+      else
+      {
+        double lead_dist = (lead_vec[0]->GetPos() - vehicle.GetPos()).Length();
+        auto lead_spd_vec = lead_vec[0]->GetVel();
+        lead_spd_vec.z() = 0;
+        double lead_spd = lead_spd_vec.Length();
+        PFdriver->Synchronize(sim_time, step_size, lead_dist, lead_spd);
+      }
+    }
 
     terrain.Synchronize(sim_time);
     vehicle.Synchronize(sim_time, driver_inputs, terrain);
@@ -1047,6 +1089,7 @@ int main(int argc, char *argv[])
       boost_streamer.AddData(driver_inputs.m_throttle);           // throttle data
       boost_streamer.AddData(driver_inputs.m_braking);            // brake data
       boost_streamer.AddData(driver_inputs.m_steering);           // steering data
+      boost_streamer.AddData((float)driver_mode);                 // steering data
       std::cout << "lead_count:" << lead_count << std::endl;
 
       for (int i = 0; i < lead_count; i++)
@@ -1067,18 +1110,6 @@ int main(int argc, char *argv[])
       }
 
       boost_streamer.Synchronize();
-
-      in_streamer.Synchronize();
-      recv_data = in_streamer.GetRecvData();
-      std::cout << recv_data[0] << std::endl;
-      if ((int)recv_data[0] == 0)
-      {
-        driver_mode = HUMAN;
-      }
-      else
-      {
-        driver_mode = AUTONOMOUS;
-      }
     }
 
     // Increment frame number

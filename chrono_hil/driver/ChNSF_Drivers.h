@@ -38,125 +38,134 @@ using namespace chrono::vehicle;
 #define AUDI_LENGTH 4.86
 #define M_TO_MILE 0.000621371
 #define MILE_TO_M 1609.34449789
-namespace chrono {
-namespace hil {
+namespace chrono
+{
+  namespace hil
+  {
 
-// Driver for the leader vehicle, it adjusts its target speed according to a
-// piecewise sinusoidal function In the buffer-areas between pieces it keeps the
-// target speed specified in target_speed
-class CH_HIL_API ChNSFLeaderDriver : public ChPathFollowerDriver {
-public:
-  /// Construct an interactive driver.
-  ChNSFLeaderDriver(
-      ChVehicle &vehicle,                   ///< associated vehicle
-      const std::string &steering_filename, ///< JSON file with steering
-                                            ///< controller specification
-      const std::string
-          &speed_filename, ///< JSON file with speed controller specification
-      std::shared_ptr<ChBezierCurve> path, ///< Bezier curve with target path
-      const std::string &path_name,        ///< name of the path curve
-      double target_speed,                 ///< constant target speed
-      std::vector<std::vector<double>>
-          behavior) ///< JSON file with piecewise directives
+    // Driver for the leader vehicle, it adjusts its target speed according to a
+    // piecewise sinusoidal function In the buffer-areas between pieces it keeps the
+    // target speed specified in target_speed
+    class CH_HIL_API ChNSFLeaderDriver : public ChPathFollowerDriver
+    {
+    public:
+      /// Construct an interactive driver.
+      ChNSFLeaderDriver(
+          ChVehicle &vehicle,                   ///< associated vehicle
+          const std::string &steering_filename, ///< JSON file with steering
+                                                ///< controller specification
+          const std::string
+              &speed_filename,                 ///< JSON file with speed controller specification
+          std::shared_ptr<ChBezierCurve> path, ///< Bezier curve with target path
+          const std::string &path_name,        ///< name of the path curve
+          double target_speed,                 ///< constant target speed
+          std::vector<std::vector<double>>
+              behavior) ///< JSON file with piecewise directives
 
-      : ChPathFollowerDriver(vehicle, steering_filename, speed_filename, path,
-                             path_name, target_speed),
-        behavior_data(behavior), cruise_speed(target_speed) {
-    previousPos = vehicle.GetChassis()->GetPos();
-    dist = 0;
-  }
+          : ChPathFollowerDriver(vehicle, steering_filename, speed_filename, path,
+                                 path_name, target_speed),
+            behavior_data(behavior), cruise_speed(target_speed)
+      {
+        previousPos = vehicle.GetChassis()->GetPos();
+        dist = 0;
+      }
 
-  ~ChNSFLeaderDriver() {}
+      ~ChNSFLeaderDriver() {}
 
-  void Synchronize(double time);
+      void Synchronize(double time);
 
-  void SetCruiseSpeed(double speed);
+      void SetCruiseSpeed(double speed);
 
-  double Get_Dist();
+      double Get_Dist();
 
-private:
-  // starting pos to compare with to obtain traveled dist
-  ChVector3<> previousPos;
-  // traveldistance
-  double dist;
-  // vector of vectors containing the instruction for target speed
-  std::vector<std::vector<double>> behavior_data;
-  // Cruise speed between sinusoidal stretches
-  double cruise_speed;
-};
+    private:
+      // starting pos to compare with to obtain traveled dist
+      ChVector3<> previousPos;
+      // traveldistance
+      double dist;
+      // vector of vectors containing the instruction for target speed
+      std::vector<std::vector<double>> behavior_data;
+      // Cruise speed between sinusoidal stretches
+      double cruise_speed;
+    };
 
-// Driver for the follower vehicle, it adjust its speed
-class CH_HIL_API ChNSFFollowerDriver : public ChPathFollowerDriver {
-public:
-  /// Construct an interactive driver.
-  ChNSFFollowerDriver(
-      ChVehicle &vehicle,                   ///< associated vehicle
-      const std::string &steering_filename, ///< JSON file with steering
-                                            ///< controller specification
-      const std::string
-          &speed_filename, ///< JSON file with speed controller specification
-      std::shared_ptr<ChBezierCurve> path, ///< Bezier curve with target path
-      const std::string &path_name,        ///< name of the path curve
-      double target_speed,                 ///< constant target speed
-      std::shared_ptr<ChVehicle> lead_vehicle, ///< followed_vehicle
-      std::vector<double> params) ///< JSON file with piecewise params
+    // Driver for the follower vehicle, it adjust its speed
+    class CH_HIL_API ChNSFFollowerDriver : public ChPathFollowerDriver
+    {
+    public:
+      /// Construct an interactive driver.
+      ChNSFFollowerDriver(
+          ChVehicle &vehicle,                   ///< associated vehicle
+          const std::string &steering_filename, ///< JSON file with steering
+                                                ///< controller specification
+          const std::string
+              &speed_filename,                     ///< JSON file with speed controller specification
+          std::shared_ptr<ChBezierCurve> path,     ///< Bezier curve with target path
+          const std::string &path_name,            ///< name of the path curve
+          double target_speed,                     ///< constant target speed
+          std::shared_ptr<ChVehicle> lead_vehicle, ///< followed_vehicle
+          std::vector<double> params)              ///< JSON file with piecewise params
 
-      : ChPathFollowerDriver(vehicle, steering_filename, speed_filename, path,
-                             path_name, target_speed),
-        behavior_data(params), cruise_speed(target_speed),
-        leader(lead_vehicle) {
-    previousPos = vehicle.GetChassis()->GetPos();
-    dist = 0;
-    m_no_lead = false;
-  }
+          : ChPathFollowerDriver(vehicle, steering_filename, speed_filename, path,
+                                 path_name, target_speed),
+            behavior_data(params), cruise_speed(target_speed),
+            leader(lead_vehicle)
+      {
+        previousPos = vehicle.GetChassis()->GetPos();
+        dist = 0;
+        m_no_lead = false;
+      }
 
-  ChNSFFollowerDriver(
-      ChVehicle &vehicle,                   ///< associated vehicle
-      const std::string &steering_filename, ///< JSON file with steering
-                                            ///< controller specification
-      const std::string
-          &speed_filename, ///< JSON file with speed controller specification
-      std::shared_ptr<ChBezierCurve> path, ///< Bezier curve with target path
-      const std::string &path_name,        ///< name of the path curve
-      double target_speed,                 ///< constant target speed
-      std::vector<double> params)          ///< JSON file with piecewise params
+      ChNSFFollowerDriver(
+          ChVehicle &vehicle,                   ///< associated vehicle
+          const std::string &steering_filename, ///< JSON file with steering
+                                                ///< controller specification
+          const std::string
+              &speed_filename,                 ///< JSON file with speed controller specification
+          std::shared_ptr<ChBezierCurve> path, ///< Bezier curve with target path
+          const std::string &path_name,        ///< name of the path curve
+          double target_speed,                 ///< constant target speed
+          std::vector<double> params)          ///< JSON file with piecewise params
 
-      : ChPathFollowerDriver(vehicle, steering_filename, speed_filename, path,
-                             path_name, target_speed),
-        behavior_data(params), cruise_speed(target_speed) {
-    previousPos = vehicle.GetChassis()->GetPos();
-    dist = 0;
-    m_no_lead = true;
-  }
+          : ChPathFollowerDriver(vehicle, steering_filename, speed_filename, path,
+                                 path_name, target_speed),
+            behavior_data(params), cruise_speed(target_speed)
+      {
+        previousPos = vehicle.GetChassis()->GetPos();
+        dist = 0;
+        m_no_lead = true;
+      }
 
-  ~ChNSFFollowerDriver() {}
+      ~ChNSFFollowerDriver() {}
 
-  void Synchronize(double time, double step);
+      void Synchronize(double time, double step);
 
-  void SetCruiseSpeed(double speed);
+      void Synchronize(double time, double step, double lead_dist, double lead_speed);
 
-  double Get_Dist();
+      void SetCruiseSpeed(double speed);
 
-  void Set_TheroSpeed(float target_thero_speed);
+      double Get_Dist();
 
-private:
-  // starting pos to compare with to obtain traveled dist
-  ChVector3<> previousPos;
-  // traveldistance
-  double dist;
-  // theoretical speed
-  double thero_speed = 0;
-  // no lead indicator (if no lead, then PID should be set seperately than IDM)
-  bool m_no_lead = false;
-  // vector of vectors containing the instruction for target speed
-  std::vector<double> behavior_data;
-  // Cruise speed between sinusoidal stretches
-  double cruise_speed;
-  // leader vehicle to follow
-  std::shared_ptr<ChVehicle> leader;
-};
+      void Set_TheroSpeed(float target_thero_speed);
 
-} // namespace hil
+    private:
+      // starting pos to compare with to obtain traveled dist
+      ChVector3<> previousPos;
+      // traveldistance
+      double dist;
+      // theoretical speed
+      double thero_speed = 0;
+      // no lead indicator (if no lead, then PID should be set seperately than IDM)
+      bool m_no_lead = false;
+      // vector of vectors containing the instruction for target speed
+      std::vector<double> behavior_data;
+      // Cruise speed between sinusoidal stretches
+      double cruise_speed;
+      // leader vehicle to follow
+      std::shared_ptr<ChVehicle> leader;
+    };
+
+  } // namespace hil
 } // namespace chrono
 
 #endif
