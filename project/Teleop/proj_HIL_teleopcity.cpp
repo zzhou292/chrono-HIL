@@ -239,8 +239,6 @@ int main(int argc, char *argv[])
   if (!cli.Parse(argc, argv, true))
     return 0;
 
-  ReadParameterFiles();
-
   SetChronoDataPath(CHRONO_DATA_DIR);
   vehicle::SetDataPath(CHRONO_DATA_DIR + std::string("vehicle/"));
 
@@ -256,6 +254,8 @@ int main(int argc, char *argv[])
   scenario_filename = cli.GetAsType<std::string>("sim_params");
   delay_val = cli.GetAsType<float>("delay_val");
   cam_delay_val = cli.GetAsType<float>("cam_delay_val");
+
+  ReadParameterFiles();
   // --------------
   // Create systems
   // --------------
