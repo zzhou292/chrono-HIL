@@ -229,17 +229,17 @@ int main(int argc, char *argv[])
   std::shared_ptr<chrono::vehicle::ChPathFollowerDriver> driver2;
 
   driver = chrono_types::make_shared<ChPathFollowerDriver>(my_vehicle, path,
-                                                           "my_path", 4.0);
+                                                           "my_path", 5.0);
   driver->GetSteeringController().SetLookAheadDistance(2.0);
   driver->GetSteeringController().SetGains(1.0, 0, 0);
-  driver->GetSpeedController().SetGains(0.5, 0.0, 0);
+  driver->GetSpeedController().SetGains(0.3, 0.0, 0);
   driver->Initialize();
 
   driver2 = chrono_types::make_shared<ChPathFollowerDriver>(my_vehicle, path2,
-                                                            "my_path2", 5.0);
-  driver2->GetSteeringController().SetLookAheadDistance(25.0);
-  driver2->GetSteeringController().SetGains(0.3, 0, 0);
-  driver2->GetSpeedController().SetGains(0.5, 0.0, 0);
+                                                            "my_path2", 8.0);
+  driver2->GetSteeringController().SetLookAheadDistance(20.0);
+  driver2->GetSteeringController().SetGains(0.2, 0, 0);
+  driver2->GetSpeedController().SetGains(0.3, 0.0, 0);
   driver2->Initialize();
 
   // Create the terrain
@@ -355,7 +355,7 @@ int main(int argc, char *argv[])
 
     if (node_id == 4)
     {
-      if ((id_map[0]->GetZombiePos() - pos).Length() < 16.0)
+      if ((id_map[0]->GetZombiePos() - pos).Length() < 15.0)
         node_4_switch = true;
     }
 

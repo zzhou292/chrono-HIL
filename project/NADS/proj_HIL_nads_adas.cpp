@@ -95,7 +95,7 @@ const double MS_2_MPH = 2.2369;
 const double M_2_FT = 3.28084;
 const double G_2_MPSS = 9.81;
 
-#define USENADS
+#undef USENADS
 
 #ifdef USENADS
 #define PORT_IN 9090
