@@ -8,7 +8,8 @@
 #--------------------------------------------------------------
 
 set(DEMOS
-	proj_HIL_ring
+	#proj_HIL_ring
+  proj_HIL_large_ring
 )
 
 #--------------------------------------------------------------
@@ -17,7 +18,7 @@ set(DEMOS
 
 # Invoke find_package in CONFIG mode
 find_package(Chrono
-             COMPONENTS SynChrono Vehicle Sensor Irrlicht
+             COMPONENTS SynChrono Vehicle Sensor Irrlicht 
              CONFIG
 )
 find_package(SDL2 REQUIRED)
