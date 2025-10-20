@@ -19,13 +19,15 @@
 // =============================================================================
 
 #include "chrono/utils/ChUtilsInputOutput.h"
+#include "chrono/core/ChQuaternion.h"
+#include "chrono/core/ChVector3.h"
 
 #include "chrono_models/vehicle/hmmwv/HMMWV.h"
 #include "chrono_vehicle/ChConfigVehicle.h"
 #include "chrono_vehicle/ChVehicleModelData.h"
 #include "chrono_vehicle/ChWorldFrame.h"
 #include "chrono_vehicle/driver/ChDataDriver.h"
-#include "chrono_vehicle/driver/ChInteractiveDriverIRR.h"
+#include "chrono_vehicle/driver/ChInteractiveDriver.h"
 #include "chrono_vehicle/terrain/RigidTerrain.h"
 
 #include "chrono_hil/ROM/driver/ChROM_IDMFollower.h"
@@ -91,13 +93,13 @@ const double DEG_2_RADS = CH_PI / 180;
 // -----------------------------------------------------------------------------
 
 // Initial vehicle location and orientation
-ChVector3<> initLoc(5011.5, -445, 100.75); // near mile marker
+ChVector3d initLoc(5011.5, -445, 100.75); // near mile marker
 
-ChQuaternion<> initRot;
+ChQuaterniond initRot;
 
-ChVector3<> driver_eye(-.3, .4, .98);
+ChVector3d driver_eye(-.3, .4, .98);
 
-ChQuaternion<> driver_view_direction;
+ChQuaterniond driver_view_direction;
 
 enum DriverMode
 {
@@ -123,7 +125,7 @@ double terrainLength = 40000.0; // size in X direction
 double terrainWidth = 40000.0;  // size in Y direction
 
 // Point on chassis tracked by the camera
-ChVector3<> trackPoint(0.0, 0.0, 1.75);
+ChVector3d trackPoint(0.0, 0.0, 1.75);
 
 // Contact method
 ChContactMethod contact_method = ChContactMethod::SMC;
@@ -188,19 +190,19 @@ double tsave = 1e-2;
 
 // Fog parameters
 bool fog_enabled = false;
-ChVector3<float> fog_color = {.8, .8, .8};
+ChVector3f fog_color = {.8, .8, .8};
 float fog_distance = 2000.0;
 
 // mirrors position and rotations
-ChVector3<> mirror_rearview_pos = {0.0, 0.0, 0.0};
-ChQuaternion<> mirror_rearview_rot = {1.0, 0.0, 0.0, 0.0};
-ChVector3<> mirror_wingleft_pos = {0.0, 0.0, 0.0};
-ChQuaternion<> mirror_wingleft_rot = {1.0, 0.0, 0.0, 0.0};
-ChVector3<> mirror_wingright_pos = {0.0, 0.0, 0.0};
-ChQuaternion<> mirror_wingright_rot = {1.0, 0.0, 0.0, 0.0};
+ChVector3d mirror_rearview_pos = {0.0, 0.0, 0.0};
+ChQuaterniond mirror_rearview_rot = {1.0, 0.0, 0.0, 0.0};
+ChVector3d mirror_wingleft_pos = {0.0, 0.0, 0.0};
+ChQuaterniond mirror_wingleft_rot = {1.0, 0.0, 0.0, 0.0};
+ChVector3d mirror_wingright_pos = {0.0, 0.0, 0.0};
+ChQuaterniond mirror_wingright_rot = {1.0, 0.0, 0.0, 0.0};
 
-ChVector3<> arrived_sign_pos = {0.0, 0.0, 0.0};
-ChQuaternion<> arrived_sign_rot = {1.0, 0.0, 0.0, 0.0};
+ChVector3d arrived_sign_pos = {0.0, 0.0, 0.0};
+ChQuaterniond arrived_sign_rot = {1.0, 0.0, 0.0, 0.0};
 
 using namespace std::chrono;
 
@@ -208,7 +210,7 @@ using namespace std::chrono;
 int lead_count = 0;
 
 // Dynamic Leaders
-std::vector<ChVector3<>> dynamic_pos;
+std::vector<ChVector3d> dynamic_pos;
 std::vector<float> dynamic_cruise_speed;
 std::vector<int> dynamic_lane; // 0 for inner, 1 for outer
 // 0 for no control(constant speed), 1 for distance control, 2 for time control
@@ -224,7 +226,7 @@ std::string joystick_filename;
 
 // distance variable
 float IG_dist = 0;
-ChVector3<> IG_prev_pos;
+ChVector3d IG_prev_pos;
 
 // driver global variables
 // TODO: maybe there is a better way to handle this
@@ -658,7 +660,7 @@ int main(int argc, char *argv[])
       demo_data_path +
           "/Environments/Iowa/vehicles/audi_chassis_windowless_2.obj",
       false, true);
-  audi_mesh->Transform(ChVector3<>(0, 0, 0),
+  audi_mesh->Transform(ChVector3d(0, 0, 0),
                        ChMatrix33<>(1)); // scale to a different size
 
   auto mesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
@@ -672,7 +674,7 @@ int main(int argc, char *argv[])
       demo_data_path + "/Environments/Iowa/vehicles/audi_rearview_mirror.obj",
       false, true);
 
-  mirror_mesh->Transform(ChVector3<>(0, 0, 0),
+  mirror_mesh->Transform(ChVector3d(0, 0, 0),
                          ChMatrix33<>(1)); // scale to a different size
 
   auto mirror_mat = chrono_types::make_shared<ChVisualMaterial>();
@@ -696,7 +698,7 @@ int main(int argc, char *argv[])
       demo_data_path + "/Environments/Iowa/vehicles/audi_left_wing_mirror.obj",
       false, true);
 
-  lwm_mesh->Transform(ChVector3<>(0, 0, 0),
+  lwm_mesh->Transform(ChVector3d(0, 0, 0),
                       ChMatrix33<>(1)); // scale to a different size
 
   auto lwm_mirror_shape =
@@ -713,7 +715,7 @@ int main(int argc, char *argv[])
   rwm_mesh->LoadWavefrontMesh(
       demo_data_path + "/Environments/Iowa/vehicles/audi_right_wing_mirror.obj",
       false, true);
-  rwm_mesh->Transform(ChVector3<>(0, 0, 0),
+  rwm_mesh->Transform(ChVector3d(0, 0, 0),
                       ChMatrix33<>(1)); // scale to a different size
 
   auto rwm_mirror_shape =
@@ -735,11 +737,11 @@ int main(int argc, char *argv[])
   minfo.Y = 2e7f;
   auto patch_mat = minfo.CreateMaterial(contact_method);
 
-  ChVector3<> normal = ChVector3<>({0, 0, 1});
-  ChVector3<> up = normal.GetNormalized();
-  ChVector3<> lateral = Vcross(up, ChWorldFrame::Forward());
+  ChVector3d normal(0, 0, 1);
+  ChVector3d up = normal.GetNormalized();
+  ChVector3d lateral = Vcross(up, ChWorldFrame::Forward());
   lateral.Normalize();
-  ChVector3<> forward = Vcross(lateral, up);
+  ChVector3d forward = Vcross(lateral, up);
   ChMatrix33<> rot;
   rot.SetFromDirectionAxes(forward, lateral, up);
 
@@ -883,7 +885,7 @@ int main(int argc, char *argv[])
   // ------------------------------------------------
   // Create a camera and add it to the sensor manager
   // ------------------------------------------------
-  ChQuaternion<> cam_rot;
+  ChQuaterniond cam_rot;
   cam_rot.SetFromAngleAxis(CH_PI_2, {0, 1, 0});
   auto cam = chrono_types::make_shared<ChCameraSensor>(
       vehicle.GetChassisBody(), // body camera is attached to
@@ -942,7 +944,7 @@ int main(int argc, char *argv[])
   double extra_time = 0.0;
   double last_sim_sync = 0;
 
-  ChVector3<> prev_IG_pos;
+  ChVector3d prev_IG_pos;
   bool IG_started_driving = false;
 
   auto t0 = high_resolution_clock::now();
@@ -1137,28 +1139,28 @@ void AddTrees(ChSystem *chsystem)
   auto tree_mesh_0 = chrono_types::make_shared<ChTriangleMeshConnected>();
   tree_mesh_0->LoadWavefrontMesh(
       demo_data_path + "/Environments/Iowa/trees/tree_01.obj", false, true);
-  tree_mesh_0->Transform(ChVector3<>(0, 0, 0),
+  tree_mesh_0->Transform(ChVector3d(0, 0, 0),
                          ChMatrix33<>(1)); // scale to a different size
 
   auto tree_mesh_1 = chrono_types::make_shared<ChTriangleMeshConnected>();
   tree_mesh_1->LoadWavefrontMesh(
       demo_data_path + "/Environments/Iowa/foliage/trees/oaktree_01.obj", false,
       true);
-  tree_mesh_1->Transform(ChVector3<>(0, 0, 0),
+  tree_mesh_1->Transform(ChVector3d(0, 0, 0),
                          ChMatrix33<>(1)); // scale to a different size
 
   auto tree_mesh_2 = chrono_types::make_shared<ChTriangleMeshConnected>();
   tree_mesh_2->LoadWavefrontMesh(
       demo_data_path + "/Environments/Iowa/foliage/trees/oaktree_02.obj", false,
       true);
-  tree_mesh_2->Transform(ChVector3<>(0, 0, 0),
+  tree_mesh_2->Transform(ChVector3d(0, 0, 0),
                          ChMatrix33<>(1)); // scale to a different size
 
   auto tree_mesh_3 = chrono_types::make_shared<ChTriangleMeshConnected>();
   tree_mesh_3->LoadWavefrontMesh(
       demo_data_path + "/Environments/Iowa/foliage/trees/oaktree_03.obj", false,
       true);
-  tree_mesh_3->Transform(ChVector3<>(0, 0, 0),
+  tree_mesh_3->Transform(ChVector3d(0, 0, 0),
                          ChMatrix33<>(1)); // scale to a different size
 
   std::vector<std::shared_ptr<ChTriangleMeshConnected>> tree_meshes = {
@@ -1194,7 +1196,7 @@ void AddTrees(ChSystem *chsystem)
       mesh_body->SetPos({i * x_step + x_start + x_variation * ((float)ChRandom::Get() - .5),
                          j * y_step + y_start + y_variation * ((float)ChRandom::Get() - .5),
                          0.0});
-      ChQuaternion<> mesh_rot;
+      ChQuaterniond mesh_rot;
       mesh_rot.SetFromAngleZ(CH_PI_2 * (float)ChRandom::Get());
       mesh_body->SetRot(mesh_rot);
       mesh_body->AddVisualShape(trimesh_shape);
@@ -1224,7 +1226,7 @@ void AddTrees(ChSystem *chsystem)
       mesh_body->SetPos({i * x_step + x_start + x_variation * ((float)ChRandom::Get() - .5),
                          j * y_step + y_start + y_variation * ((float)ChRandom::Get() - .5),
                          0.0});
-      ChQuaternion<> mesh_rot;
+      ChQuaterniond mesh_rot;
       mesh_rot.SetFromAngleZ(CH_PI_2 * (float)ChRandom::Get());
       mesh_body->SetRot(mesh_rot);
       mesh_body->AddVisualShape(trimesh_shape);
@@ -1241,7 +1243,7 @@ void AddRoadway(ChSystem *chsystem)
       "/Environments/Iowa/signs/mile_markers_inner.obj",
       "/Environments/Iowa/signs/mile_markers_outer.obj",
       "/Environments/Iowa/terrain/oval_highway.obj"};
-  std::vector<ChVector3<>> offsets = {
+  std::vector<ChVector3d> offsets = {
       {0, 0, -128.22}, {0, 0, 0.0}, {0, 0, 0.01}};
 
   for (int i = 0; i < environment_meshes.size();
@@ -1251,7 +1253,7 @@ void AddRoadway(ChSystem *chsystem)
     auto trimesh = chrono_types::make_shared<ChTriangleMeshConnected>();
     trimesh->LoadWavefrontMesh(demo_data_path + environment_meshes[i], true,
                                true);
-    trimesh->Transform(ChVector3<>(0, 0, 0),
+    trimesh->Transform(ChVector3d(0, 0, 0),
                        ChMatrix33<>(1)); // scale to a different size
     auto trimesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     trimesh_shape->SetMesh(trimesh);
@@ -1289,7 +1291,7 @@ void AddRoadway(ChSystem *chsystem)
     std::string meshname = "/Environments/Iowa/signs/arrived.obj";
     auto trimesh = chrono_types::make_shared<ChTriangleMeshConnected>();
     trimesh->LoadWavefrontMesh(demo_data_path + meshname, false, true);
-    trimesh->Transform(ChVector3<>(0, 0, 0),
+    trimesh->Transform(ChVector3d(0, 0, 0),
                        ChMatrix33<>(1)); // scale to a different size
     auto trimesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     trimesh_shape->SetMesh(trimesh);
@@ -1339,7 +1341,7 @@ void AddBuildings(ChSystem *chsystem)
       "/Environments/Iowa/buildings/radio_tower.obj", //
       "/Environments/Iowa/buildings/water_tower.obj", //
       "/Environments/Iowa/buildings/water_tower.obj"};
-  std::vector<ChVector3<>> offsets = {
+  std::vector<ChVector3d> offsets = {
       {4150, 12776, 0},           // farm 4000
       {3800, 10209, 0},           // farm
       {3920, 8372, 0},            // farm
@@ -1382,7 +1384,7 @@ void AddBuildings(ChSystem *chsystem)
     auto trimesh = chrono_types::make_shared<ChTriangleMeshConnected>();
     trimesh->LoadWavefrontMesh(demo_data_path + environment_meshes[i], false,
                                true);
-    trimesh->Transform(ChVector3<>(0, 0, 0),
+    trimesh->Transform(ChVector3d(0, 0, 0),
                        ChMatrix33<>(1)); // scale to a different size
     auto trimesh_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
     trimesh_shape->SetMesh(trimesh);
@@ -1392,7 +1394,7 @@ void AddBuildings(ChSystem *chsystem)
     auto mesh_body = chrono_types::make_shared<ChBody>();
     mesh_body->SetPos(offsets[i]);
 
-    ChQuaternion<> mesh_rot;
+    ChQuaterniond mesh_rot;
     mesh_rot.SetFromAngleZ(C_2PI * (float)ChRandom::Get());
     mesh_body->SetRot(mesh_rot);
     mesh_body->AddVisualShape(trimesh_shape);
@@ -1409,7 +1411,7 @@ void AddTerrain(ChSystem *chsystem)
   terrain_mesh->LoadWavefrontMesh(
       demo_data_path + "/Environments/Iowa/terrain/terrain_v2.obj", false,
       true);
-  terrain_mesh->Transform(ChVector3<>(0, 0, 0),
+  terrain_mesh->Transform(ChVector3d(0, 0, 0),
                           ChMatrix33<>(1)); // scale to a different size
   auto terrain_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   terrain_shape->SetMesh(terrain_mesh);

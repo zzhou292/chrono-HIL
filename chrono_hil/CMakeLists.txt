@@ -88,20 +88,49 @@ list(APPEND ALL_DLLS "${CHRONO_DLLS}" "${SDL2_DLL}")
 set(ALL_DLLS "${ALL_DLLS}" PARENT_SCOPE)
 
 find_package(Boost REQUIRED)
+find_path(HACD_INCLUDE_DIR
+    NAMES hacdVersion.h
+    HINTS ${CHRONO_INCLUDE_DIRS}
+    PATH_SUFFIXES chrono_thirdparty/HACD
+)
+if(NOT HACD_INCLUDE_DIR)
+    message(FATAL_ERROR "Could not locate hacdVersion.h from Chrono's HACD third-party.")
+endif()
+find_package(Eigen3 3.3 REQUIRED)
 
 
 set_target_properties(ChronoEngine_hil PROPERTIES
                       COMPILE_FLAGS "${CXX_FLAGS}"
                       LINK_FLAGS "${CH_LINKERFLAG_SHARED}")
 
-include_directories(${CHRONO_INCLUDE_DIRS} ${SDL2_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS} ${IRRKLANG_INSTALL_DIR})
-
-
 target_compile_definitions(ChronoEngine_hil PRIVATE "CH_API_COMPILE_HIL")
 target_compile_definitions(ChronoEngine_hil PRIVATE "CH_IGNORE_DEPRECATED")
 
+target_include_directories(ChronoEngine_hil
+    PUBLIC
+        ${CHRONO_INCLUDE_DIRS}
+        ${Boost_INCLUDE_DIRS}
+        ${HACD_INCLUDE_DIR}
+    PRIVATE
+        ${SDL2_INCLUDE_DIRS}
+        ${IRRKLANG_INSTALL_DIR}
+)
 
-target_link_libraries(ChronoEngine_hil ${LIBRARIES} ${SDL2_LIBRARIES} ${IRRKLANG_LIBRARY})
+if(TARGET Eigen3::Eigen)
+    target_link_libraries(ChronoEngine_hil PUBLIC Eigen3::Eigen)
+elseif(DEFINED EIGEN3_INCLUDE_DIR)
+    target_include_directories(ChronoEngine_hil PUBLIC ${EIGEN3_INCLUDE_DIR})
+else()
+    message(FATAL_ERROR "Eigen3 was found but the include directory was not provided.")
+endif()
+
+target_link_libraries(ChronoEngine_hil
+    PUBLIC
+        ${LIBRARIES}
+    PRIVATE
+        ${SDL2_LIBRARIES}
+        ${IRRKLANG_LIBRARY}
+)
 
 install(TARGETS ChronoEngine_hil
         RUNTIME DESTINATION bin
@@ -112,6 +141,3 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/
         DESTINATION include/chrono_hil
         FILES_MATCHING PATTERN "*.h")
 install(FILES ChApiModels.h DESTINATION include/chrono_hil)
-
-
-
