@@ -8,8 +8,8 @@
 #--------------------------------------------------------------
 
 set(DEMOS
-	proj_HIL_teleoprc
-  proj_HIL_teleopcity
+    proj_HIL_teleoprc
+    proj_HIL_teleopcity
 )
 
 #--------------------------------------------------------------
@@ -36,55 +36,34 @@ endif()
 # Include paths and libraries
 #--------------------------------------------------------------
 
-include_directories(
-    ${CHRONO_INCLUDE_DIRS}
-    ${CMAKE_SOURCE_DIR}
-    ${SDL2_INCLUDE_DIRS}
-)
-
-
-set(EXT_LIBRARIES 
-	ChronoEngine_hil
-)
-
-
-
-#--------------------------------------------------------------
-# Append to the parent's list of DLLs
-#--------------------------------------------------------------
-
-list(APPEND ALL_DLLS "${CHRONO_DLLS}")
-set(ALL_DLLS "${ALL_DLLS}" PARENT_SCOPE)
-
-#--------------------------------------------------------------
-# Compilation flags
-#--------------------------------------------------------------
-
-set(COMPILE_FLAGS ${CHRONO_CXX_FLAGS})
-
-# Disable some warnings triggered by Irrlicht (Windows only)
-#if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
-#    SET(COMPILE_FLAGS "${COMPILE_FLAGS} /wd4275")
-#endif()
-
-#--------------------------------------------------------------
-# Loop over all demo programs and build them
-#--------------------------------------------------------------
-
 message(STATUS "Projects for SynChrono Highway...")
 
 foreach(PROGRAM ${DEMOS})
 
   message(STATUS "...add ${PROGRAM}")
 
-  add_executable(${PROGRAM}  "${PROGRAM}.cpp")
-  source_group(""  FILES "${PROGRAM}.cpp")
-  
-  target_compile_definitions(${PROGRAM} PUBLIC "CHRONO_DATA_DIR=\"${CHRONO_DATA_DIR}\"") 
-  target_compile_definitions(${PROGRAM} PUBLIC "PROJECTS_DATA_DIR=\"${PROJECTS_DATA_DIR}\"") 
+  add_executable(${PROGRAM} "${PROGRAM}.cpp")
+  source_group("" FILES "${PROGRAM}.cpp")
+
+  target_compile_definitions(${PROGRAM}
+      PUBLIC
+          "CHRONO_DATA_DIR=\"${CHRONO_DATA_DIR}\""
+          "PROJECTS_DATA_DIR=\"${PROJECTS_DATA_DIR}\""
+  )
   target_compile_options(${PROGRAM} PUBLIC ${CHRONO_CXX_FLAGS})
   target_link_options(${PROGRAM} PUBLIC ${CH_LINKERFLAG_SHARED})
 
-	target_link_libraries(${PROGRAM} ${EXT_LIBRARIES} ${CHRONO_LIBRARIES} "-L/usr/local/cuda/lib64")# -lcudart")
+  target_include_directories(${PROGRAM} PRIVATE ${CMAKE_SOURCE_DIR})
+
+  target_link_libraries(${PROGRAM}
+      PRIVATE
+          ChronoEngine_hil
+          Chrono::Chrono_vehicle
+          Chrono::ChronoModels_vehicle
+          Chrono::Chrono_synchrono
+          Chrono::Chrono_sensor
+          Chrono::Chrono_irrlicht
+          SDL2::SDL2
+  )
 
 endforeach(PROGRAM)
