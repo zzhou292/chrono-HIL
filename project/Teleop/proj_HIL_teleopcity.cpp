@@ -12,11 +12,12 @@
 // Authors: Jason Zhou
 // =============================================================================
 
+#include "chrono/core/ChMatrix33.h"
+#include "chrono/core/ChQuaternion.h"
+#include "chrono/core/ChVector3.h"
 #include "chrono/utils/ChFilters.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
 #include <chrono>
-
-#include "chrono/utils/ChFilters.h"
 
 #include "chrono_hil/driver/ChIDM_Follower.h"
 #include "chrono_vehicle/driver/ChPathFollowerDriver.h"
@@ -28,7 +29,6 @@
 #include "chrono_vehicle/ChConfigVehicle.h"
 #include "chrono_vehicle/ChVehicleModelData.h"
 #include "chrono_vehicle/driver/ChDataDriver.h"
-#include "chrono_vehicle/driver/ChInteractiveDriverIRR.h"
 #include "chrono_vehicle/terrain/RigidTerrain.h"
 #include "chrono_vehicle/utils/ChUtilsJSON.h"
 #include "chrono_vehicle/wheeled_vehicle/ChWheeledVehicleVisualSystemIrrlicht.h"
@@ -72,13 +72,13 @@ const double M_2_FT = 3.28084;
 const double G_2_MPSS = 9.81;
 
 bool render = true;
-ChVector3<> driver_eyepoint(-0.45, 0.4, 0.98);
+ChVector3d driver_eyepoint(-0.45, 0.4, 0.98);
 
 // =============================================================================
 
 // Initial vehicle location and orientation
-ChVector3<> initLoc(-91.788, 98.647, 0.25);
-ChQuaternion<> initRot(1, 0, 0, 0);
+ChVector3d initLoc(-91.788, 98.647, 0.25);
+ChQuaterniond initRot(1, 0, 0, 0);
 double cruise_speed = 20.0;
 
 // Contact method
@@ -101,12 +101,13 @@ const double rads2rpm = 30 / CH_PI;
 // =============================================================================
 std::string scenario_filename = "test_parameters_1.json";
 std::vector<std::string> obj_filenames;
-std::vector<ChVector3<>> obj_pos;
-std::vector<ChVector3<>> obj_rot;
+std::vector<ChVector3d> obj_pos;
+std::vector<ChVector3d> obj_rot;
 std::vector<double> obj_scale;
 float delay_val = 0.0;
 float cam_delay_val = 0.2;
 int lane = 0;
+std::string delay_config_file = "network/delay_configs/delay_config.json";
 // =============================================================================
 void AddCommandLineOptions(ChCLI &cli)
 {
@@ -115,6 +116,9 @@ void AddCommandLineOptions(ChCLI &cli)
                              scenario_filename);
   cli.AddOption<float>("Simulation", "delay_val", "Delay value", std::to_string(delay_val));
   cli.AddOption<float>("Simulation", "cam_delay_val", "Camera Delay value", std::to_string(cam_delay_val));
+  cli.AddOption<std::string>("Simulation", "delay_config",
+                             "Path to delay configuration JSON file",
+                             delay_config_file);
 }
 // =============================================================================
 void ReadParameterFiles()
@@ -145,7 +149,7 @@ void ReadParameterFiles()
     if (d.HasMember("ego_rot"))
     {
       auto marr = d["ego_rot"].GetArray();
-      ChVector3<> euler_rot;
+      ChVector3d euler_rot;
       for (int j = 0; j < 3; j++)
       {
         euler_rot[j] = marr[j].GetDouble();
@@ -165,7 +169,7 @@ void ReadParameterFiles()
       {
         auto marr = d[meshname.c_str()]["positions"].GetArray();
 
-        ChVector3<> temp_pos;
+        ChVector3d temp_pos;
         for (int j = 0; j < 3; j++)
         {
           temp_pos[j] = marr[j].GetDouble();
@@ -175,7 +179,7 @@ void ReadParameterFiles()
       if (d[meshname.c_str()].HasMember("rotations"))
       {
         auto marr = d[meshname.c_str()]["rotations"].GetArray();
-        ChVector3<> temp_rot;
+        ChVector3d temp_rot;
         for (int j = 0; j < 3; j++)
         {
           temp_rot[j] = marr[j].GetDouble();
@@ -254,6 +258,7 @@ int main(int argc, char *argv[])
   scenario_filename = cli.GetAsType<std::string>("sim_params");
   delay_val = cli.GetAsType<float>("delay_val");
   cam_delay_val = cli.GetAsType<float>("cam_delay_val");
+  delay_config_file = cli.GetAsType<std::string>("delay_config");
 
   ReadParameterFiles();
   // --------------
@@ -305,19 +310,22 @@ int main(int argc, char *argv[])
 
   std::shared_ptr<RigidTerrain::Patch> patch;
 
+  // add terrain patch (this is used for collision i.e. is the physical terrain that the vehicle interacts with)
   patch = terrain.AddPatch(patch_mat, CSYSNORM,
                            std::string(STRINGIFY(HIL_DATA_DIR)) +
                                "/Environments/nads/newnads/terrain.obj",
                            true, 0, false);
 
+  // std::cout << "HIL Data Dir: " << STRINGIFY(HIL_DATA_DIR) << std::endl;
+
   terrain.Initialize();
 
-  // add vis mesh
+  // add vis mesh (this is used for visualization only)
   auto terrain_mesh = chrono_types::make_shared<ChTriangleMeshConnected>();
   terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
                                       "/Environments/nads/newnads/terrain.obj",
                                   true, true);
-  terrain_mesh->Transform(ChVector3<>(0, 0, 0),
+  terrain_mesh->Transform(ChVector3d(0, 0, 0),
                           ChMatrix33<>(1)); // scale to a different size
   auto terrain_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
   terrain_shape->SetMesh(terrain_mesh);
@@ -325,7 +333,7 @@ int main(int argc, char *argv[])
   terrain_shape->SetMutable(false);
 
   auto terrain_body = chrono_types::make_shared<ChBody>();
-  terrain_body->SetPos({0, 0, -.01});
+  terrain_body->SetPos({0, 0, -.02});
   // terrain_body->SetRot(Q_from_AngX(CH_PI_2));
   terrain_body->AddVisualShape(terrain_shape);
   terrain_body->SetFixed(true);
@@ -335,7 +343,7 @@ int main(int argc, char *argv[])
   // ------------------------
   // Create a Irrlicht vis
   // ------------------------
-  // ChVector3<> trackPoint(0.0, 0.0, 1.75);
+  // ChVector3d trackPoint(0.0, 0.0, 1.75);
   // int render_step = 20;
   // auto vis =
   //     chrono_types::make_shared<ChWheeledVehicleVisualSystemIrrlicht>();
@@ -381,7 +389,7 @@ int main(int argc, char *argv[])
   manager->scene->SetOriginOffsetThreshold(500.f);
 
   // camera at driver's eye location for Audi
-  ChQuaternion<> driver_cam_rot;
+  ChQuaterniond driver_cam_rot;
   driver_cam_rot.SetFromAngleAxis(0, {0, 1, 0});
   auto driver_cam = chrono_types::make_shared<ChCameraSensor>(
       my_vehicle.GetChassisBody(), // body camera is attached to
@@ -418,7 +426,38 @@ int main(int argc, char *argv[])
 
   auto normalDist = std::make_shared<chrono::hil::NormalDistribution>(delay_val, 0.001f);
   // Initialize delay simulator with normal distribution
-  ChDelaySim sim(normalDist, 1000000000.f);
+  // Very high bandwidth limit (effectively unlimited for most scenarios)
+  ChDelaySim sim(normalDist, 1e9f);
+  
+  // Load delay configuration from JSON file if it exists
+  // Priority: If delay_val is explicitly set (non-zero), use it instead of JSON
+  bool use_json_delay_config = false;
+  if (delay_val > 0.0f) {
+    // User specified a manual delay value - use it instead of JSON
+    std::cout << "Using command-line delay value: " << delay_val << "ms (ignoring JSON config)" << std::endl;
+  } else if (!delay_config_file.empty()) {
+    // No manual delay specified, try to load JSON config
+    // Check if delay_config_file is an absolute path
+    std::string full_delay_config_path;
+    if (delay_config_file[0] == '/') {
+      // Already an absolute path
+      full_delay_config_path = delay_config_file;
+    } else {
+      // Relative path - prepend HIL_DATA_DIR
+      full_delay_config_path = std::string(STRINGIFY(HIL_DATA_DIR)) + "/" + delay_config_file;
+    }
+    
+    std::cout << "Attempting to load delay configuration from: " << full_delay_config_path << std::endl;
+    if (sim.loadDelayConfig(full_delay_config_path)) {
+      use_json_delay_config = true;
+      sim.setLogging(true); // Enable logging when using JSON config
+      std::cout << "Successfully loaded delay configuration from JSON file." << std::endl;
+    } else {
+      std::cout << "Failed to load delay config. Using zero delay." << std::endl;
+    }
+  } else {
+    std::cout << "No delay configuration specified. Using zero delay." << std::endl;
+  }
 
   std::vector<int> check_button_idx;
   std::vector<int> check_button_val;
@@ -459,13 +498,18 @@ int main(int argc, char *argv[])
                               .count();
     double time = my_vehicle.GetSystem()->GetChTime();
 
-    ChVector3<> pos = my_vehicle.GetChassis()->GetPos();
-    ChQuaternion<> rot = my_vehicle.GetChassis()->GetRot();
+    // Update delay based on current simulation time if using JSON config
+    if (use_json_delay_config) {
+      sim.updateDelayForTime(time);
+    }
+
+    ChVector3d pos = my_vehicle.GetChassis()->GetPos();
+    ChQuaterniond rot = my_vehicle.GetChassis()->GetRot();
 
     auto euler_rot = rot.GetCardanAnglesXYZ();
     euler_rot.x() = 0.0;
     euler_rot.y() = 0.0;
-    ChQuaternion<> y_0_rot;
+    ChQuaterniond y_0_rot;
     y_0_rot.SetFromCardanAnglesXYZ(euler_rot);
 
     attached_body->SetPos(pos);
@@ -479,7 +523,7 @@ int main(int argc, char *argv[])
     if (step_number % 10 == 0)
     {
       // Create a vector of floats
-      std::vector<float> floats = {auto_mode, SDLDriver.GetSteering(), SDLDriver.GetThrottle(), SDLDriver.GetBraking()};
+      std::vector<float> floats = {static_cast<float>(auto_mode), SDLDriver.GetSteering(), SDLDriver.GetThrottle(), SDLDriver.GetBraking()};
 
       // Serialize the vector of floats to a vector of chars
       std::vector<char> serializedData = serializeFloats(floats);
@@ -603,23 +647,23 @@ void addObjs(ChSystem &sys)
         obj_filenames[i], false, true);
 
     double mass;
-    ChVector3<> cog;
+    ChVector3d cog;
     ChMatrix33<> inertia;
     mesh->ComputeMassProperties(true, mass, cog, inertia);
 
-    mesh->Transform(ChVector3<>(0, 0, 0), ChMatrix33<>(obj_scale[i]));
+    mesh->Transform(ChVector3d(0, 0, 0), ChMatrix33<>(obj_scale[i]));
     ChMatrix33<> principal_inertia_rot;
-    ChVector3<> principal_I;
+    ChVector3d principal_I;
     ChInertiaUtils::PrincipalInertia(inertia, principal_I,
                                      principal_inertia_rot);
 
     auto body = chrono_types::make_shared<ChBodyAuxRef>();
     sys.Add(body);
     body->SetFixed(true);
-    ChQuaternion<> body_rot(1, 0, 0, 0);
+    ChQuaterniond body_rot(1, 0, 0, 0);
     body_rot.SetFromCardanAnglesXYZ(obj_rot[i]);
 
-    body->SetFrameRefToAbs(ChFrame<>(ChVector3<>(obj_pos[i]), body_rot));
+    body->SetFrameRefToAbs(ChFrame<>(obj_pos[i], body_rot));
     body->SetFrameCOMToRef(ChFrame<>(cog, principal_inertia_rot));
     body->SetMass(mass * cone_density);
     body->SetInertiaXX(cone_density * principal_I);

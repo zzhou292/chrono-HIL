@@ -19,13 +19,13 @@
 //
 // =============================================================================
 
-#include "chrono/utils/ChUtilsInputOutput.h"
-
+#include "chrono/core/ChMatrix33.h"
+#include "chrono/core/ChQuaternion.h"
+#include "chrono/core/ChVector3.h"
 #include "chrono/utils/ChUtilsInputOutput.h"
 #include "chrono_vehicle/ChConfigVehicle.h"
 #include "chrono_vehicle/ChVehicleModelData.h"
 #include "chrono_vehicle/driver/ChDataDriver.h"
-#include "chrono_vehicle/driver/ChInteractiveDriverIRR.h"
 #include "chrono_vehicle/terrain/RigidTerrain.h"
 #include "chrono_vehicle/wheeled_vehicle/ChWheeledVehicleVisualSystemIrrlicht.h"
 
@@ -55,8 +55,8 @@ using namespace chrono::sensor;
 // =============================================================================
 
 // Initial vehicle location and orientation
-ChVector3<> initLoc(0, 0, 0.2);
-ChQuaternion<> initRot(1, 0, 0, 0);
+ChVector3d initLoc(0, 0, 0.2);
+ChQuaterniond initRot(1, 0, 0, 0);
 
 // Visualization type for vehicle parts (PRIMITIVES, MESH, or NONE)
 VisualizationType chassis_vis_type = VisualizationType::PRIMITIVES;
@@ -77,7 +77,7 @@ double terrainLength = 100.0; // size in X direction
 double terrainWidth = 100.0;  // size in Y direction
 
 // Point on chassis tracked by the camera
-ChVector3<> trackPoint(0.0, 0.0, 0.2);
+ChVector3d trackPoint(0.0, 0.0, 0.2);
 
 // Contact method
 ChContactMethod contact_method = ChContactMethod::SMC;
@@ -101,7 +101,7 @@ bool debug_output = false;
 double debug_step_size = 1.0 / 1; // FPS = 1
 
 void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
-              std::vector<ChVector3<>> &cone_pos);
+              std::vector<ChVector3d> &cone_pos);
 
 // =============================================================================
 std::vector<char> serializeFloats(const std::vector<float> &floatVec)
@@ -260,84 +260,84 @@ int main(int argc, char *argv[])
       "sensor/cones/red_cone.obj",                                //
       "sensor/cones/red_cone.obj",                                //
   };
-  std::vector<ChVector3<>> cone_pos = {
-      ChVector3<>(-1.48, -4.54, -0.24),
-      ChVector3<>(-4.0872, -2.0322, -0.24),
-      ChVector3<>(-1.42, -3.53, -0.24),
-      ChVector3<>(-4.07, -0.97672, -0.24),
-      ChVector3<>(-1.7255, -2.8225, -0.24),
-      ChVector3<>(-3.9574, 0.50855, -0.24),
-      ChVector3<>(-1.9213, -1.9518, -0.24),
-      ChVector3<>(-3.9172, 2.2994, -0.24),
-      ChVector3<>(-2.207, -1.0438, -0.24),
-      ChVector3<>(-2.4924, 2.778, -0.24),
-      ChVector3<>(-2.6502, -0.5412, -0.24),
-      ChVector3<>(-0.89042, 2.7256, -0.24),
-      ChVector3<>(-2.6556, 0.23594, -0.24),
-      ChVector3<>(0.24018, 1.5736, -0.24),
-      ChVector3<>(-2.30, 1.077, -0.24),
-      ChVector3<>(0.94455, 0.85916, -0.24),
+  std::vector<ChVector3d> cone_pos = {
+      ChVector3d(-1.48, -4.54, -0.24),
+      ChVector3d(-4.0872, -2.0322, -0.24),
+      ChVector3d(-1.42, -3.53, -0.24),
+      ChVector3d(-4.07, -0.97672, -0.24),
+      ChVector3d(-1.7255, -2.8225, -0.24),
+      ChVector3d(-3.9574, 0.50855, -0.24),
+      ChVector3d(-1.9213, -1.9518, -0.24),
+      ChVector3d(-3.9172, 2.2994, -0.24),
+      ChVector3d(-2.207, -1.0438, -0.24),
+      ChVector3d(-2.4924, 2.778, -0.24),
+      ChVector3d(-2.6502, -0.5412, -0.24),
+      ChVector3d(-0.89042, 2.7256, -0.24),
+      ChVector3d(-2.6556, 0.23594, -0.24),
+      ChVector3d(0.24018, 1.5736, -0.24),
+      ChVector3d(-2.30, 1.077, -0.24),
+      ChVector3d(0.94455, 0.85916, -0.24),
 
-      ChVector3<>(-1.7513, 0.88291, -0.24),
-      ChVector3<>(-1.2546, 0.08584, -0.24),
-      ChVector3<>(-1.0548, 0.6463, -0.24),
-      ChVector3<>(1.3596, -0.71367, -0.24),
-      ChVector3<>(-0.422, 0.49659, -0.24),
-      ChVector3<>(1.7232, -1.5822, -0.24),
-      ChVector3<>(0.048359, 0.21137, -0.24),
-      ChVector3<>(1.5273, -2.5145, -0.24),
-      ChVector3<>(0.26932, -0.4039, -0.24),
-      ChVector3<>(1.4294, -3.7086, -0.24),
-      ChVector3<>(0.45935, -1.3053, -0.24),
-      ChVector3<>(1.4357, -5.4693, -0.24),
-      ChVector3<>(0.43702, -2.2048, -0.24),
-      ChVector3<>(0.42572, -5.9832, -0.24),
-      ChVector3<>(0.29, -2.9696, -0.24),
-      ChVector3<>(-0.31011, -6.2391, -0.24),
+      ChVector3d(-1.7513, 0.88291, -0.24),
+      ChVector3d(-1.2546, 0.08584, -0.24),
+      ChVector3d(-1.0548, 0.6463, -0.24),
+      ChVector3d(1.3596, -0.71367, -0.24),
+      ChVector3d(-0.422, 0.49659, -0.24),
+      ChVector3d(1.7232, -1.5822, -0.24),
+      ChVector3d(0.048359, 0.21137, -0.24),
+      ChVector3d(1.5273, -2.5145, -0.24),
+      ChVector3d(0.26932, -0.4039, -0.24),
+      ChVector3d(1.4294, -3.7086, -0.24),
+      ChVector3d(0.45935, -1.3053, -0.24),
+      ChVector3d(1.4357, -5.4693, -0.24),
+      ChVector3d(0.43702, -2.2048, -0.24),
+      ChVector3d(0.42572, -5.9832, -0.24),
+      ChVector3d(0.29, -2.9696, -0.24),
+      ChVector3d(-0.31011, -6.2391, -0.24),
 
-      ChVector3<>(0.2511, -4.6653, -0.24),
-      ChVector3<>(-0.84832, -6.4183, -0.24),
-      ChVector3<>(-0.17387, -5.0, -0.24),
-      ChVector3<>(-1.4886, -6.2794, -0.24),
-      ChVector3<>(-0.519, -5.2637, -0.24),
-      ChVector3<>(-2.7153, -5.7845, -0.24),
-      ChVector3<>(-0.8987, -5.3569, -0.24),
-      ChVector3<>(-3.455, -5.6976, -0.24),
-      ChVector3<>(-1.5731, -5.4358, -0.24),
-      ChVector3<>(-3.8393, -5.4056, -0.24),
-      ChVector3<>(-2.0647, -5.16, -0.24),
-      ChVector3<>(-4.4641, -5.2733, -0.24),
-      ChVector3<>(-2.4413, -5.164, -0.24),
-      ChVector3<>(-4.8451, -4.9955, -0.24),
-      ChVector3<>(-2.8449, -5.1021, -0.24),
-      ChVector3<>(-5.1941, -4.6861, -0.24),
+      ChVector3d(0.2511, -4.6653, -0.24),
+      ChVector3d(-0.84832, -6.4183, -0.24),
+      ChVector3d(-0.17387, -5.0, -0.24),
+      ChVector3d(-1.4886, -6.2794, -0.24),
+      ChVector3d(-0.519, -5.2637, -0.24),
+      ChVector3d(-2.7153, -5.7845, -0.24),
+      ChVector3d(-0.8987, -5.3569, -0.24),
+      ChVector3d(-3.455, -5.6976, -0.24),
+      ChVector3d(-1.5731, -5.4358, -0.24),
+      ChVector3d(-3.8393, -5.4056, -0.24),
+      ChVector3d(-2.0647, -5.16, -0.24),
+      ChVector3d(-4.4641, -5.2733, -0.24),
+      ChVector3d(-2.4413, -5.164, -0.24),
+      ChVector3d(-4.8451, -4.9955, -0.24),
+      ChVector3d(-2.8449, -5.1021, -0.24),
+      ChVector3d(-5.1941, -4.6861, -0.24),
 
-      ChVector3<>(-3.5, -4.9796, -0.24),
-      ChVector3<>(-0.84832, -6.4183, -0.24),
-      ChVector3<>(-3.8379, -4.7264, -0.24),
-      ChVector3<>(-1.4886, -6.2794, -0.24),
-      ChVector3<>(-4.1242, -4.572, -0.24),
-      ChVector3<>(-2.7153, -5.7845, -0.24),
-      ChVector3<>(-4.5491, -4.2879, -0.24),
-      ChVector3<>(-3.455, -5.6976, -0.24),
-      ChVector3<>(-4.4093, -4.2266, -0.24),
-      ChVector3<>(-3.8393, -5.4056, -0.24),
-      ChVector3<>(-4.1837, -4.3619, -0.24),
-      ChVector3<>(-4.4641, -5.2733, -0.24),
-      ChVector3<>(-3.7624, -4.6589, -0.24),
-      ChVector3<>(-4.8451, -4.9955, -0.24),
-      ChVector3<>(-3.0384, -4.9674, -0.24),
-      ChVector3<>(-5.1941, -4.6861, -0.24),
+      ChVector3d(-3.5, -4.9796, -0.24),
+      ChVector3d(-0.84832, -6.4183, -0.24),
+      ChVector3d(-3.8379, -4.7264, -0.24),
+      ChVector3d(-1.4886, -6.2794, -0.24),
+      ChVector3d(-4.1242, -4.572, -0.24),
+      ChVector3d(-2.7153, -5.7845, -0.24),
+      ChVector3d(-4.5491, -4.2879, -0.24),
+      ChVector3d(-3.455, -5.6976, -0.24),
+      ChVector3d(-4.4093, -4.2266, -0.24),
+      ChVector3d(-3.8393, -5.4056, -0.24),
+      ChVector3d(-4.1837, -4.3619, -0.24),
+      ChVector3d(-4.4641, -5.2733, -0.24),
+      ChVector3d(-3.7624, -4.6589, -0.24),
+      ChVector3d(-4.8451, -4.9955, -0.24),
+      ChVector3d(-3.0384, -4.9674, -0.24),
+      ChVector3d(-5.1941, -4.6861, -0.24),
 
-      ChVector3<>(-2.351, -4.9441, -0.24),
-      ChVector3<>(-5.2459, -3.9942, -0.24),
-      ChVector3<>(-5.1885, -3.3619, -0.24),
-      ChVector3<>(-4.6484, -3.0405, -0.24),
-      ChVector3<>(-4.0247, -3.2546, -0.24),
-      ChVector3<>(-3.5223, -3.6743, -0.24),
-      ChVector3<>(-3.0137, -4.0342, -0.24),
-      ChVector3<>(-3.2747, -3.6302, -0.24),
-      ChVector3<>(-3.9402, -2.6624, -0.24),
+      ChVector3d(-2.351, -4.9441, -0.24),
+      ChVector3d(-5.2459, -3.9942, -0.24),
+      ChVector3d(-5.1885, -3.3619, -0.24),
+      ChVector3d(-4.6484, -3.0405, -0.24),
+      ChVector3d(-4.0247, -3.2546, -0.24),
+      ChVector3d(-3.5223, -3.6743, -0.24),
+      ChVector3d(-3.0137, -4.0342, -0.24),
+      ChVector3d(-3.2747, -3.6302, -0.24),
+      ChVector3d(-3.9402, -2.6624, -0.24),
   };
   addCones((*my_rccar.GetSystem()), cone_meshfile, cone_pos);
 
@@ -357,7 +357,7 @@ int main(int argc, char *argv[])
   // ------------------------------------------------
   // Create a camera and add it to the sensor manager
   // ------------------------------------------------
-  ChQuaternion<> cam_rot;
+  ChQuaterniond cam_rot;
   cam_rot.SetFromAngleAxis(0, {0, 1, 0});
   auto cam = chrono_types::make_shared<ChCameraSensor>(
       my_rccar.GetVehicle().GetChassisBody(), // body camera is attached to
@@ -377,7 +377,7 @@ int main(int argc, char *argv[])
   // ------------------------------------------------
   // Create a back-view camera and add it to the sensor manager
   // ------------------------------------------------
-  // ChQuaternion<> cam_rot2;
+  // ChQuaterniond cam_rot2;
   // cam_rot2.SetFromAngleAxis(CH_PI, {0, 0, 1});
   // auto cam2 = chrono_types::make_shared<ChCameraSensor>(
   //     my_rccar.GetVehicle().GetChassisBody(), // body camera is attached to
@@ -546,13 +546,11 @@ int main(int argc, char *argv[])
 }
 
 void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
-              std::vector<ChVector3<>> &cone_pos)
+              std::vector<ChVector3d> &cone_pos)
 {
   SetChronoDataPath(CHRONO_DATA_DIR);
   std::vector<std::shared_ptr<ChBodyAuxRef>> cone;
   double cone_density = 900;
-  std::shared_ptr<ChContactMaterial> rock_mat =
-      ChContactMaterial::DefaultMaterial(sys.GetContactMethod());
 
   for (int i = 0; i < cone_files.size(); i++)
   {
@@ -560,18 +558,18 @@ void addCones(ChSystem &sys, std::vector<std::string> &cone_files,
         GetChronoDataFile(cone_files[i]), true, true);
 
     double mass;
-    ChVector3<> cog;
+    ChVector3d cog;
     ChMatrix33<> inertia;
     mesh->ComputeMassProperties(true, mass, cog, inertia);
     ChMatrix33<> principal_inertia_rot;
-    ChVector3<> principal_I;
+    ChVector3d principal_I;
     ChInertiaUtils::PrincipalInertia(inertia, principal_I,
                                      principal_inertia_rot);
 
     auto body = chrono_types::make_shared<ChBodyAuxRef>();
     sys.Add(body);
     body->SetFixed(true);
-    body->SetFrameRefToAbs(ChFrame<>(ChVector3<>(cone_pos[i]), QUNIT));
+    body->SetFrameRefToAbs(ChFrame<>(cone_pos[i], QUNIT));
     body->SetFrameCOMToRef(ChFrame<>(cog, principal_inertia_rot));
     body->SetMass(mass * cone_density);
     body->SetInertiaXX(cone_density * principal_I);
