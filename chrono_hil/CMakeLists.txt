@@ -71,7 +71,17 @@ set(NETWORK_FILES
 source_group("network" FILES ${NETWORK_FILES})
 
 set(CXX_FLAGS ${CH_CXX_FLAGS})
-set(LIBRARIES ${CHRONO_LIBRARIES})
+
+set(LIBRARIES "")
+if(CHRONO_LIBRARIES)
+    list(APPEND LIBRARIES ${CHRONO_LIBRARIES})
+elseif(DEFINED CHRONO_TARGETS AND CHRONO_TARGETS)
+    list(APPEND LIBRARIES ${CHRONO_TARGETS})
+endif()
+
+if(NOT LIBRARIES)
+    message(FATAL_ERROR "Chrono libraries were not provided by the Chrono package; check the requested Chrono components.")
+endif()
 
 
 add_library(ChronoEngine_hil SHARED 
@@ -88,14 +98,25 @@ list(APPEND ALL_DLLS "${CHRONO_DLLS}" "${SDL2_DLL}")
 set(ALL_DLLS "${ALL_DLLS}" PARENT_SCOPE)
 
 find_package(Boost REQUIRED)
+
+set(_chrono_include_dirs "${CHRONO_INCLUDE_DIRS}")
+if(NOT _chrono_include_dirs AND TARGET Chrono::Chrono_core)
+    get_target_property(_chrono_core_includes Chrono::Chrono_core INTERFACE_INCLUDE_DIRECTORIES)
+    if(_chrono_core_includes)
+        set(_chrono_include_dirs "${_chrono_core_includes}")
+    endif()
+endif()
+
 find_path(HACD_INCLUDE_DIR
     NAMES hacdVersion.h
-    HINTS ${CHRONO_INCLUDE_DIRS}
+    HINTS ${_chrono_include_dirs}
     PATH_SUFFIXES chrono_thirdparty/HACD
 )
 if(NOT HACD_INCLUDE_DIR)
-    message(FATAL_ERROR "Could not locate hacdVersion.h from Chrono's HACD third-party.")
+    message(WARNING "HACD headers (hacdVersion.h) not found. Building chrono_hil without HACD support.")
+    set(HACD_INCLUDE_DIR "")  # dummy so it's defined
 endif()
+
 find_package(Eigen3 3.3 REQUIRED)
 
 
@@ -108,7 +129,7 @@ target_compile_definitions(ChronoEngine_hil PRIVATE "CH_IGNORE_DEPRECATED")
 
 target_include_directories(ChronoEngine_hil
     PUBLIC
-        ${CHRONO_INCLUDE_DIRS}
+        ${_chrono_include_dirs}
         ${Boost_INCLUDE_DIRS}
         ${HACD_INCLUDE_DIR}
     PRIVATE

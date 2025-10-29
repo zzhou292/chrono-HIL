@@ -67,6 +67,22 @@ find_package(Chrono
              CONFIG)
 find_package(SDL2 REQUIRED)
 
+# Chrono's CMake package recently switched to exported targets without always
+# populating the legacy CHRONO_INCLUDE_DIRS/CHRONO_LIBRARIES variables.
+# Capture the include directories and library targets directly from the
+# imported targets so downstream code that still expects those variables keeps
+# working.
+if((NOT DEFINED CHRONO_INCLUDE_DIRS OR NOT CHRONO_INCLUDE_DIRS) AND TARGET Chrono::Chrono_core)
+    get_target_property(_chrono_core_includes Chrono::Chrono_core INTERFACE_INCLUDE_DIRECTORIES)
+    if(_chrono_core_includes)
+        set(CHRONO_INCLUDE_DIRS "${_chrono_core_includes}")
+    endif()
+endif()
+
+if((NOT DEFINED CHRONO_LIBRARIES OR NOT CHRONO_LIBRARIES) AND DEFINED CHRONO_TARGETS AND CHRONO_TARGETS)
+    set(CHRONO_LIBRARIES "${CHRONO_TARGETS}")
+endif()
+
 #--------------------------------------------------------------
 # Return now if Chrono or a required component was not found.
 #--------------------------------------------------------------
