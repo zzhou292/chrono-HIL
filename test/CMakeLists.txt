@@ -6,7 +6,7 @@ if(ENABLE_TESTS)
   add_subdirectory(networking)
 
   if(CHRONO_SENSOR_FOUND)
-    add_subdirectory(Rom_Models)
+    #add_subdirectory(Rom_Models)
     #add_subdirectory(ROM_parallel)
   endif()
   

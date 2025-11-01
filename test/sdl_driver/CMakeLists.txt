@@ -28,6 +28,7 @@ if(NOT Chrono_FOUND)
   return()
 endif()
 
+find_package(SDL2 REQUIRED)
 
 #--------------------------------------------------------------
 # Include paths and libraries
@@ -78,9 +79,7 @@ foreach(PROGRAM ${DEMOS})
 
   target_compile_definitions(${PROGRAM} PUBLIC "CHRONO_DATA_DIR=\"${CHRONO_DATA_DIR}\"") 
   target_compile_definitions(${PROGRAM} PUBLIC "PROJECTS_DATA_DIR=\"${PROJECTS_DATA_DIR}\"") 
-  target_compile_options(${PROGRAM} PUBLIC ${CHRONO_CXX_FLAGS})
-  target_link_options(${PROGRAM} PUBLIC ${CH_LINKERFLAG_SHARED})
 
-	target_link_libraries(${PROGRAM} ${EXT_LIBRARIES} ${CHRONO_LIBRARIES} "-L/usr/local/cuda/lib64")# -lcudart")
+  target_link_libraries(${PROGRAM} ChronoEngine_hil ${SDL2_LIBRARIES})
 
 endforeach(PROGRAM)

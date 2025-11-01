@@ -10,7 +10,6 @@
 
 #include "chrono_irrlicht/ChVisualSystemIrrlicht.h"
 
-#include "chrono_vehicle/driver/ChInteractiveDriverIRR.h"
 #include "chrono_vehicle/wheeled_vehicle/ChWheeledVehicleVisualSystemIrrlicht.h"
 
 #include "chrono_models/vehicle/sedan/Sedan.h"
@@ -123,11 +122,11 @@ int main(int argc, char *argv[]) {
   auto cam = chrono_types::make_shared<ChCameraSensor>(
       rom_veh.GetChassisBody(), // body camera is attached to
       35,                       // update rate in Hz
-      chrono::ChFrame<double>(
-          ChVector3<>(0.0, 6.0, 2.5),
-          SetFromCardanAnglesXYZ(ChVector3<>(0.0, 0.15, -C_PI / 2))), // offset pose
-      1280,                                                   // image width
-      720,                                                    // image height
+      chrono::ChFrame<double>(ChVector3<>(0.0, 6.0, 2.5),
+                              SetFromCardanAnglesXYZ(ChVector3<>(
+                                  0.0, 0.15, -C_PI / 2))), // offset pose
+      1280,                                                // image width
+      720,                                                 // image height
       1.608f,
       1); // fov, lag, exposure
   cam->SetName("Camera Sensor");
@@ -141,11 +140,11 @@ int main(int argc, char *argv[]) {
   auto cam2 = chrono_types::make_shared<ChCameraSensor>(
       rom_veh.GetChassisBody(), // body camera is attached to
       35,                       // update rate in Hz
-      chrono::ChFrame<double>(
-          ChVector3<>(0.0, -5.0, 0.0),
-          SetFromCardanAnglesXYZ(ChVector3<>(0.0, 0.25, C_PI / 2))), // offset pose
-      1280,                                                  // image width
-      720,                                                   // image height
+      chrono::ChFrame<double>(ChVector3<>(0.0, -5.0, 0.0),
+                              SetFromCardanAnglesXYZ(ChVector3<>(
+                                  0.0, 0.25, C_PI / 2))), // offset pose
+      1280,                                               // image width
+      720,                                                // image height
       1.608f,
       1); // fov, lag, exposure
   cam2->SetName("Camera Sensor");

@@ -15,16 +15,14 @@
 #include "chrono/utils/ChUtilsInputOutput.h"
 
 #include "chrono/utils/ChUtilsInputOutput.h"
+#include "chrono_models/ChApiModels.h"
+#include "chrono_models/vehicle/ChVehicleModelDefs.h"
+#include "chrono_thirdparty/filesystem/path.h"
 #include "chrono_vehicle/ChConfigVehicle.h"
 #include "chrono_vehicle/ChVehicleModelData.h"
 #include "chrono_vehicle/driver/ChDataDriver.h"
-#include "chrono_vehicle/driver/ChInteractiveDriverIRR.h"
 #include "chrono_vehicle/terrain/RigidTerrain.h"
 #include "chrono_vehicle/wheeled_vehicle/ChWheeledVehicleVisualSystemIrrlicht.h"
-#include "chrono_thirdparty/filesystem/path.h"
-#include "chrono_vehicle/ChVehicleModelData.h"
-#include "chrono_models/ChApiModels.h"
-#include "chrono_models/vehicle/ChVehicleModelDefs.h"
 
 #include "chrono_hil/driver/ChSDLInterface.h"
 #include "chrono_hil/timer/ChRealtimeCumulative.h"
@@ -36,8 +34,8 @@
 #include "chrono_sensor/filters/ChFilterVisualize.h"
 #include "chrono_sensor/sensors/ChCameraSensor.h"
 
-#include "chrono_synchrono/SynConfig.h"
 #include "chrono_synchrono/SynChronoManager.h"
+#include "chrono_synchrono/SynConfig.h"
 #include "chrono_synchrono/agent/SynWheeledVehicleAgent.h"
 #include "chrono_synchrono/communication/mpi/SynMPICommunicator.h"
 #include "chrono_synchrono/controller/driver/SynMultiPathDriver.h"
@@ -103,22 +101,21 @@ double debug_step_size = 1.0 / 1; // FPS = 1
 
 // =============================================================================
 // path files
-std::string lane_0_path = (STRINGIFY(HIL_DATA_DIR)) + std::string("/large_ring/lane_0.txt");
-std::string lane_1_path = (STRINGIFY(HIL_DATA_DIR)) + std::string("/large_ring/lane_1.txt");
-std::string lane_2_path = (STRINGIFY(HIL_DATA_DIR)) + std::string("/large_ring/lane_2.txt");
+std::string lane_0_path =
+    (STRINGIFY(HIL_DATA_DIR)) + std::string("/large_ring/lane_0.txt");
+std::string lane_1_path =
+    (STRINGIFY(HIL_DATA_DIR)) + std::string("/large_ring/lane_1.txt");
+std::string lane_2_path =
+    (STRINGIFY(HIL_DATA_DIR)) + std::string("/large_ring/lane_2.txt");
 
 // =============================================================================
 void addTerrain(ChSystem &sys);
 // Forward declares for straight forward helper functions
-ChCoordsys<> GetVehicleConfig(int node_id,
-                              std::string &vehicle,
-                              std::string &engine,
-                              std::string &transmission,
-                              std::string &tire,
-                              std::string &zombie);
+ChCoordsys<> GetVehicleConfig(int node_id, std::string &vehicle,
+                              std::string &engine, std::string &transmission,
+                              std::string &tire, std::string &zombie);
 
-int main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   SetChronoDataPath(CHRONO_DATA_DIR);
   vehicle::SetDataPath(CHRONO_DATA_DIR + std::string("vehicle/"));
   synchrono::SetDataPath(CHRONO_DATA_DIR + std::string("synchrono/"));
@@ -145,7 +142,8 @@ int main(int argc, char *argv[])
   vehicle::SetDataPath(CHRONO_DATA_DIR + std::string("vehicle/"));
 
   // Get the vehicle JSON filenames and initial locations
-  std::string vehicle_filename, engine_filename, transmission_filename, tire_filename, zombie_filename;
+  std::string vehicle_filename, engine_filename, transmission_filename,
+      tire_filename, zombie_filename;
   auto initPos = GetVehicleConfig(node_id,               //
                                   vehicle_filename,      //
                                   engine_filename,       //
@@ -177,10 +175,8 @@ int main(int argc, char *argv[])
   vehicle.InitializePowertrain(powertrain);
 
   // Create and initialize the tires
-  for (auto &axle : vehicle.GetAxles())
-  {
-    for (auto &wheel : axle->GetWheels())
-    {
+  for (auto &axle : vehicle.GetAxles()) {
+    for (auto &wheel : axle->GetWheels()) {
       auto tire = ReadTireJSON(tire_filename);
       tire->SetStepsize(step_size / 20);
       vehicle.InitializeTire(tire, wheel, tire_vis_type);
@@ -191,7 +187,8 @@ int main(int argc, char *argv[])
   vehicle.GetSystem()->SetCollisionSystemType(ChCollisionSystem::Type::BULLET);
 
   // Add vehicle as an agent and initialize SynChronoManager
-  syn_manager.AddAgent(chrono_types::make_shared<SynWheeledVehicleAgent>(&vehicle, zombie_filename));
+  syn_manager.AddAgent(chrono_types::make_shared<SynWheeledVehicleAgent>(
+      &vehicle, zombie_filename));
   syn_manager.Initialize(vehicle.GetSystem());
 
   // Create the terrain
@@ -204,10 +201,12 @@ int main(int argc, char *argv[])
   auto patch_mat = minfo.CreateMaterial(contact_method);
 
   std::shared_ptr<RigidTerrain::Patch> patch;
-  switch (terrain_model)
-  {
+  switch (terrain_model) {
   case RigidTerrain::PatchType::BOX:
-    patch = terrain.AddPatch(patch_mat, ChCoordsys<>(ChVector3<>(0.0, 0.0, 0.2), ChQuaternion<>(1, 0, 0, 0)), terrainLength, terrainWidth, 1, false, 1, false);
+    patch = terrain.AddPatch(
+        patch_mat,
+        ChCoordsys<>(ChVector3<>(0.0, 0.0, 0.2), ChQuaternion<>(1, 0, 0, 0)),
+        terrainLength, terrainWidth, 1, false, 1, false);
 
     break;
   }
@@ -220,8 +219,7 @@ int main(int argc, char *argv[])
 
   // Create the vehicle Irrlicht interface
   auto vis = chrono_types::make_shared<ChWheeledVehicleVisualSystemIrrlicht>();
-  if (node_id == 0)
-  {
+  if (node_id == 0) {
     vis->SetWindowTitle("RCCar Demo");
     vis->SetChaseCamera(trackPoint, 20, 6.5);
     vis->Initialize();
@@ -236,11 +234,10 @@ int main(int argc, char *argv[])
   // ---------------------------------------------
   auto manager =
       chrono_types::make_shared<ChSensorManager>(vehicle.GetSystem());
-  if (node_id == 0)
-  {
+  if (node_id == 0) {
     float intensity = 2.0;
-    manager->scene->AddPointLight({0, 0, 1e8}, {intensity, intensity, intensity},
-                                  1e12);
+    manager->scene->AddPointLight({0, 0, 1e8},
+                                  {intensity, intensity, intensity}, 1e12);
     manager->scene->SetAmbientLight({0.5, 0.5, 0.5});
     manager->scene->SetSceneEpsilon(1e-3);
     manager->scene->EnableDynamicOrigin(true);
@@ -267,11 +264,12 @@ int main(int argc, char *argv[])
     ChQuaternion<> driver_view_direction(1, 0, 0, 0);
 
     auto cam = chrono_types::make_shared<ChCameraSensor>(
-        vehicle.GetChassisBody(),                                   // body camera is attached to
-        frame_rate,                                                 // update rate in Hz
-        chrono::ChFrame<double>(driver_eye, driver_view_direction), // offset pose
-        image_width,                                                // image width
-        image_height,                                               // image height
+        vehicle.GetChassisBody(), // body camera is attached to
+        frame_rate,               // update rate in Hz
+        chrono::ChFrame<double>(driver_eye,
+                                driver_view_direction), // offset pose
+        image_width,                                    // image width
+        image_height,                                   // image height
         cam_fov,
         super_samples); // fov, lag, exposure
     cam->SetName("Camera Sensor");
@@ -288,44 +286,40 @@ int main(int argc, char *argv[])
   ChSDLInterface SDLDriver;
   // Set the time response for steering and throttle keyboard inputs.
 
-  if (node_id == 0)
-  {
+  if (node_id == 0) {
     SDLDriver.Initialize();
 
-    std::string joystick_file =
-        (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
+    std::string joystick_file = (STRINGIFY(HIL_DATA_DIR)) +
+                                std::string("/joystick/controller_G27.json");
     SDLDriver.SetJoystickConfigFile(joystick_file);
   }
 
   // ------------------------
   // Create the path follower system
   // ------------------------
-  // Make node_id 2 slower so the passing looks nice, other parameters are normal car-following settings
+  // Make node_id 2 slower so the passing looks nice, other parameters are
+  // normal car-following settings
   double target_speed = node_id == 2 ? 16 : 12;
   double target_following_time = 1.2;
   double target_min_distance = 10;
   double current_distance = 100;
   std::shared_ptr<ChDriver> driver;
-  if (node_id != 0)
-  {
-    std::vector<std::shared_ptr<ChBezierCurve>> paths = {lane_0, lane_1, lane_2};
+  if (node_id != 0) {
+    std::vector<std::shared_ptr<ChBezierCurve>> paths = {lane_0, lane_1,
+                                                         lane_2};
     auto acc_driver = chrono_types::make_shared<ChMultiPathFollowerACCDriver>(
-        vehicle, paths, "Highway", target_speed, target_following_time, target_min_distance, current_distance);
+        vehicle, paths, "Highway", target_speed, target_following_time,
+        target_min_distance, current_distance);
 
     acc_driver->GetSpeedController().SetGains(0.6, 0.0, 0.0);
     acc_driver->GetSteeringController().SetGains(0.1, 0.01, 0.0);
     acc_driver->GetSteeringController().SetLookAheadDistance(10);
 
-    if (node_id == 1)
-    {
+    if (node_id == 1) {
       acc_driver->changePath(1);
-    }
-    else if (node_id == 2)
-    {
+    } else if (node_id == 2) {
       acc_driver->changePath(2);
-    }
-    else if (node_id == 3)
-    {
+    } else if (node_id == 3) {
       acc_driver->changePath(0);
     }
 
@@ -353,15 +347,13 @@ int main(int argc, char *argv[])
   if (node_id == 0)
     manager->Update();
 
-  while (true)
-  {
+  while (true) {
     if (syn_manager.IsOk() == false)
       break;
 
     double time = vehicle.GetSystem()->GetChTime();
 
-    if (step_number == 0)
-    {
+    if (step_number == 0) {
       realtime_timer.Reset();
     }
 
@@ -370,8 +362,7 @@ int main(int argc, char *argv[])
       break;
 
     // Render scene and output POV-Ray data
-    if (step_number % render_steps == 0 && node_id == 0)
-    {
+    if (step_number % render_steps == 0 && node_id == 0) {
       vis->BeginScene();
       vis->Render();
       vis->EndScene();
@@ -382,8 +373,7 @@ int main(int argc, char *argv[])
     // get the controls for this time step
     // Get driver inputs
 
-    if (step_number % 10 == 0 && node_id == 0)
-    {
+    if (step_number % 10 == 0 && node_id == 0) {
 
       driver_inputs.m_steering = SDLDriver.GetSteering();
       driver_inputs.m_throttle = SDLDriver.GetThrottle();
@@ -417,13 +407,13 @@ int main(int argc, char *argv[])
     // node_id 2 switch lane
     // randomization happens here
     if (node_id == 2 && std::abs(vehicle.GetSystem()->GetChTime() - 5.0) < 1e-2)
-      std::dynamic_pointer_cast<ChMultiPathFollowerACCDriver>(driver)->changePath(1);
+      std::dynamic_pointer_cast<ChMultiPathFollowerACCDriver>(driver)
+          ->changePath(1);
 
     if (node_id == 0)
       manager->Update();
 
-    if (node_id == 0 && SDLDriver.Synchronize() == 1)
-    {
+    if (node_id == 0 && SDLDriver.Synchronize() == 1) {
       break;
     }
   }
@@ -433,8 +423,7 @@ int main(int argc, char *argv[])
   return 0;
 }
 
-void addTerrain(ChSystem &sys)
-{
+void addTerrain(ChSystem &sys) {
   std::vector<std::shared_ptr<ChBodyAuxRef>> terrain;
   double terrain_density = 900;
   std::shared_ptr<ChContactMaterial> terrain_mat =
@@ -443,8 +432,8 @@ void addTerrain(ChSystem &sys)
   std::string terrain_file = std::string(STRINGIFY(HIL_DATA_DIR)) +
                              std::string("/large_ring/new/road_new.obj");
 
-  auto mesh = ChTriangleMeshConnected::CreateFromWavefrontFile(
-      terrain_file, true, true);
+  auto mesh = ChTriangleMeshConnected::CreateFromWavefrontFile(terrain_file,
+                                                               true, true);
 
   double mass;
   ChVector3<> cog;
@@ -452,8 +441,7 @@ void addTerrain(ChSystem &sys)
   mesh->ComputeMassProperties(true, mass, cog, inertia);
   ChMatrix33<> principal_inertia_rot;
   ChVector3<> principal_I;
-  ChInertiaUtils::PrincipalInertia(inertia, principal_I,
-                                   principal_inertia_rot);
+  ChInertiaUtils::PrincipalInertia(inertia, principal_I, principal_inertia_rot);
 
   auto body = chrono_types::make_shared<ChBodyAuxRef>();
   sys.Add(body);
@@ -471,21 +459,17 @@ void addTerrain(ChSystem &sys)
   body->AddVisualShape(mesh_shape);
 }
 
-ChCoordsys<> GetVehicleConfig(int node_id,
-                              std::string &vehicle,
-                              std::string &engine,
-                              std::string &transmission,
-                              std::string &tire,
-                              std::string &zombie)
-{
+ChCoordsys<> GetVehicleConfig(int node_id, std::string &vehicle,
+                              std::string &engine, std::string &transmission,
+                              std::string &tire, std::string &zombie) {
   ChVector3d initLoc;
   ChQuaternion<> initRot;
-  switch (node_id)
-  {
+  switch (node_id) {
   case 0:
     vehicle = vehicle::GetDataFile("truck/json/truck_Vehicle.json");
     engine = vehicle::GetDataFile("truck/json/truck_EngineSimple.json");
-    transmission = vehicle::GetDataFile("truck/json/truck_AutomaticTransmissionSimpleMap.json");
+    transmission = vehicle::GetDataFile(
+        "truck/json/truck_AutomaticTransmissionSimpleMap.json");
     tire = vehicle::GetDataFile("truck/json/truck_TMeasyTire.json");
     zombie = synchrono::GetDataFile("vehicle/truck.json");
     initLoc = ChVector3d(1000, 0, 0.5);
@@ -493,8 +477,10 @@ ChCoordsys<> GetVehicleConfig(int node_id,
     break;
   case 1:
     vehicle = vehicle::GetDataFile("citybus/vehicle/CityBus_Vehicle.json");
-    engine = vehicle::GetDataFile("citybus/powertrain/CityBus_EngineSimpleMap.json");
-    transmission = vehicle::GetDataFile("citybus/powertrain/CityBus_AutomaticTransmissionSimpleMap.json");
+    engine =
+        vehicle::GetDataFile("citybus/powertrain/CityBus_EngineSimpleMap.json");
+    transmission = vehicle::GetDataFile(
+        "citybus/powertrain/CityBus_AutomaticTransmissionSimpleMap.json");
     tire = vehicle::GetDataFile("citybus/tire/CityBus_TMeasyTire.json");
     zombie = synchrono::GetDataFile("vehicle/CityBus.json");
     initLoc = ChVector3d(1004, 35, 0.3);
@@ -502,8 +488,10 @@ ChCoordsys<> GetVehicleConfig(int node_id,
     break;
   case 2:
     vehicle = vehicle::GetDataFile("sedan/vehicle/Sedan_Vehicle.json");
-    engine = vehicle::GetDataFile("sedan/powertrain/Sedan_EngineSimpleMap.json");
-    transmission = vehicle::GetDataFile("sedan/powertrain/Sedan_AutomaticTransmissionSimpleMap.json");
+    engine =
+        vehicle::GetDataFile("sedan/powertrain/Sedan_EngineSimpleMap.json");
+    transmission = vehicle::GetDataFile(
+        "sedan/powertrain/Sedan_AutomaticTransmissionSimpleMap.json");
     tire = vehicle::GetDataFile("sedan/tire/Sedan_TMeasyTire.json");
     zombie = synchrono::GetDataFile("vehicle/Sedan.json");
     initLoc = ChVector3d(1006.5, 72.1, 0.15);
@@ -512,7 +500,8 @@ ChCoordsys<> GetVehicleConfig(int node_id,
   case 3:
     vehicle = vehicle::GetDataFile("Nissan_Patrol/json/suv_Vehicle.json");
     engine = vehicle::GetDataFile("Nissan_Patrol/json/suv_EngineSimple.json");
-    transmission = vehicle::GetDataFile("Nissan_Patrol/json/suv_AutomaticTransmissionSimpleMap.json");
+    transmission = vehicle::GetDataFile(
+        "Nissan_Patrol/json/suv_AutomaticTransmissionSimpleMap.json");
     tire = vehicle::GetDataFile("Nissan_Patrol/json/suv_TMeasyTire.json");
     zombie = vehicle::GetDataFile("Nissan_Patrol/json/suv.json");
     initLoc = ChVector3d(994, 110.6, 0.15);

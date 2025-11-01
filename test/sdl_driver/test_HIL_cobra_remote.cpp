@@ -9,7 +9,6 @@
 #include "chrono_hil/driver/ChSDLInterface.h"
 #include "chrono_hil/network/udp/ChBoostOutStreamer.h"
 
-#include "chrono_vehicle/driver/ChInteractiveDriverIRR.h"
 #include "chrono_vehicle/wheeled_vehicle/ChWheeledVehicleVisualSystemIrrlicht.h"
 
 #include "chrono_models/vehicle/sedan/Sedan.h"
