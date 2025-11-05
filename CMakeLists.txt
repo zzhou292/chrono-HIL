@@ -144,6 +144,7 @@ add_compile_options(-fPIC)
 add_subdirectory(project)
 add_subdirectory(chrono_hil)
 add_subdirectory(test)
+add_subdirectory(tools)
 
 
 

@@ -12,6 +12,10 @@ set(DRIVER_FILES
     #driver/joystick.h
 )
 
+if(NOT DEFINED ENABLE_MODULE_SENSOR)
+    set(ENABLE_MODULE_SENSOR ${Chrono_SENSOR_AVAILABLE})
+endif()
+
 if(ENABLE_MODULE_SENSOR)
     set(DRIVER_FILES ${DRIVER_FILES}
     driver/ChLidarWaypointDriver.h

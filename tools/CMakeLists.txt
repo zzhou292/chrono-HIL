@@ -1,0 +1,2 @@
+add_executable(sdl_controller_probe sdl_controller_probe.cpp)
+target_link_libraries(sdl_controller_probe PRIVATE SDL2::SDL2)

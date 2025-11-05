@@ -20,6 +20,8 @@
 // =============================================================================
 
 #include "ChLidarWaypointDriver.h"
+#include "chrono/core/ChRotation.h"
+#include "chrono/utils/ChUtils.h"
 #include "chrono_vehicle/wheeled_vehicle/vehicle/WheeledVehicle.h"
 
 #include <algorithm>
@@ -100,7 +102,7 @@ namespace chrono
       auto wheeled_vehicle = dynamic_cast<WheeledVehicle *>(&m_vehicle);
       double max_angle = wheeled_vehicle->GetMaxSteeringAngle();
       double curr_steering = m_steering;
-      ChQuaternion<> q = SetFromAngleZ(max_angle * curr_steering);
+      ChQuaternion<> q = QuatFromAngleZ(max_angle * curr_steering);
 
       UserXYZIBufferPtr xyzi_buffer =
           m_lidar->GetMostRecentBuffer<UserXYZIBufferPtr>();
@@ -157,8 +159,8 @@ namespace chrono
       double t;
       double t_actual;
       double min_dist = 1e6;
-      int segment = 0;
-      for (int i = 0; i < m_path->getNumPoints() - 1; i++)
+      size_t segment = 0;
+      for (size_t i = 0; i < m_path->GetNumPoints() - 1; i++)
       {
         ChVector3<> loc = m_path->CalcClosestPoint(curvature_location, i, t);
         double tmp_min_dist = (loc - curvature_location).Length();
@@ -170,7 +172,7 @@ namespace chrono
         }
       }
 
-      ChVector3<> d = m_path->evalD(segment, t_actual);
+      ChVector3<> d = m_path->EvalDer(segment, t_actual);
       d.Normalize();
       ChVector3<> heading = m_vehicle.GetRot().Rotate({1, 0, 0});
       double dotangle = d.Dot(heading);
