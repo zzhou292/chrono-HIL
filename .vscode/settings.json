@@ -78,5 +78,8 @@
         "*.ipp": "cpp",
         "*.txx": "cpp",
         "forward_list": "cpp"
-    }
+    },
+    "clangd.arguments": [
+    "--compile-commands-dir=build"
+  ]
 }
