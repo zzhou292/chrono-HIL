@@ -9,6 +9,8 @@ set(DRIVER_FILES
     driver/ChSDLInterface.cpp
     driver/ChIDM_Follower.h
     driver/ChIDM_Follower.cpp
+    driver/ChRecordedDriver.h
+    driver/ChRecordedDriver.cpp
     #driver/joystick.h
 )
 

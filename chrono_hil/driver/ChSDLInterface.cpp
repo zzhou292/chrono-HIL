@@ -32,35 +32,73 @@ ChSDLInterface::~ChSDLInterface() {
 }
 void ChSDLInterface::Initialize() {
 
-  // Initialize the joystick subsystem
-  SDL_Init(SDL_INIT_JOYSTICK);
+  if (SDL_Init(SDL_INIT_JOYSTICK) < 0) {
+        printf("SDL_Init failed: %s\n", SDL_GetError());
+        return;
+    }
 
-  // If there are no joysticks connected, quit the program
-  if (SDL_NumJoysticks() <= 0) {
-    printf("There are no joysticks connected. Quitting now...\n");
-    SDL_Quit();
-  }
+    int num_joy = SDL_NumJoysticks();
+    if (num_joy <= 0) {
+        printf("There are no joysticks connected. Quitting now...\n");
+        SDL_Quit();
+        return;
+    }
 
-  // Open the joystick for reading and store its handle in the joy variable
-  m_joystick = SDL_JoystickOpen(0);
+    printf("Found %d joystick(s):\n", num_joy);
+    for (int i = 0; i < num_joy; ++i) {
+        const char* name = SDL_JoystickNameForIndex(i);
+        printf("  [%d] %s\n", i, name ? name : "(unknown)");
+    }
 
-  // If the joy variable is NULL, there was an error opening it.
-  if (m_joystick != NULL) {
-    // Get information about the joystick
-    const char *name = SDL_JoystickName(m_joystick);
-    const int num_axes = SDL_JoystickNumAxes(m_joystick);
-    const int num_buttons = SDL_JoystickNumButtons(m_joystick);
-    const int num_hats = SDL_JoystickNumHats(m_joystick);
+    // Optional: env var to force a particular device by substring
+    const char* preferred_substr = std::getenv("CHRONO_JOYSTICK_NAME");
 
-    printf("Detected joystick '%s' with:\n"
-           "%d axes\n"
-           "%d buttons\n"
-           "%d hats\n\n",
-           name, num_axes, num_buttons, num_hats);
+    int chosen_index = -1;
+    for (int i = 0; i < num_joy; ++i) {
+        const char* name = SDL_JoystickNameForIndex(i);
+        if (!name)
+            continue;
 
-  } else {
-    printf("Couldn't open the joystick. Quitting now...\n");
-  }
+        // If user specified a preferred name substring, use that
+        if (preferred_substr && std::strstr(name, preferred_substr)) {
+            chosen_index = i;
+            break;
+        }
+
+        // Otherwise, skip obvious non-gamepad devices (tweak these as needed)
+        if (!preferred_substr) {
+            if (std::strstr(name, "Keyboard") ||
+                std::strstr(name, "KVM")) {
+                continue;
+            }
+
+            // First non-keyboard/KVM device wins
+            if (chosen_index == -1)
+                chosen_index = i;
+        }
+    }
+
+    // If nothing matched, just fall back to 0
+    if (chosen_index == -1)
+        chosen_index = 0;
+
+    printf("Opening joystick index %d\n", chosen_index);
+    m_joystick = SDL_JoystickOpen(chosen_index);
+
+    if (m_joystick != NULL) {
+        const char *name = SDL_JoystickName(m_joystick);
+        const int num_axes    = SDL_JoystickNumAxes(m_joystick);
+        const int num_buttons = SDL_JoystickNumButtons(m_joystick);
+        const int num_hats    = SDL_JoystickNumHats(m_joystick);
+
+        printf("Using joystick '%s' with:\n"
+               "  %d axes\n"
+               "  %d buttons\n"
+               "  %d hats\n\n",
+               name ? name : "(unknown)", num_axes, num_buttons, num_hats);
+    } else {
+        printf("Couldn't open the joystick: %s\n", SDL_GetError());
+    }
 }
 
 void ChSDLInterface::SetJoystickConfigFile(std::string config_filename) {
