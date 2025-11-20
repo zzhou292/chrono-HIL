@@ -22,6 +22,9 @@ find_package(Chrono
              CONFIG
 )
 find_package(SDL2 REQUIRED)
+find_package(rclcpp QUIET)
+find_package(geometry_msgs QUIET)
+find_package(teleop_bridge_msgs QUIET)
 
 # If Chrono and/or the required component(s) were not found, return now.
 if(NOT Chrono_FOUND)
@@ -29,6 +32,11 @@ if(NOT Chrono_FOUND)
   return()
 endif()
 
+if(rclcpp_FOUND AND geometry_msgs_FOUND AND teleop_bridge_msgs_FOUND)
+  set(HAVE_ROS2_BRIDGE ON)
+else()
+  set(HAVE_ROS2_BRIDGE OFF)
+endif()
 
 
 
@@ -65,5 +73,20 @@ foreach(PROGRAM ${DEMOS})
           Chrono::Chrono_irrlicht
           SDL2::SDL2
   )
+
+  if(PROGRAM STREQUAL "proj_HIL_teleopcity")
+    if(HAVE_ROS2_BRIDGE)
+      target_sources(${PROGRAM} PRIVATE Ros2Bridge.cpp)
+      target_compile_definitions(${PROGRAM} PRIVATE ENABLE_ROS2_BRIDGE)
+      target_link_libraries(${PROGRAM}
+        PRIVATE
+          rclcpp::rclcpp
+          teleop_bridge_msgs::teleop_bridge_msgs__rosidl_generator_cpp
+          teleop_bridge_msgs::teleop_bridge_msgs__rosidl_typesupport_cpp
+      )
+    else()
+      message(STATUS "ROS2 bridge disabled for ${PROGRAM} (missing ROS2 dependencies)")
+    endif()
+  endif()
 
 endforeach(PROGRAM)

@@ -20,7 +20,6 @@
 #include <chrono>
 
 #include "chrono_hil/driver/ChIDM_Follower.h"
-#include "chrono_hil/driver/ChRecordedDriver.h"
 #include "chrono_vehicle/driver/ChPathFollowerDriver.h"
 #include "chrono_hil/driver/ChCSLDriver.h"
 #include "chrono_hil/driver/ChNSF_Drivers.h"
@@ -55,6 +54,8 @@
 #include "chrono_vehicle/powertrain/ChAutomaticTransmissionSimpleMap.h"
 #include "chrono/physics/ChInertiaUtils.h"
 
+#include "project/Teleop/Ros2Bridge.h"
+
 #include "chrono_hil/network/udp/ChBoostOutStreamer.h"
 #include "chrono_hil/network/sim/ChDelaySim.h"
 
@@ -62,6 +63,8 @@
 #include <iomanip>
 #include <sstream>
 #include <algorithm>
+#include <limits>
+#include <cmath>
 
 using namespace chrono;
 using namespace chrono::irrlicht;
@@ -118,42 +121,51 @@ std::string delay_config_file = "network/delay_configs/delay_config.json";
 bool record_mode = false;
 bool recording_active = false;
 double record_interval = 0.02;
-std::string record_output_file = "recorded_path.json";
+std::string record_output_file = "recorded_path.csv";
 int auto_toggle_button = 6;
 int record_toggle_button = 2;
 int finish_record_button = 1;
-bool use_recorded_inputs_default = true;
+bool enable_ros_bridge = false;
 
-struct WaypointSample
+std::vector<ChVector3d> recorded_positions;
+
+enum class SpeedProfileType
 {
-  double time;
-  ChVector3d pos;
-  ChQuaterniond rot;
-  DriverInputs inputs;
+  VELOCITY,
+  ACCELERATION
 };
 
-std::vector<WaypointSample> recorded_samples;
+struct SpeedProfileSegment
+{
+  double start_time = 0.0;
+  double end_time = std::numeric_limits<double>::infinity();
+  bool until_end = false;
+  bool has_explicit_end = false;
+  double value = 0.0;
+};
 
 struct ActorPlayback
 {
   std::shared_ptr<WheeledVehicle> vehicle;
   std::shared_ptr<ChPathFollowerDriver> path_driver;
   std::shared_ptr<ChPowertrainAssembly> powertrain;
-  std::vector<WaypointSample> samples;
-  std::vector<double> sample_times;
-  std::vector<double> segment_speeds;
+  std::vector<ChVector3d> waypoints;
   double start_time = 0.0;
-  double speed_override = -1.0; // meters per second, negative uses recorded profile
   double look_ahead_distance = -1.0;
   double path_spacing = 0.5;
   double smoothing_window = 0.0;
   double steering_kp = -1.0;
-  double steering_ki = -1.0;
-  double steering_kd = -1.0;
+  double steering_ki = 0.0;
+  double steering_kd = 0.0;
   bool active = false;
-  std::vector<ChRecordedDriver::Sample> input_samples;
-  std::shared_ptr<ChRecordedDriver> recorded_driver;
-  bool use_recorded_inputs = false;
+  SpeedProfileType profile_type = SpeedProfileType::VELOCITY;
+  std::vector<SpeedProfileSegment> profile_segments;
+  double initial_speed = 0.0;
+  double current_speed = 0.0;
+  double last_profile_time = 0.0;
+  bool profile_defined = false;
+  bool goal_reached = false;
+  double max_decel = 3.0;
 };
 
 std::string actors_config_file = "";
@@ -169,13 +181,13 @@ void AddCommandLineOptions(ChCLI &cli)
   cli.AddOption<std::string>("Simulation", "delay_config",
                              "Path to delay configuration JSON file",
                              delay_config_file);
+  cli.AddOption<bool>("Simulation", "ros_bridge", "Enable ROS2 safety bridge", "false");
   cli.AddOption<bool>("Recording", "record_mode", "Enable waypoint recording mode", "false");
   cli.AddOption<std::string>("Recording", "record_output", "Output file path for recorded waypoints", record_output_file);
   cli.AddOption<double>("Recording", "record_interval", "Minimum time between recorded samples (seconds)", std::to_string(record_interval));
   cli.AddOption<int>("Recording", "auto_button", "Joystick button index for auto/manual toggle", std::to_string(auto_toggle_button));
   cli.AddOption<int>("Recording", "record_button", "Joystick button index for record toggle", std::to_string(record_toggle_button));
   cli.AddOption<int>("Recording", "finish_button", "Joystick button index to finish recording and exit", std::to_string(finish_record_button));
-  cli.AddOption<bool>("Playback", "use_recorded_inputs_default", "Use recorded inputs when available (fallback to path follower otherwise)", use_recorded_inputs_default ? "true" : "false");
   cli.AddOption<std::string>("Playback", "actors_config", "Path to actor playback configuration file", actors_config_file);
 }
 // =============================================================================
@@ -292,7 +304,7 @@ std::vector<float> deserializeFloats(const std::vector<char> &byteVec)
 
 // =============================================================================
 
-std::vector<ChVector3d> BuildResampledPoints(const std::vector<WaypointSample> &samples,
+std::vector<ChVector3d> BuildResampledPoints(const std::vector<ChVector3d> &samples,
                                              double spacing)
 {
   std::vector<ChVector3d> points;
@@ -300,12 +312,12 @@ std::vector<ChVector3d> BuildResampledPoints(const std::vector<WaypointSample> &
     return points;
 
   spacing = std::max(1e-3, spacing);
-  points.push_back(samples.front().pos);
+  points.push_back(samples.front());
 
   for (size_t i = 0; i + 1 < samples.size(); ++i)
   {
-    ChVector3d start = samples[i].pos;
-    ChVector3d end = samples[i + 1].pos;
+    ChVector3d start = samples[i];
+    ChVector3d end = samples[i + 1];
     ChVector3d delta = end - start;
     double seg_len = delta.Length();
     if (seg_len < 1e-6)
@@ -354,133 +366,210 @@ std::vector<ChVector3d> SmoothPathPoints(const std::vector<ChVector3d> &points,
   return smoothed;
 }
 
-bool LoadRecordedPathFile(const std::string &filename, std::vector<WaypointSample> &out_samples, bool &out_has_inputs)
+ChQuaterniond EstimateInitialRotation(const std::vector<ChVector3d> &points)
 {
-  std::ifstream ifs(filename);
-  if (!ifs.is_open())
+  if (points.size() < 2)
+    return QUNIT;
+
+  ChVector3d dir = points[1] - points[0];
+  dir.z() = 0.0;
+  if (dir.Length2() < 1e-8)
+    return QUNIT;
+  dir.Normalize();
+  double yaw = std::atan2(dir.y(), dir.x());
+  ChQuaterniond rot;
+  rot.SetFromAngleZ(yaw);
+  return rot;
+}
+
+bool LoadWaypointCSV(const std::string &filename, std::vector<ChVector3d> &out_points)
+{
+  std::ifstream infile(filename);
+  if (!infile.is_open())
   {
-    std::cerr << "Unable to open recorded waypoint file: " << filename << std::endl;
+    std::cerr << "Unable to open waypoint CSV: " << filename << std::endl;
     return false;
   }
 
-  std::stringstream buffer;
-  buffer << ifs.rdbuf();
-
-  rapidjson::Document d;
-  d.Parse(buffer.str().c_str());
-  if (d.HasParseError())
+  out_points.clear();
+  std::string line;
+  while (std::getline(infile, line))
   {
-    std::cerr << "Failed to parse waypoint file: " << filename << std::endl;
-    return false;
-  }
-  if (!d.IsObject() || !d.HasMember("samples") || !d["samples"].IsArray())
-  {
-    std::cerr << "Waypoint file missing 'samples' array: " << filename << std::endl;
-    return false;
-  }
-
-  out_samples.clear();
-  out_has_inputs = false;
-  const auto &samples = d["samples"].GetArray();
-  out_samples.reserve(samples.Size());
-  for (const auto &entry : samples)
-  {
-    if (!entry.IsObject())
+    if (line.empty())
       continue;
-    if (!entry.HasMember("time") || !entry.HasMember("pos") || !entry.HasMember("rot"))
+    if (line[0] == '#')
       continue;
-    const auto &pos_arr = entry["pos"];
-    const auto &rot_arr = entry["rot"];
-    if (!pos_arr.IsArray() || pos_arr.Size() != 3 || !rot_arr.IsArray() || rot_arr.Size() != 4)
-      continue;
-
-    WaypointSample sample;
-    sample.time = entry["time"].GetDouble();
-    sample.pos = ChVector3d(pos_arr[0].GetDouble(), pos_arr[1].GetDouble(), pos_arr[2].GetDouble());
-    sample.rot = ChQuaterniond(rot_arr[0].GetDouble(), rot_arr[1].GetDouble(), rot_arr[2].GetDouble(), rot_arr[3].GetDouble());
-    if (entry.HasMember("inputs"))
+    std::stringstream ss(line);
+    double x, y, z;
+    char delim;
+    if (!(ss >> x))
     {
-      const auto &inp_arr = entry["inputs"];
-      if (inp_arr.IsArray() && inp_arr.Size() == 3)
-      {
-        sample.inputs.m_steering = inp_arr[0].GetDouble();
-        sample.inputs.m_throttle = inp_arr[1].GetDouble();
-        sample.inputs.m_braking = inp_arr[2].GetDouble();
-        out_has_inputs = true;
-      }
-      else
-      {
-        sample.inputs = DriverInputs();
-      }
+      continue; // skip header or invalid lines
     }
-    else
-    {
-      sample.inputs = DriverInputs();
-    }
-
-    out_samples.push_back(sample);
+    if (ss.peek() == ',' || ss.peek() == ';')
+      ss >> delim;
+    if (!(ss >> y))
+      continue;
+    if (ss.peek() == ',' || ss.peek() == ';')
+      ss >> delim;
+    if (!(ss >> z))
+      continue;
+    out_points.emplace_back(x, y, z);
   }
 
-  if (out_samples.empty())
+  if (out_points.size() < 2)
   {
-    std::cerr << "No valid samples found in " << filename << std::endl;
+    std::cerr << "Waypoint CSV must contain at least two points: " << filename << std::endl;
     return false;
-  }
-
-  double t0 = out_samples.front().time;
-  for (auto &sample : out_samples)
-  {
-    sample.time -= t0;
   }
 
   return true;
 }
 
-void BuildPlaybackTiming(ActorPlayback &actor)
+bool ParseSpeedProfileJSON(const rapidjson::Value &profile_json, ActorPlayback &actor)
 {
-  actor.sample_times.clear();
-  actor.segment_speeds.clear();
-
-  if (actor.samples.empty())
-    return;
-
-  actor.sample_times.reserve(actor.samples.size());
-  for (const auto &sample : actor.samples)
+  if (!profile_json.IsObject() || !profile_json.HasMember("type") || !profile_json.HasMember("entries"))
   {
-    actor.sample_times.push_back(sample.time);
+    std::cerr << "Speed profile must contain 'type' and 'entries'.\n";
+    return false;
   }
 
-  for (size_t i = 0; i + 1 < actor.samples.size(); ++i)
+  std::string type = profile_json["type"].GetString();
+  if (type == "velocity")
   {
-    double dt = actor.samples[i + 1].time - actor.samples[i].time;
-    double dist = (actor.samples[i + 1].pos - actor.samples[i].pos).Length();
-    if (dt <= 1e-6)
-      actor.segment_speeds.push_back(0.0);
-    else
-      actor.segment_speeds.push_back(dist / dt);
+    actor.profile_type = SpeedProfileType::VELOCITY;
+    actor.initial_speed = 0.0;
+    actor.max_decel = profile_json.HasMember("max_decel") ? profile_json["max_decel"].GetDouble() : 3.0;
+    if (actor.max_decel < 0.1)
+      actor.max_decel = 3.0;
+  }
+  else if (type == "acceleration")
+  {
+    actor.profile_type = SpeedProfileType::ACCELERATION;
+    actor.initial_speed = profile_json.HasMember("initial_speed") ? profile_json["initial_speed"].GetDouble() : 0.0;
+    actor.current_speed = actor.initial_speed;
+    actor.max_decel = profile_json.HasMember("max_decel") ? std::max(0.1, profile_json["max_decel"].GetDouble()) : 3.0;
+  }
+  else
+  {
+    std::cerr << "Unknown speed profile type: " << type << "\n";
+    return false;
   }
 
-  if (!actor.segment_speeds.empty())
+  const auto &entries = profile_json["entries"];
+  if (!entries.IsArray() || entries.Empty())
   {
-    actor.segment_speeds.push_back(actor.segment_speeds.back());
+    std::cerr << "Speed profile entries must be a non-empty array.\n";
+    return false;
   }
+
+  actor.profile_segments.clear();
+  for (const auto &entry : entries.GetArray())
+  {
+    if (!entry.HasMember("start_time") || !entry.HasMember("value"))
+    {
+      std::cerr << "Each speed profile entry must have 'start_time' and 'value'.\n";
+      return false;
+    }
+
+    SpeedProfileSegment seg;
+    seg.start_time = entry["start_time"].GetDouble();
+    seg.value = entry["value"].GetDouble();
+    seg.until_end = entry.HasMember("until_end") && entry["until_end"].GetBool();
+    if (entry.HasMember("end_time"))
+    {
+      seg.end_time = entry["end_time"].GetDouble();
+      seg.has_explicit_end = true;
+    }
+    else if (entry.HasMember("duration"))
+    {
+      seg.end_time = seg.start_time + entry["duration"].GetDouble();
+      seg.has_explicit_end = true;
+    }
+    else if (seg.until_end)
+    {
+      seg.end_time = std::numeric_limits<double>::infinity();
+    }
+    actor.profile_segments.push_back(seg);
+  }
+
+  std::sort(actor.profile_segments.begin(), actor.profile_segments.end(),
+            [](const SpeedProfileSegment &a, const SpeedProfileSegment &b) { return a.start_time < b.start_time; });
+
+  for (size_t i = 0; i + 1 < actor.profile_segments.size(); ++i)
+  {
+    auto &seg = actor.profile_segments[i];
+    auto &next = actor.profile_segments[i + 1];
+    if (!seg.until_end && !seg.has_explicit_end)
+    {
+      seg.end_time = next.start_time;
+    }
+    else if (!seg.until_end && seg.end_time > next.start_time)
+    {
+      seg.end_time = next.start_time;
+    }
+  }
+
+  actor.profile_defined = true;
+  actor.last_profile_time = 0.0;
+  if (actor.profile_type == SpeedProfileType::VELOCITY)
+  {
+    actor.initial_speed = actor.profile_segments.front().value;
+    actor.current_speed = actor.initial_speed;
+  }
+  else
+  {
+    actor.current_speed = actor.initial_speed;
+  }
+  return true;
 }
 
-double RecordedSpeedAtTime(const ActorPlayback &actor, double local_time)
+const SpeedProfileSegment *GetActiveSegment(const ActorPlayback &actor, double local_time)
 {
-  if (actor.segment_speeds.empty() || actor.sample_times.empty())
+  const SpeedProfileSegment *active = nullptr;
+  for (const auto &segment : actor.profile_segments)
+  {
+    if (local_time < segment.start_time)
+      break;
+    if (segment.until_end || local_time < segment.end_time)
+      active = &segment;
+  }
+  return active;
+}
+
+double EvaluateDesiredSpeed(ActorPlayback &actor, double local_time, double step, bool within_stop_zone)
+{
+  if (!actor.profile_defined || actor.profile_segments.empty())
     return 0.0;
 
-  if (local_time <= actor.sample_times.front())
-    return actor.segment_speeds.front();
-
-  for (size_t i = 0; i + 1 < actor.sample_times.size(); ++i)
+  const SpeedProfileSegment *segment = GetActiveSegment(actor, local_time);
+  if (actor.profile_type == SpeedProfileType::VELOCITY)
   {
-    if (local_time < actor.sample_times[i + 1])
-      return actor.segment_speeds[i];
+    double target = segment ? std::max(0.0, segment->value) : 0.0;
+    double dt = step;
+    if (within_stop_zone)
+    {
+      actor.current_speed = std::max(0.0, actor.current_speed - actor.max_decel * dt);
+      target = std::min(target, actor.current_speed);
+    }
+    else
+    {
+      actor.current_speed = target;
+    }
+    return target;
   }
 
-  return actor.segment_speeds.back();
+  double accel = segment ? segment->value : 0.0;
+  double dt = local_time - actor.last_profile_time;
+  if (dt < 0.0 || dt > 1.0)
+    dt = step;
+  if (within_stop_zone && accel > 0)
+  {
+    accel = -actor.max_decel;
+  }
+  actor.current_speed = std::max(0.0, actor.current_speed + accel * dt);
+  actor.last_profile_time = local_time;
+  return actor.current_speed;
 }
 
 bool InitializePlaybackActors(const std::string &config_path,
@@ -522,15 +611,6 @@ bool InitializePlaybackActors(const std::string &config_path,
 
     ActorPlayback actor;
     actor.start_time = actor_entry.HasMember("start_time") ? actor_entry["start_time"].GetDouble() : 0.0;
-    actor.speed_override = -1.0;
-    if (actor_entry.HasMember("target_speed_mps"))
-    {
-      actor.speed_override = actor_entry["target_speed_mps"].GetDouble();
-    }
-    else if (actor_entry.HasMember("target_speed_mph"))
-    {
-      actor.speed_override = actor_entry["target_speed_mph"].GetDouble() * MPH_TO_MS;
-    }
     if (actor_entry.HasMember("look_ahead"))
     {
       actor.look_ahead_distance = actor_entry["look_ahead"].GetDouble();
@@ -555,42 +635,54 @@ bool InitializePlaybackActors(const std::string &config_path,
     {
       actor.steering_kd = actor_entry["steering_kd"].GetDouble();
     }
-    bool actor_force_path = false;
-    if (actor_entry.HasMember("force_path_follower"))
-    {
-      actor_force_path = actor_entry["force_path_follower"].GetBool();
-    }
-
     std::string path_file = actor_entry["path_file"].GetString();
-    bool has_input_data = false;
-    if (!LoadRecordedPathFile(path_file, actor.samples, has_input_data))
+    if (!LoadWaypointCSV(path_file, actor.waypoints))
     {
       std::cerr << "Skipping actor due to failed path load: " << path_file << std::endl;
       continue;
     }
-    BuildPlaybackTiming(actor);
-
-    actor.input_samples.clear();
-    actor.input_samples.reserve(actor.samples.size());
-    for (const auto &sample : actor.samples)
+    if (!actor_entry.HasMember("speed_profile"))
     {
-      ChRecordedDriver::Sample rs;
-      rs.time = sample.time;
-      rs.inputs = sample.inputs;
-      actor.input_samples.push_back(rs);
+      std::cerr << "Actor entry missing speed_profile; skipping.\n";
+      continue;
     }
-    actor.use_recorded_inputs = (!actor_force_path) && use_recorded_inputs_default && has_input_data && actor.input_samples.size() > 1;
+    if (!ParseSpeedProfileJSON(actor_entry["speed_profile"], actor))
+    {
+      std::cerr << "Failed to parse speed profile for actor path " << path_file << std::endl;
+      continue;
+    }
 
-    std::vector<ChVector3d> path_points = BuildResampledPoints(actor.samples, actor.path_spacing);
+    std::vector<ChVector3d> path_points = BuildResampledPoints(actor.waypoints, actor.path_spacing);
+    // if (!path_points.empty())
+    // {
+    //   ChVector3d last = path_points.back();
+    //   if (path_points.size() >= 2)
+    //   {
+    //     ChVector3d dir = path_points.back() - path_points[path_points.size() - 2];
+    //     double len = dir.Length();
+    //     if (len > 1e-6)
+    //     {
+    //       dir /= len;
+    //       double tail_length = std::max(3.0, actor.look_ahead_distance > 0.0 ? actor.look_ahead_distance : 3.0);
+    //       path_points.push_back(last + dir * tail_length);
+    //     }
+    //   }
+    //   else
+    //   {
+    //     path_points.push_back(last);
+    //   }
+    // }
     if (actor.smoothing_window > 0.0)
     {
       path_points = SmoothPathPoints(path_points, actor.path_spacing, actor.smoothing_window);
     }
     auto path_curve = chrono_types::make_shared<ChBezierCurve>(path_points, false);
+    actor.waypoints = path_points;
 
     auto actor_vehicle = chrono_types::make_shared<WheeledVehicle>(reference_vehicle.GetSystem(), vehicle_filename);
     actor_vehicle->SetCollisionSystemType(ChCollisionSystem::Type::BULLET);
-    actor_vehicle->Initialize(ChCoordsys<>(actor.samples.front().pos, actor.samples.front().rot));
+    ChQuaterniond start_rot = EstimateInitialRotation(path_points);
+    actor_vehicle->Initialize(ChCoordsys<>(path_points.front(), start_rot));
     actor_vehicle->GetChassis()->SetFixed(false);
     actor_vehicle->SetChassisVisualizationType(VisualizationType::MESH);
     actor_vehicle->SetSuspensionVisualizationType(VisualizationType::PRIMITIVES);
@@ -611,34 +703,15 @@ bool InitializePlaybackActors(const std::string &config_path,
         actor_vehicle->InitializeTire(tire, wheel, VisualizationType::MESH);
       }
     }
-
-    if (actor.use_recorded_inputs)
+    auto driver = chrono_types::make_shared<ChPathFollowerDriver>(*actor_vehicle, steering_file, speed_file, path_curve,
+                                                                  "actor_path", 0.0);
+    if (actor.look_ahead_distance > 0.0)
     {
-      actor.recorded_driver = chrono_types::make_shared<ChRecordedDriver>(*actor_vehicle, actor.input_samples);
+      driver->GetSteeringController().SetLookAheadDistance(actor.look_ahead_distance);
     }
-    else
-    {
-      auto driver = chrono_types::make_shared<ChPathFollowerDriver>(*actor_vehicle, steering_file, speed_file, path_curve,
-                                                                    "actor_path", std::max(0.0, actor.speed_override));
-      if (actor.look_ahead_distance > 0.0)
-      {
-        driver->GetSteeringController().SetLookAheadDistance(actor.look_ahead_distance);
-      }
-      if (actor.steering_kp >= 0.0)
-      {
-        driver->GetSteeringController().SetGains(actor.steering_kp, actor.steering_ki, actor.steering_kd);
-      }
-      driver->Initialize();
-      if (actor.speed_override < 0 && !actor.segment_speeds.empty())
-      {
-        driver->SetDesiredSpeed(actor.segment_speeds.front());
-      }
-      else if (actor.speed_override >= 0)
-      {
-        driver->SetDesiredSpeed(actor.speed_override);
-      }
-      actor.path_driver = driver;
-    }
+    driver->GetSteeringController().SetGains(actor.steering_kp, actor.steering_ki, actor.steering_kd);
+    driver->Initialize();
+    actor.path_driver = driver;
 
     actor.vehicle = actor_vehicle;
     actor.active = (actor.start_time <= 0.0);
@@ -688,12 +761,12 @@ int main(int argc, char *argv[])
   record_toggle_button = cli.GetAsType<int>("record_button");
   finish_record_button = cli.GetAsType<int>("finish_button");
   actors_config_file = cli.GetAsType<std::string>("actors_config");
-  use_recorded_inputs_default = cli.GetAsType<bool>("use_recorded_inputs_default");
+  enable_ros_bridge = cli.GetAsType<bool>("ros_bridge");
   if (record_interval <= 0.0)
   {
     record_interval = 0.1;
   }
-  recorded_samples.clear();
+  recorded_positions.clear();
   if (record_mode)
   {
     std::cout << "Recording mode enabled. Use button " << record_toggle_button
@@ -816,6 +889,25 @@ int main(int argc, char *argv[])
     SDLDriver.AddCallbackButtons(finish_record_button);
   }
 
+#ifdef ENABLE_ROS2_BRIDGE
+  std::unique_ptr<Ros2Bridge> ros_bridge;
+  if (enable_ros_bridge)
+  {
+    Ros2BridgeConfig ros_config;
+    ros_config.enabled = true;
+    ros_bridge = Ros2Bridge::Create(ros_config);
+    if (!ros_bridge)
+    {
+      std::cout << "ROS2 bridge requested but initialization failed; continuing without it." << std::endl;
+    }
+  }
+#else
+  if (enable_ros_bridge)
+  {
+    std::cout << "ROS2 bridge requested but Chrono was built without ROS2 dependencies." << std::endl;
+  }
+#endif
+
   // ---------------------------------
   // Add sensor manager and simulation
   // ---------------------------------
@@ -868,6 +960,7 @@ int main(int argc, char *argv[])
   ChBoostOutStreamer boost_streamer(UNITY_IP_OUT, UNITY_PORT_OUT);
 
   DriverInputs driver_inputs;
+  DriverInputs raw_inputs;
 
   addObjs(*my_vehicle.GetSystem());
 
@@ -944,9 +1037,8 @@ int main(int argc, char *argv[])
   bool finish_requested = false;
   double last_recorded_time = -1.0;
 
-  auto capture_sample = [&](double sample_time, const ChVector3d &sample_pos,
-                            const ChQuaterniond &sample_rot, const DriverInputs &sample_inputs) {
-    recorded_samples.push_back({sample_time, sample_pos, sample_rot, sample_inputs});
+  auto capture_sample = [&](double sample_time, const ChVector3d &sample_pos) {
+    recorded_positions.push_back(sample_pos);
     last_recorded_time = sample_time;
   };
 
@@ -1009,12 +1101,39 @@ int main(int argc, char *argv[])
         }
       }
     }
+    raw_inputs = driver_inputs;
+
+#ifdef ENABLE_ROS2_BRIDGE
+    if (ros_bridge)
+    {
+      if (auto cmd = ros_bridge->GetSafetyCommand())
+      {
+        if (cmd->valid)
+        {
+          double alpha = cmd->throttle;
+          if (alpha >= 0.0)
+          {
+            driver_inputs.m_throttle = alpha;
+            driver_inputs.m_braking = 0.0;
+          }
+          else
+          {
+            driver_inputs.m_throttle = 0.0;
+            driver_inputs.m_braking = -alpha;
+          }
+          driver_inputs.m_steering = cmd->steering;
+        }
+      }
+      ros_bridge->PublishDriverInput(time, auto_mode, raw_inputs, driver_inputs);
+      ros_bridge->PublishEgoState(time, my_vehicle, driver_inputs.m_steering, driver_inputs.m_steering);
+    }
+#endif
 
     if (record_mode && recording_active)
     {
       if (last_recorded_time < 0.0 || (time - last_recorded_time) >= record_interval)
       {
-        capture_sample(time, pos, rot, driver_inputs);
+        capture_sample(time, pos);
       }
     }
 
@@ -1030,9 +1149,16 @@ int main(int argc, char *argv[])
     terrain.Advance(step_size);
     my_vehicle.Advance(step_size);
     // vis->Advance(step_size);
+#ifdef ENABLE_ROS2_BRIDGE
+    std::vector<TrackedVehicleState> ros_actor_states;
+    if (ros_bridge)
+    {
+      ros_actor_states.reserve(playback_actors.size());
+    }
+#endif
     for (auto &actor : playback_actors)
     {
-      if (!actor.vehicle || (!actor.path_driver && !actor.recorded_driver))
+      if (!actor.vehicle || !actor.path_driver)
         continue;
 
       if (!actor.active)
@@ -1040,17 +1166,10 @@ int main(int argc, char *argv[])
         if (time >= actor.start_time)
         {
           actor.active = true;
-          if (actor.recorded_driver)
-          {
-            actor.recorded_driver->Reset();
-          }
-          if (actor.path_driver)
-          {
-            actor.path_driver->Reset();
-            double initial_speed = (actor.speed_override >= 0.0) ? actor.speed_override
-                                                                : (!actor.segment_speeds.empty() ? actor.segment_speeds.front() : 0.0);
-            actor.path_driver->SetDesiredSpeed(initial_speed);
-          }
+          actor.path_driver->Reset();
+          actor.current_speed = actor.initial_speed;
+          actor.last_profile_time = 0.0;
+          actor.goal_reached = false;
         }
         else
         {
@@ -1059,26 +1178,74 @@ int main(int argc, char *argv[])
       }
 
       double local_time = time - actor.start_time;
+      ChVector3d goal = actor.waypoints.back();
+      double dist_to_goal = (actor.vehicle->GetChassis()->GetPos() - goal).Length();
+      double slowdown_dist = actor.look_ahead_distance > 0.0 ? std::max(30.0, actor.look_ahead_distance * 3) : 6.0;
+      bool within_stop_zone = (!actor.goal_reached && dist_to_goal < slowdown_dist);
+      double steering_scale = 1.0;
 
-      if (actor.recorded_driver)
+      double desired_speed = EvaluateDesiredSpeed(actor, local_time, step_size, within_stop_zone);
+
+      if (within_stop_zone && dist_to_goal > 1.0)
       {
-        actor.recorded_driver->Synchronize(local_time);
-        actor.recorded_driver->Advance(step_size);
-        DriverInputs actor_inputs = actor.recorded_driver->GetInputs();
-        actor.vehicle->Synchronize(time, actor_inputs, terrain);
-        actor.vehicle->Advance(step_size);
+        double ramp = std::clamp(dist_to_goal / slowdown_dist, 0.0, 1.0);
+        steering_scale = ramp;
+        actor.current_speed = desired_speed;
       }
-      else if (actor.path_driver)
+
+      if (dist_to_goal < 1.0)
       {
-        double desired_speed = (actor.speed_override >= 0.0) ? actor.speed_override : RecordedSpeedAtTime(actor, local_time);
+        desired_speed = 0.0;
+        actor.current_speed = 0.0;
+        actor.goal_reached = true;
+      }
+
+      DriverInputs actor_inputs;
+      if (!actor.goal_reached)
+      {
         actor.path_driver->SetDesiredSpeed(desired_speed);
         actor.path_driver->Synchronize(time);
         actor.path_driver->Advance(step_size);
-        DriverInputs actor_inputs = actor.path_driver->GetInputs();
-        actor.vehicle->Synchronize(time, actor_inputs, terrain);
-        actor.vehicle->Advance(step_size);
+        actor_inputs = actor.path_driver->GetInputs();
+        actor_inputs.m_steering *= steering_scale;
+      }
+      else
+      {
+        actor_inputs.m_throttle = 0.0;
+        actor_inputs.m_braking = 1.0;
+        actor_inputs.m_steering = 0.0;
+      }
+      actor.vehicle->Synchronize(time, actor_inputs, terrain);
+      actor.vehicle->Advance(step_size);
+#ifdef ENABLE_ROS2_BRIDGE
+      if (ros_bridge)
+      {
+        TrackedVehicleState state;
+        state.id = static_cast<uint32_t>(&actor - &playback_actors[0]);
+        state.label = "path";
+        state.active = actor.active;
+        auto body = actor.vehicle->GetChassisBody();
+        state.pos = body->GetPos();
+        state.rot = body->GetRot();
+        state.lin_vel = body->GetPosDt();
+        ros_actor_states.push_back(state);
+      }
+#endif
+    }
+
+#ifdef ENABLE_ROS2_BRIDGE
+    if (ros_bridge)
+    {
+      ros_bridge->PublishActors(time, ros_actor_states);
+      if (auto warning = ros_bridge->GetWarningStatus())
+      {
+        if (warning->warning)
+        {
+          std::cout << "[ROS2] Predictive warning score: " << warning->score << std::endl;
+        }
       }
     }
+#endif
 
     manager->Update();
 
@@ -1137,12 +1304,12 @@ int main(int argc, char *argv[])
           if (recording_active)
           {
             last_recorded_time = -1.0;
-            capture_sample(time, pos, rot, driver_inputs);
+            capture_sample(time, pos);
             std::cout << "Recording started: " << record_output_file << std::endl;
           }
           else
           {
-            capture_sample(time, pos, rot, driver_inputs);
+            capture_sample(time, pos);
             std::cout << "Recording paused." << std::endl;
           }
           last_record_toggle = button_now;
@@ -1154,7 +1321,7 @@ int main(int argc, char *argv[])
         {
           if (recording_active)
           {
-            capture_sample(time, pos, rot, driver_inputs);
+            capture_sample(time, pos);
             recording_active = false;
             std::cout << "Recording stopped by finish command." << std::endl;
           }
@@ -1192,7 +1359,7 @@ int main(int argc, char *argv[])
   }
   if (record_mode)
   {
-    if (!recorded_samples.empty())
+    if (!recorded_positions.empty())
     {
       std::ofstream record_stream(record_output_file);
       if (!record_stream.is_open())
@@ -1201,22 +1368,13 @@ int main(int argc, char *argv[])
       }
       else
       {
-        record_stream << "{\n  \"samples\": [\n";
         record_stream << std::setprecision(16);
-        for (size_t i = 0; i < recorded_samples.size(); ++i)
+        record_stream << "x,y,z\n";
+        for (const auto &pos : recorded_positions)
         {
-          const auto &sample = recorded_samples[i];
-          record_stream << "    {\"time\": " << sample.time << ", \"pos\": [" << sample.pos.x() << ", " << sample.pos.y() << ", " << sample.pos.z()
-                        << "], \"rot\": [" << sample.rot.e0() << ", " << sample.rot.e1() << ", " << sample.rot.e2() << ", " << sample.rot.e3()
-                        << "], \"inputs\": [" << sample.inputs.m_steering << ", " << sample.inputs.m_throttle << ", " << sample.inputs.m_braking << "]}";
-          if (i + 1 < recorded_samples.size())
-          {
-            record_stream << ",";
-          }
-          record_stream << "\n";
+          record_stream << pos.x() << "," << pos.y() << "," << pos.z() << "\n";
         }
-        record_stream << "  ]\n}\n";
-        std::cout << "Waypoint recording written to " << record_output_file << " (" << recorded_samples.size() << " samples)." << std::endl;
+        std::cout << "Waypoint recording written to " << record_output_file << " (" << recorded_positions.size() << " samples)." << std::endl;
       }
     }
     else
