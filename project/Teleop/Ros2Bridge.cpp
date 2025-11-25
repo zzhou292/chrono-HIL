@@ -82,7 +82,7 @@ void Ros2Bridge::PublishDriverInput(double time, int auto_mode, const DriverInpu
     return;
 
   teleop_bridge_msgs::msg::DriverInput msg;
-  msg.stamp = ToRosTime(time);
+  msg.stamp = node_->get_clock()->now();
   msg.auto_mode = auto_mode != 0;
   msg.raw_steering = static_cast<float>(raw_inputs.m_steering);
   msg.raw_throttle = static_cast<float>(raw_inputs.m_throttle);
@@ -98,7 +98,7 @@ void Ros2Bridge::PublishEgoState(double time, const WheeledVehicle &vehicle, dou
   if (!ego_pub_)
     return;
   teleop_bridge_msgs::msg::EgoState msg;
-  msg.stamp = ToRosTime(time);
+  msg.stamp = node_->get_clock()->now();
 
   auto chassis = vehicle.GetChassisBody();
   msg.pose = ToPose(chassis->GetPos(), chassis->GetRot());
@@ -124,7 +124,7 @@ void Ros2Bridge::PublishActors(double time, const std::vector<TrackedVehicleStat
     return;
 
   teleop_bridge_msgs::msg::TrackedVehicleArray array_msg;
-  array_msg.stamp = ToRosTime(time);
+  array_msg.stamp = node_->get_clock()->now();
   array_msg.vehicles.reserve(actors.size());
   for (const auto &actor : actors)
   {
@@ -164,6 +164,15 @@ void Ros2Bridge::ControlCommandCallback(const teleop_bridge_msgs::msg::ControlCo
 {
   std::lock_guard<std::mutex> lock(command_mutex_);
   latest_command_ = *msg;
+
+  rclcpp::Time now = node_->get_clock()->now();
+  rclcpp::Time msg_time(msg->stamp);
+  double latency = (now - msg_time).seconds();
+  // Log every 100th message to avoid spam
+  static int count = 0;
+  if (count++ % 100 == 0) {
+    RCLCPP_INFO(node_->get_logger(), "Round-trip latency: %.4f s", latency);
+  }
 }
 
 void Ros2Bridge::WarningCallback(const teleop_bridge_msgs::msg::WarningStatus::SharedPtr msg)

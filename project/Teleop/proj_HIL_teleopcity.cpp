@@ -859,7 +859,7 @@ int main(int argc, char *argv[])
   // Create a Irrlicht vis
   // ------------------------
   // ChVector3d trackPoint(0.0, 0.0, 1.75);
-  // int render_step = 20;
+  // int render_step = 20; 
   // auto vis =
   //     chrono_types::make_shared<ChWheeledVehicleVisualSystemIrrlicht>();
   // vis->SetWindowTitle("NADS");
@@ -893,6 +893,7 @@ int main(int argc, char *argv[])
   std::unique_ptr<Ros2Bridge> ros_bridge;
   if (enable_ros_bridge)
   {
+    std::cout << "Initializing ROS2 bridge..." << std::endl;
     Ros2BridgeConfig ros_config;
     ros_config.enabled = true;
     ros_bridge = Ros2Bridge::Create(ros_config);
@@ -1042,6 +1043,12 @@ int main(int argc, char *argv[])
     last_recorded_time = sample_time;
   };
 
+#ifdef ENABLE_ROS2_BRIDGE
+  teleop_bridge_msgs::msg::ControlCommand last_safety_cmd;
+  double last_safety_time = -1.0;
+  const double SAFETY_CMD_TIMEOUT = 0.2; // 200ms timeout
+#endif
+
   // simulation loop
   while (true)
   {
@@ -1073,7 +1080,8 @@ int main(int argc, char *argv[])
       break;
 #endif
 
-    if (step_number % 10 == 0)
+    // Run Control & Comms at 50Hz (20ms) to match ROS rate
+    if (step_number % 20 == 0)
     {
       // Create a vector of floats
       std::vector<float> floats = {static_cast<float>(auto_mode), SDLDriver.GetSteering(), SDLDriver.GetThrottle(), SDLDriver.GetBraking()};
@@ -1088,44 +1096,58 @@ int main(int argc, char *argv[])
       {
         // Deserialize the data back to floats
         std::vector<float> receivedFloats = deserializeFloats(receivedData);
-        if (receivedFloats[0] == 0)
+        if (receivedFloats[0] == 0) // manual mode
         {
           driver_inputs.m_steering = receivedFloats[1];
           driver_inputs.m_throttle = receivedFloats[2];
           driver_inputs.m_braking = receivedFloats[3];
+
+          // std::cout << "Manual: " << driver_inputs.m_steering << " " << driver_inputs.m_throttle << " " << driver_inputs.m_braking << std::endl;
         }
         else
         {
           driver_inputs = PFdriver->GetInputs();
-          // std::cout << driver_inputs.m_steering << " " << driver_inputs.m_throttle << " " << driver_inputs.m_braking << std::endl;
         }
       }
-    }
-    raw_inputs = driver_inputs;
+      
+      // Update raw inputs snapshot for logging/publishing
+      raw_inputs = driver_inputs;
 
 #ifdef ENABLE_ROS2_BRIDGE
-    if (ros_bridge)
-    {
-      if (auto cmd = ros_bridge->GetSafetyCommand())
+      if (ros_bridge)
       {
-        if (cmd->valid)
+        // Check for new command
+        if (auto cmd = ros_bridge->GetSafetyCommand())
         {
-          double alpha = cmd->throttle;
-          if (alpha >= 0.0)
+          if (cmd->valid)
           {
-            driver_inputs.m_throttle = alpha;
-            driver_inputs.m_braking = 0.0;
+            last_safety_cmd = *cmd;
+            last_safety_time = time;
           }
-          else
-          {
-            driver_inputs.m_throttle = 0.0;
-            driver_inputs.m_braking = -alpha;
-          }
-          driver_inputs.m_steering = cmd->steering;
         }
+        
+        ros_bridge->PublishDriverInput(time, auto_mode, raw_inputs, driver_inputs);
+        ros_bridge->PublishEgoState(time, my_vehicle, driver_inputs.m_steering, driver_inputs.m_steering);
       }
-      ros_bridge->PublishDriverInput(time, auto_mode, raw_inputs, driver_inputs);
-      ros_bridge->PublishEgoState(time, my_vehicle, driver_inputs.m_steering, driver_inputs.m_steering);
+#endif
+    }
+
+#ifdef ENABLE_ROS2_BRIDGE
+    // Apply safety command (Persistent override with timeout)
+    if (ros_bridge && last_safety_time > 0 && (time - last_safety_time) < SAFETY_CMD_TIMEOUT)
+    {
+        double alpha = last_safety_cmd.throttle;
+        if (alpha >= 0.0)
+        {
+          driver_inputs.m_throttle = alpha;
+          driver_inputs.m_braking = 0.0;
+        }
+        else
+        {
+          driver_inputs.m_throttle = 0.0;
+          driver_inputs.m_braking = -alpha;
+        }
+        driver_inputs.m_steering = last_safety_cmd.steering;
     }
 #endif
 
@@ -1161,6 +1183,7 @@ int main(int argc, char *argv[])
       if (!actor.vehicle || !actor.path_driver)
         continue;
 
+      // Activation Logic
       if (!actor.active)
       {
         if (time >= actor.start_time)
@@ -1171,52 +1194,64 @@ int main(int argc, char *argv[])
           actor.last_profile_time = 0.0;
           actor.goal_reached = false;
         }
+      }
+
+      // Physics Logic (only if active)
+      if (actor.active)
+      {
+        double local_time = time - actor.start_time;
+        ChVector3d goal = actor.waypoints.back();
+        double dist_to_goal = (actor.vehicle->GetChassis()->GetPos() - goal).Length();
+        double slowdown_dist = actor.look_ahead_distance > 0.0 ? std::max(30.0, actor.look_ahead_distance * 3) : 6.0;
+        bool within_stop_zone = (!actor.goal_reached && dist_to_goal < slowdown_dist);
+        double steering_scale = 1.0;
+
+        double desired_speed = EvaluateDesiredSpeed(actor, local_time, step_size, within_stop_zone);
+
+        if (within_stop_zone && dist_to_goal > 1.0)
+        {
+          double ramp = std::clamp(dist_to_goal / slowdown_dist, 0.0, 1.0);
+          steering_scale = ramp;
+          actor.current_speed = desired_speed;
+        }
+
+        if (dist_to_goal < 1.0)
+        {
+          desired_speed = 0.0;
+          actor.current_speed = 0.0;
+          actor.goal_reached = true;
+        }
+
+        DriverInputs actor_inputs;
+        if (!actor.goal_reached)
+        {
+          actor.path_driver->SetDesiredSpeed(desired_speed);
+          actor.path_driver->Synchronize(time);
+          actor.path_driver->Advance(step_size);
+          actor_inputs = actor.path_driver->GetInputs();
+          actor_inputs.m_steering *= steering_scale;
+        }
         else
         {
-          continue;
+          actor_inputs.m_throttle = 0.0;
+          actor_inputs.m_braking = 1.0;
+          actor_inputs.m_steering = 0.0;
         }
+        actor.vehicle->Synchronize(time, actor_inputs, terrain);
+        actor.vehicle->Advance(step_size);
       }
-
-      double local_time = time - actor.start_time;
-      ChVector3d goal = actor.waypoints.back();
-      double dist_to_goal = (actor.vehicle->GetChassis()->GetPos() - goal).Length();
-      double slowdown_dist = actor.look_ahead_distance > 0.0 ? std::max(30.0, actor.look_ahead_distance * 3) : 6.0;
-      bool within_stop_zone = (!actor.goal_reached && dist_to_goal < slowdown_dist);
-      double steering_scale = 1.0;
-
-      double desired_speed = EvaluateDesiredSpeed(actor, local_time, step_size, within_stop_zone);
-
-      if (within_stop_zone && dist_to_goal > 1.0)
+      else 
       {
-        double ramp = std::clamp(dist_to_goal / slowdown_dist, 0.0, 1.0);
-        steering_scale = ramp;
-        actor.current_speed = desired_speed;
+        // Ensure inactive vehicles are synchronized to keep them in the world (visuals/collision)
+        // but apply full brakes to keep them in place
+        DriverInputs hold_inputs;
+        hold_inputs.m_throttle = 0.0;
+        hold_inputs.m_braking = 1.0;
+        hold_inputs.m_steering = 0.0;
+        actor.vehicle->Synchronize(time, hold_inputs, terrain);
+        actor.vehicle->Advance(step_size);
       }
 
-      if (dist_to_goal < 1.0)
-      {
-        desired_speed = 0.0;
-        actor.current_speed = 0.0;
-        actor.goal_reached = true;
-      }
-
-      DriverInputs actor_inputs;
-      if (!actor.goal_reached)
-      {
-        actor.path_driver->SetDesiredSpeed(desired_speed);
-        actor.path_driver->Synchronize(time);
-        actor.path_driver->Advance(step_size);
-        actor_inputs = actor.path_driver->GetInputs();
-        actor_inputs.m_steering *= steering_scale;
-      }
-      else
-      {
-        actor_inputs.m_throttle = 0.0;
-        actor_inputs.m_braking = 1.0;
-        actor_inputs.m_steering = 0.0;
-      }
-      actor.vehicle->Synchronize(time, actor_inputs, terrain);
-      actor.vehicle->Advance(step_size);
 #ifdef ENABLE_ROS2_BRIDGE
       if (ros_bridge)
       {
