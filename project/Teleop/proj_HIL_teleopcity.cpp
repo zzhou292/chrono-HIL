@@ -53,6 +53,7 @@
 #include "chrono_vehicle/ChTransmission.h"
 #include "chrono_vehicle/powertrain/ChAutomaticTransmissionSimpleMap.h"
 #include "chrono/physics/ChInertiaUtils.h"
+#include "chrono/physics/ChBodyEasy.h"
 
 #include "project/Teleop/Ros2Bridge.h"
 
@@ -182,7 +183,7 @@ void AddCommandLineOptions(ChCLI &cli)
                              "Path to delay configuration JSON file",
                              delay_config_file);
   cli.AddOption<bool>("Simulation", "ros_bridge", "Enable ROS2 safety bridge", "false");
-  cli.AddOption<bool>("Recording", "record_mode", "Enable waypoint recording mode", "false");
+  cli.AddOption<bool>("Simulation", "record_mode", "Enable waypoint recording mode", "false");
   cli.AddOption<std::string>("Recording", "record_output", "Output file path for recorded waypoints", record_output_file);
   cli.AddOption<double>("Recording", "record_interval", "Minimum time between recorded samples (seconds)", std::to_string(record_interval));
   cli.AddOption<int>("Recording", "auto_button", "Joystick button index for auto/manual toggle", std::to_string(auto_toggle_button));
@@ -948,6 +949,21 @@ int main(int argc, char *argv[])
   driver_cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
   manager->AddSensor(driver_cam);
 
+  // Create warning indicators (Green and Red spheres)
+  auto indicator_green = chrono_types::make_shared<ChBodyEasySphere>(0.15, 100, true, false);
+  indicator_green->SetPos(ChVector3d(0, 0, -100));
+  indicator_green->SetFixed(true);
+  indicator_green->EnableCollision(false);
+  indicator_green->GetVisualShape(0)->SetColor(ChColor(0.0f, 1.0f, 0.0f)); // Green
+  my_vehicle.GetSystem()->Add(indicator_green);
+
+  auto indicator_red = chrono_types::make_shared<ChBodyEasySphere>(0.15, 100, true, false);
+  indicator_red->SetPos(ChVector3d(0, 0, -100));
+  indicator_red->SetFixed(true);
+  indicator_red->EnableCollision(false);
+  indicator_red->GetVisualShape(0)->SetColor(ChColor(1.0f, 0.0f, 0.0f)); // Red
+  my_vehicle.GetSystem()->Add(indicator_red);
+
   // Initialize simulation frame counters
   int step_number = 0;
 
@@ -1047,6 +1063,7 @@ int main(int argc, char *argv[])
   teleop_bridge_msgs::msg::ControlCommand last_safety_cmd;
   double last_safety_time = -1.0;
   const double SAFETY_CMD_TIMEOUT = 0.2; // 200ms timeout
+  bool warning_active = false;
 #endif
 
   // simulation loop
@@ -1274,10 +1291,26 @@ int main(int argc, char *argv[])
       ros_bridge->PublishActors(time, ros_actor_states);
       if (auto warning = ros_bridge->GetWarningStatus())
       {
+        warning_active = warning->warning;
+        // Debug: Print score to see if it changes
+        // std::cout << "[ROS2] Warning: " << warning_active << " Score: " << warning->score << std::endl;
         if (warning->warning)
         {
           std::cout << "[ROS2] Predictive warning score: " << warning->score << std::endl;
         }
+      }
+
+      // Update indicator position (fixed relative to chassis, in front of driver)
+      // Camera is at {0.54, .381, 1.04}, place sphere 2m in front
+      ChVector3d sphere_local_pos(2.54, 0.381, 1.04); 
+      ChVector3d sphere_global_pos = my_vehicle.GetChassisBody()->TransformPointLocalToParent(sphere_local_pos);
+      
+      if (warning_active) {
+          indicator_red->SetPos(sphere_global_pos);
+          indicator_green->SetPos(ChVector3d(0, 0, -100));
+      } else {
+          indicator_green->SetPos(sphere_global_pos);
+          indicator_red->SetPos(ChVector3d(0, 0, -100));
       }
     }
 #endif
