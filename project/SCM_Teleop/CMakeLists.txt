@@ -1,6 +1,6 @@
 #=============================================================================
-# CMake configuration file for the SynChrono Highway project - an extended
-#   demo of a highway environment, interfaced to a human-driven simulator
+# CMake configuration file for the SCM Teleop project - deformable terrain
+#   teleoperation demo with sensor visualization
 #=============================================================================
 
 #--------------------------------------------------------------
@@ -8,8 +8,7 @@
 #--------------------------------------------------------------
 
 set(DEMOS
-    proj_HIL_teleoprc
-  proj_HIL_teleopcity
+    proj_HIL_scm_teleop
 )
 
 #--------------------------------------------------------------
@@ -28,7 +27,7 @@ find_package(teleop_bridge_msgs QUIET)
 
 # If Chrono and/or the required component(s) were not found, return now.
 if(NOT Chrono_FOUND)
-  message("Could not find requirements for the SynChrono Highway Project")
+  message("Could not find requirements for the SCM Teleop Project")
   return()
 endif()
 
@@ -38,13 +37,11 @@ else()
   set(HAVE_ROS2_BRIDGE OFF)
 endif()
 
-
-
 #--------------------------------------------------------------
 # Include paths and libraries
 #--------------------------------------------------------------
 
-message(STATUS "Projects for SynChrono Highway...")
+message(STATUS "Projects for SCM Teleop...")
 
 foreach(PROGRAM ${DEMOS})
 
@@ -74,20 +71,7 @@ foreach(PROGRAM ${DEMOS})
           SDL2::SDL2
   )
 
-  if(PROGRAM STREQUAL "proj_HIL_teleopcity")
-    if(HAVE_ROS2_BRIDGE)
-      target_sources(${PROGRAM} PRIVATE Ros2Bridge.cpp)
-      target_compile_definitions(${PROGRAM} PRIVATE ENABLE_ROS2_BRIDGE)
-      target_link_libraries(${PROGRAM}
-        PRIVATE
-          rclcpp::rclcpp
-          teleop_bridge_msgs::teleop_bridge_msgs__rosidl_generator_cpp
-          teleop_bridge_msgs::teleop_bridge_msgs__rosidl_typesupport_cpp
-      )
-    else()
-      message(STATUS "ROS2 bridge disabled for ${PROGRAM} (missing ROS2 dependencies)")
-    endif()
-  elseif(PROGRAM STREQUAL "proj_HIL_teleop_deformable")
+  if(PROGRAM STREQUAL "proj_HIL_scm_teleop")
     if(HAVE_ROS2_BRIDGE)
       target_sources(${PROGRAM} PRIVATE Ros2Bridge.cpp)
       target_compile_definitions(${PROGRAM} PRIVATE ENABLE_ROS2_BRIDGE)
