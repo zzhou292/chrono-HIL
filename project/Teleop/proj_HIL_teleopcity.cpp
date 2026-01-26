@@ -109,6 +109,7 @@ const int UNITY_PORT_OUT = 1209;
 const double rads2rpm = 30 / CH_PI;
 
 // =============================================================================
+// std::string scenario_filename = "experiment.json";
 std::string scenario_filename = "test_parameters_1.json";
 std::vector<std::string> obj_filenames;
 std::vector<ChVector3d> obj_pos;
@@ -124,8 +125,8 @@ bool recording_active = false;
 double record_interval = 0.02;
 std::string record_output_file = "recorded_path.csv";
 int auto_toggle_button = 6;
-int record_toggle_button = 2;
-int finish_record_button = 1;
+int record_toggle_button = 18;
+int finish_record_button = 19;
 bool enable_ros_bridge = false;
 
 std::vector<ChVector3d> recorded_positions;
@@ -827,6 +828,13 @@ int main(int argc, char *argv[])
   std::shared_ptr<RigidTerrain::Patch> patch;
 
   // add terrain patch (this is used for collision i.e. is the physical terrain that the vehicle interacts with)
+  // patch = terrain.AddPatch(patch_mat, CSYSNORM,
+  //                          std::string(STRINGIFY(HIL_DATA_DIR)) +
+  //                              "/Environments/map_project/remote.obj",
+  //                          true, 0, false);
+
+  
+  // add terrain patch (this is used for collision i.e. is the physical terrain that the vehicle interacts with)
   patch = terrain.AddPatch(patch_mat, CSYSNORM,
                            std::string(STRINGIFY(HIL_DATA_DIR)) +
                                "/Environments/nads/newnads/terrain.obj",
@@ -838,7 +846,10 @@ int main(int argc, char *argv[])
 
   // add vis mesh (this is used for visualization only)
   auto terrain_mesh = chrono_types::make_shared<ChTriangleMeshConnected>();
-  terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
+  // terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
+  //                                     "/Environments/map_project/remote.obj",
+  //                                 true, true);
+    terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
                                       "/Environments/nads/newnads/terrain.obj",
                                   true, true);
   terrain_mesh->Transform(ChVector3d(0, 0, 0),
@@ -880,8 +891,10 @@ int main(int argc, char *argv[])
 
   SDLDriver.Initialize();
 
+  // std::string joystick_file =
+  //     (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
   std::string joystick_file =
-      (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/ps4_controller.json");
+(STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G29.json");
   SDLDriver.SetJoystickConfigFile(joystick_file);
   SDLDriver.AddCallbackButtons(auto_toggle_button);
   if (record_mode)
@@ -963,6 +976,13 @@ int main(int argc, char *argv[])
   indicator_red->EnableCollision(false);
   indicator_red->GetVisualShape(0)->SetColor(ChColor(1.0f, 0.0f, 0.0f)); // Red
   my_vehicle.GetSystem()->Add(indicator_red);
+
+  auto indicator_slow = chrono_types::make_shared<ChBodyEasySphere>(0.15, 100, true, false);
+  indicator_slow->SetPos(ChVector3d(0, 0, -100));
+  indicator_slow->SetFixed(true);
+  indicator_slow->EnableCollision(false);
+  indicator_slow->GetVisualShape(0)->SetColor(ChColor(1.0f, 1.0f, 0.0f)); // Yellow
+  my_vehicle.GetSystem()->Add(indicator_slow);
 
   // Initialize simulation frame counters
   int step_number = 0;
@@ -1326,6 +1346,20 @@ int main(int argc, char *argv[])
     }
 
     // if (step_number % 10 == 0) {
+
+    // Check for simulation running slower than wall time
+    if (realtime_timer.GetTimeSeconds() > time + 1.00) {
+        ChVector3d sphere_local_pos_slow(2.54, 0.381 + 0.5, 1.04); 
+        ChVector3d sphere_global_pos_slow = my_vehicle.GetChassisBody()->TransformPointLocalToParent(sphere_local_pos_slow);
+        indicator_slow->SetPos(sphere_global_pos_slow);
+        
+        if (step_number % 50 == 0) {
+             std::cout << "[Slow Warning] Wall: " << realtime_timer.GetTimeSeconds() << " Sim: " << time << " Lag: " << (realtime_timer.GetTimeSeconds() - time) << "s" << std::endl;
+        }
+    } else {
+        indicator_slow->SetPos(ChVector3d(0, 0, -100));
+    }
+
     realtime_timer.Spin(time);
 
     if (step_number % 50 == 0)

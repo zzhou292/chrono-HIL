@@ -26,8 +26,8 @@
 #include "chrono_vehicle/ChConfigVehicle.h"
 #include "chrono_vehicle/ChVehicleModelData.h"
 #include "chrono_vehicle/driver/ChDataDriver.h"
-#include "chrono_vehicle/driver/ChInteractiveDriverIRR.h"
-#include "chrono_vehicle/output/ChVehicleOutputASCII.h"
+// #include "chrono_vehicle/driver/ChInteractiveDriverIRR.h"
+// #include "chrono_vehicle/output/ChVehicleOutputASCII.h"
 #include "chrono_vehicle/terrain/RigidTerrain.h"
 #include "chrono_vehicle/wheeled_vehicle/ChWheeledVehicleVisualSystemIrrlicht.h"
 #include "chrono_vehicle/wheeled_vehicle/vehicle/WheeledVehicle.h"
@@ -72,7 +72,7 @@ using namespace chrono::vehicle;
 using namespace chrono::vehicle::hmmwv;
 using namespace chrono::hil;
 using namespace chrono::sensor;
-using namespace chrono::collision;
+// using namespace chrono::collision;
 using namespace chrono::synchrono;
 
 // =============================================================================
@@ -106,7 +106,7 @@ VisualizationType tire_vis_type = VisualizationType::MESH;
 CollisionType chassis_collision_type = CollisionType::NONE;
 
 // Type of powertrain model (SHAFTS, SIMPLE)
-PowertrainModelType powertrain_model = PowertrainModelType::SHAFTS;
+// PowertrainModelType powertrain_model = PowertrainModelType::SHAFTS;
 
 // Drive type (FWD, RWD, or AWD)
 DrivelineTypeWV drive_type = DrivelineTypeWV::AWD;
@@ -162,12 +162,12 @@ void AddObstacle2(RigidTerrain &terrain,
 void AddObstacle3(RigidTerrain &terrain,
                   std::shared_ptr<RigidTerrain::Patch> patch);
 void GetVehicleModelFiles(VehicleType type, std::string &vehicle,
-                          std::string &powertrain, std::string &tire,
+                          std::string &engine, std::string &transmission, std::string &tire,
                           std::string &zombie);
 // =============================================================================
 void AddCommandLineOptions(ChCLI &cli) {
   cli.AddOption<std::string>("Simulation", "joystick_filename",
-                             "Joystick config JSON file", joystick_filename);
+                             "Joystick config JSON file", "/joystick/controller_G27.json");
   cli.AddOption<int>("Simulation", "image_width", "x resolution",
                      std::to_string(image_width));
   cli.AddOption<int>("Simulation", "image_height", "y resolution",
@@ -183,18 +183,16 @@ void AddCommandLineOptions(ChCLI &cli) {
   cli.AddOption<int>("DDS", "n,num_nodes", "Number of Nodes", "2");
   cli.AddOption<double>("Simulation", "b,heartbeat", "Heartbeat",
                         std::to_string(heartbeat));
-  cli.AddOption<std::vector<std::string>>(
-      "DDS", "ip", "IP Addresses for initialPeersList", "127.0.0.1");
+  cli.AddOption<std::vector<std::string>>("DDS", "ip", "IP Addresses for initialPeersList", "127.0.0.1");
   // Other options
   cli.AddOption<int>("Demo", "v,vehicle",
                      "Vehicle Options [0-4]: HMMWV,MAN, Sedan, UAZ, CityBus, ",
                      "0");
   cli.AddOption<float>("Demo", "c,cam_dis", "Camera Distance", "17.0");
 }
-// =============================================================================
 
 int main(int argc, char *argv[]) {
-  GetLog() << "Copyright (c) 2017 projectchrono.org\nChrono version: "
+  std::cout << "Copyright (c) 2017 projectchrono.org\nChrono version: "
            << CHRONO_VERSION << "\n\n";
 
   vehicle::SetDataPath(CHRONO_DATA_DIR + std::string("vehicle/"));
@@ -252,16 +250,14 @@ int main(int argc, char *argv[]) {
     initRot = ChQuaternion<>(1, 0, 0, 0);
   } else if (node_id == 2) {
     initLoc = ChVector3<>(70.0, 70.0, 1.0);
-    initRot = SetFromAngleZ();
+    initRot = QuatFromAngleZ(0);
   }
 
-  std::string vehicle_filename, powertrain_filename, tire_filename,
-      zombie_filename;
+  std::string vehicle_filename, engine_filename, transmission_filename, tire_filename, zombie_filename;
   GetVehicleModelFiles((VehicleType)cli.GetAsType<int>("vehicle"),
-                       vehicle_filename, powertrain_filename, tire_filename,
+                       vehicle_filename, engine_filename, transmission_filename, tire_filename,
                        zombie_filename);
 
-  // --------------
   // Create systems
   // --------------
 
@@ -275,7 +271,9 @@ int main(int argc, char *argv[]) {
   vehicle.SetWheelVisualizationType(wheel_vis_type);
 
   // Create and initialize the powertrain system
-  auto powertrain = ReadPowertrainJSON(powertrain_filename);
+  auto engine = ReadEngineJSON(engine_filename);
+  auto transmission = ReadTransmissionJSON(transmission_filename);
+  auto powertrain = chrono_types::make_shared<ChPowertrainAssembly>(engine, transmission);
   vehicle.InitializePowertrain(powertrain);
 
   // Create and initialize the tires
@@ -323,7 +321,7 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < 8; i++) {
       for (int j = 0; j < 2; j++) {
         auto trimesh =
-            geometry::ChTriangleMeshConnected::CreateFromWavefrontFile(
+            ChTriangleMeshConnected::CreateFromWavefrontFile(
                 STRINGIFY(HIL_DATA_DIR) +
                     std::string("/Environments/HWMMV_test/trees/tree_01.obj"),
                 true, true);
@@ -334,12 +332,12 @@ int main(int argc, char *argv[]) {
         trimesh_shape->SetMutable(false);
         ChVector3<> tree_pos(-70.0 + i * 20.0, -25 + j * 75.0, 0.0);
         patch->GetGroundBody()->GetVisualModel()->AddShape(
-            trimesh_shape, ChFrame<>(tree_pos, SetFromAngleZ(CH_PI_2)));
+            trimesh_shape, ChFrame<>(tree_pos, QuatFromAngleZ(CH_PI_2)));
       }
     }
   }
 
-  // Add obstacles
+  // Add obstacles (visual-only)
   AddObstacle1(terrain, patch);
   AddObstacle2(terrain, patch);
   AddObstacle3(terrain, patch);
@@ -360,7 +358,7 @@ int main(int argc, char *argv[]) {
       refresh_rate,  // update rate in Hz
       chrono::ChFrame<double>(
           ChVector3<>(-cam_dis, 0.0, 4.0),
-          SetFromCardanAnglesXYZ(ChVector3<>(0.0, 0.15, 0.0))), // offset pose
+          QuatFromAngleX(0.0) * QuatFromAngleY(0.15) * QuatFromAngleZ(0.0)), // offset pose
       image_width,                                      // image width
       image_height,                                     // image height
       1.608f,
@@ -405,7 +403,7 @@ int main(int argc, char *argv[]) {
   ChRealtimeCumulative realtime_timer;
 
   // initialize output to store user input values
-  utils::CSV_writer csv(" ");
+  utils::ChWriterCSV csv(" ");
 
   while (syn_manager.IsOk()) {
     double time = vehicle.GetSystem()->GetChTime();
@@ -413,10 +411,10 @@ int main(int argc, char *argv[]) {
     ChVector3<> pos = vehicle.GetChassis()->GetPos();
     ChQuaternion<> rot = vehicle.GetChassis()->GetRot();
 
-    auto euler_rot = GetCardanAnglesXYZ(rot);
+    auto euler_rot = rot.GetCardanAnglesXYZ();
     euler_rot.x() = 0.0;
     euler_rot.y() = 0.0;
-    auto y_0_rot = SetFromCardanAnglesXYZ(euler_rot);
+    auto y_0_rot = QuatFromAngleX(euler_rot.x()) * QuatFromAngleY(euler_rot.y()) * QuatFromAngleZ(euler_rot.z());
 
     attached_body->SetPos(pos);
     attached_body->SetRot(y_0_rot);
@@ -471,7 +469,7 @@ int main(int argc, char *argv[]) {
       break;
     }
   }
-  csv.write_to_file("driver_input.csv");
+  csv.WriteToFile("driver_input.csv");
   syn_manager.QuitSimulation();
   return 0;
 }
@@ -479,22 +477,23 @@ int main(int argc, char *argv[]) {
 void AddObstacle1(RigidTerrain &terrain,
                   std::shared_ptr<RigidTerrain::Patch> patch) {
 
-  for (int i = 0; i < 12; i++) {
+  for (int i = 0; i < 1; i++) { // Reduced to 1
     ChVector3<> ob_pos(-50 + 5 * i, -60, -0.85);
-    auto patch1_mat = chrono_types::make_shared<ChMaterialSurfaceSMC>();
+    auto patch1_mat = chrono_types::make_shared<ChContactMaterialSMC>();
     patch1_mat->SetFriction(0.98f);
     patch1_mat->SetRestitution(0.002f);
+    // auto patch1 = terrain.AddPatch(patch1_mat, ChCoordsys<>(ob_pos, QuatFromAngleZ(CH_PI_2)), 2.0, 2.0, 1.0);
     auto patch1 = terrain.AddPatch(
-        patch1_mat, ChCoordsys<>(ob_pos, SetFromAngleZ(CH_PI_2)),
+        patch1_mat, ChCoordsys<>(ob_pos, QuatFromAngleZ(CH_PI_2)),
         STRINGIFY(HIL_DATA_DIR) +
             std::string("/Environments/HWMMV_test/cyl_bump/cyl_bump.obj"));
 
-    patch1->GetGroundBody()->GetCollisionModel()->ClearModel();
-    patch1->GetGroundBody()->GetCollisionModel()->AddCylinder(
-        patch1_mat, 1, 1, 5, ChVector3<>(0, 0, 0), SetFromAngleZ(CH_PI_2));
-    patch1->GetGroundBody()->GetCollisionModel()->BuildModel();
+    // patch1->GetGroundBody()->GetCollisionModel()->Clear();
+    // patch1->GetGroundBody()->GetCollisionModel()->AddCylinder(
+    //     patch1_mat, 1, ChVector3<>(0, -2.5, 0), ChVector3<>(0, 2.5, 0));
+    // patch1->GetGroundBody()->GetCollisionModel()->BuildModel();
 
-    auto trimesh = geometry::ChTriangleMeshConnected::CreateFromWavefrontFile(
+    auto trimesh = ChTriangleMeshConnected::CreateFromWavefrontFile(
         STRINGIFY(HIL_DATA_DIR) +
             std::string("/Environments/HWMMV_test/cyl_bump/cyl_bump.obj"),
         true, true);
@@ -505,25 +504,25 @@ void AddObstacle1(RigidTerrain &terrain,
     trimesh_shape->SetTexture(
         vehicle::GetDataFile("terrain/textures/concrete.jpg"));
     patch->GetGroundBody()->GetVisualModel()->AddShape(
-        trimesh_shape, ChFrame<>(ob_pos, SetFromAngleZ(CH_PI_2)));
+        trimesh_shape, ChFrame<>(ob_pos, QuatFromAngleZ(CH_PI_2)));
   }
 
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 0; i++) { // Disabled
     ChVector3<> ob_pos(15 + 8 * i, -57.2, -0.85);
-    auto patch1_mat = chrono_types::make_shared<ChMaterialSurfaceSMC>();
+    auto patch1_mat = chrono_types::make_shared<ChContactMaterialSMC>();
     patch1_mat->SetFriction(0.98f);
     patch1_mat->SetRestitution(0.002f);
     auto patch1 = terrain.AddPatch(
-        patch1_mat, ChCoordsys<>(ob_pos, SetFromAngleZ(CH_PI_2)),
+        patch1_mat, ChCoordsys<>(ob_pos, QuatFromAngleZ(CH_PI_2)),
         STRINGIFY(HIL_DATA_DIR) +
             std::string("/Environments/HWMMV_test/cyl_bump/cyl_bump.obj"));
 
-    patch1->GetGroundBody()->GetCollisionModel()->ClearModel();
-    patch1->GetGroundBody()->GetCollisionModel()->AddCylinder(
-        patch1_mat, 1, 1, 2.5, ChVector3<>(0, 0, 0), SetFromAngleZ(CH_PI_2));
-    patch1->GetGroundBody()->GetCollisionModel()->BuildModel();
+    // patch1->GetGroundBody()->GetCollisionModel()->Clear();
+    // patch1->GetGroundBody()->GetCollisionModel()->AddCylinder(
+    //     patch1_mat, 1, ChVector3<>(0, -1.25, 0), ChVector3<>(0, 1.25, 0));
+    // patch1->GetGroundBody()->GetCollisionModel()->BuildModel();
 
-    auto trimesh = geometry::ChTriangleMeshConnected::CreateFromWavefrontFile(
+    auto trimesh = ChTriangleMeshConnected::CreateFromWavefrontFile(
         STRINGIFY(HIL_DATA_DIR) +
             std::string("/Environments/HWMMV_test/cyl_bump/cyl_bump_half.obj"),
         true, true);
@@ -534,25 +533,25 @@ void AddObstacle1(RigidTerrain &terrain,
     trimesh_shape->SetTexture(
         vehicle::GetDataFile("terrain/textures/concrete.jpg"));
     patch->GetGroundBody()->GetVisualModel()->AddShape(
-        trimesh_shape, ChFrame<>(ob_pos, SetFromAngleZ(CH_PI_2)));
+        trimesh_shape, ChFrame<>(ob_pos, QuatFromAngleZ(CH_PI_2)));
   }
 
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 0; i++) { // Disabled
     ChVector3<> ob_pos(19 + 8 * i, -62.8, -0.85);
-    auto patch1_mat = chrono_types::make_shared<ChMaterialSurfaceSMC>();
+    auto patch1_mat = chrono_types::make_shared<ChContactMaterialSMC>();
     patch1_mat->SetFriction(0.98f);
     patch1_mat->SetRestitution(0.002f);
     auto patch1 = terrain.AddPatch(
-        patch1_mat, ChCoordsys<>(ob_pos, SetFromAngleZ(CH_PI_2)),
+        patch1_mat, ChCoordsys<>(ob_pos, QuatFromAngleZ(CH_PI_2)),
         STRINGIFY(HIL_DATA_DIR) +
             std::string("/Environments/HWMMV_test/cyl_bump/cyl_bump.obj"));
 
-    patch1->GetGroundBody()->GetCollisionModel()->ClearModel();
-    patch1->GetGroundBody()->GetCollisionModel()->AddCylinder(
-        patch1_mat, 1, 1, 2.5, ChVector3<>(0, 0, 0), SetFromAngleZ(CH_PI_2));
-    patch1->GetGroundBody()->GetCollisionModel()->BuildModel();
+    // patch1->GetGroundBody()->GetCollisionModel()->Clear();
+    // patch1->GetGroundBody()->GetCollisionModel()->AddCylinder(
+    //     patch1_mat, 1, ChVector3<>(0, -1.25, 0), ChVector3<>(0, 1.25, 0));
+    // patch1->GetGroundBody()->GetCollisionModel()->BuildModel();
 
-    auto trimesh = geometry::ChTriangleMeshConnected::CreateFromWavefrontFile(
+    auto trimesh = ChTriangleMeshConnected::CreateFromWavefrontFile(
         STRINGIFY(HIL_DATA_DIR) +
             std::string("/Environments/HWMMV_test/cyl_bump/cyl_bump_half.obj"),
         true, true);
@@ -563,7 +562,7 @@ void AddObstacle1(RigidTerrain &terrain,
     trimesh_shape->SetTexture(
         vehicle::GetDataFile("terrain/textures/concrete.jpg"));
     patch->GetGroundBody()->GetVisualModel()->AddShape(
-        trimesh_shape, ChFrame<>(ob_pos, SetFromAngleZ(CH_PI_2)));
+        trimesh_shape, ChFrame<>(ob_pos, QuatFromAngleZ(CH_PI_2)));
   }
 }
 
@@ -571,7 +570,7 @@ void AddObstacle2(RigidTerrain &terrain,
                   std::shared_ptr<RigidTerrain::Patch> patch) {
   for (int i = 0; i < 8; i++) {
     ChVector3<> ob_pos(50 - 15 * i, 0.0, 0.0);
-    auto trimesh = geometry::ChTriangleMeshConnected::CreateFromWavefrontFile(
+    auto trimesh = ChTriangleMeshConnected::CreateFromWavefrontFile(
         STRINGIFY(HIL_DATA_DIR) +
             std::string("/Environments/HWMMV_test/cone/cone.obj"),
         true, true);
@@ -580,7 +579,7 @@ void AddObstacle2(RigidTerrain &terrain,
     trimesh_shape->SetName("cone");
     trimesh_shape->SetMutable(false);
     patch->GetGroundBody()->GetVisualModel()->AddShape(
-        trimesh_shape, ChFrame<>(ob_pos, SetFromAngleZ(CH_PI_2)));
+        trimesh_shape, ChFrame<>(ob_pos, QuatFromAngleZ(CH_PI_2)));
   }
 }
 
@@ -588,7 +587,7 @@ void AddObstacle3(RigidTerrain &terrain,
                   std::shared_ptr<RigidTerrain::Patch> patch) {
   ChVector3<> ob_pos(20, 60, 0.0);
 
-  auto trimesh = geometry::ChTriangleMeshConnected::CreateFromWavefrontFile(
+  auto trimesh = ChTriangleMeshConnected::CreateFromWavefrontFile(
       STRINGIFY(HIL_DATA_DIR) +
           std::string("/Environments/HWMMV_test/hill/hill_obs.obj"),
       true, true);
@@ -599,45 +598,48 @@ void AddObstacle3(RigidTerrain &terrain,
   trimesh_shape->SetTexture(
       vehicle::GetDataFile("terrain/textures/concrete.jpg"));
   patch->GetGroundBody()->GetVisualModel()->AddShape(
-      trimesh_shape, ChFrame<>(ob_pos, SetFromAngleZ(CH_PI_2)));
+      trimesh_shape, ChFrame<>(ob_pos, QuatFromAngleZ(CH_PI_2)));
 
-  auto patch1_mat = chrono_types::make_shared<ChMaterialSurfaceSMC>();
+  auto patch1_mat = chrono_types::make_shared<ChContactMaterialSMC>();
   patch1_mat->SetFriction(0.98f);
   patch1_mat->SetRestitution(0.002f);
   auto patch1 = terrain.AddPatch(
-      patch1_mat, ChCoordsys<>(ob_pos, SetFromAngleZ(CH_PI_2)),
+      patch1_mat, ChCoordsys<>(ob_pos, QuatFromAngleZ(CH_PI_2)),
       STRINGIFY(HIL_DATA_DIR) +
           std::string("/Environments/HWMMV_test/hill/hill_obs.obj"));
 
-  patch1->GetGroundBody()->GetCollisionModel()->ClearModel();
+  // patch1->GetGroundBody()->GetCollisionModel()->Clear();
 
-  std::string lugged_file(
-      STRINGIFY(HIL_DATA_DIR) +
-      std::string("/Environments/HWMMV_test/hill/hill_obs.obj"));
-  geometry::ChTriangleMeshConnected lugged_mesh;
-  ChConvexDecompositionHACDv2 lugged_convex;
-  utils::LoadConvexMesh(lugged_file, lugged_mesh, lugged_convex);
-  int num_hulls = lugged_convex.GetHullCount();
+  // std::string lugged_file(
+  //     STRINGIFY(HIL_DATA_DIR) +
+  //     std::string("/Environments/HWMMV_test/hill/hill_obs.obj"));
+  // ChTriangleMeshConnected lugged_mesh;
+  // ChConvexDecompositionHACDv2 lugged_convex;
+  // utils::LoadConvexMesh(lugged_file, lugged_mesh, lugged_convex);
+  // int num_hulls = lugged_convex.GetHullCount();
 
-  for (int ihull = 0; ihull < num_hulls; ihull++) {
-    std::vector<ChVector3<>> convexhull;
-    lugged_convex.GetConvexHullResult(ihull, convexhull);
-    patch1->GetGroundBody()->GetCollisionModel()->AddConvexHull(
-        patch1_mat, convexhull, VNULL, QUNIT);
-  }
-  patch1->GetGroundBody()->GetCollisionModel()->BuildModel();
+  // for (int ihull = 0; ihull < num_hulls; ihull++) {
+  //   std::vector<ChVector3<>> convexhull;
+  //   lugged_convex.GetConvexHullResult(ihull, convexhull);
+  //   auto shape = chrono_types::make_shared<ChCollisionShapeConvexHull>(patch1_mat, convexhull);
+  //   patch1->GetGroundBody()->GetCollisionModel()->AddShape(shape, ChFrame<>(VNULL, QUNIT));
+  // }
+  // patch1->GetGroundBody()->GetCollisionModel()->BuildModel();
 }
 
 void GetVehicleModelFiles(VehicleType type, std::string &vehicle,
-                          std::string &powertrain, std::string &tire,
+                          std::string &engine, std::string &transmission, std::string &tire,
                           std::string &zombie) {
   switch (type) {
   case VehicleType::HMMWV:
     vehicle = CHRONO_DATA_DIR +
               std::string("vehicle/hmmwv/vehicle/HMMWV_Vehicle.json");
-    powertrain =
+    engine =
         CHRONO_DATA_DIR +
-        std::string("vehicle/hmmwv/powertrain/HMMWV_ShaftsPowertrain.json");
+        std::string("vehicle/hmmwv/powertrain/HMMWV_EngineShafts.json");
+    transmission =
+        CHRONO_DATA_DIR +
+        std::string("vehicle/hmmwv/powertrain/HMMWV_AutomaticTransmissionShafts.json");
     tire = CHRONO_DATA_DIR +
            std::string("vehicle/hmmwv/tire/HMMWV_TMeasyTire.json");
     zombie = CHRONO_DATA_DIR + std::string("synchrono/vehicle/HMMWV.json");
@@ -645,9 +647,12 @@ void GetVehicleModelFiles(VehicleType type, std::string &vehicle,
   case VehicleType::SUV:
     vehicle = CHRONO_DATA_DIR +
               std::string("vehicle/Nissan_Patrol/json/suv_Vehicle.json");
-    powertrain =
+    engine =
         CHRONO_DATA_DIR +
-        std::string("vehicle/Nissan_Patrol/json/suv_ShaftsPowertrain.json");
+        std::string("vehicle/Nissan_Patrol/json/suv_EngineShafts.json");
+    transmission =
+        CHRONO_DATA_DIR +
+        std::string("vehicle/Nissan_Patrol/json/suv_AutomaticTransmissionShafts.json");
     tire = CHRONO_DATA_DIR +
            std::string("vehicle/Nissan_Patrol/json/suv_TMeasyTire.json");
     zombie = CHRONO_DATA_DIR + std::string("/vehicle/suv/json/suv.json");

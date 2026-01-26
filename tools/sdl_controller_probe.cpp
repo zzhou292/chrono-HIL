@@ -1,5 +1,6 @@
 #include <SDL2/SDL.h>
 #include <cstdio>
+#include <cstring>  
 
 int main() {
   if (SDL_Init(SDL_INIT_JOYSTICK) < 0) {
@@ -15,7 +16,23 @@ int main() {
   }
 
   std::printf("Detected %d joystick(s).\n", num_joysticks);
-  SDL_Joystick *joystick = SDL_JoystickOpen(0);
+  // Don't open joysticks that have 'RDMCTMZT' or 'KVM' in their name
+  int chosen_index = -1;
+  for (int i = 0; i < num_joysticks; ++i) {
+    const char *name = SDL_JoystickNameForIndex(i);
+    if (!name)
+      continue;
+
+    if (std::strstr(name, "RDMCTMZT") || std::strstr(name, "KVM")) {
+      continue;
+    }
+
+    // First non-keyboard/KVM device wins
+    if (chosen_index == -1)
+      chosen_index = i;
+  }
+
+  SDL_Joystick *joystick = SDL_JoystickOpen(chosen_index);
   if (!joystick) {
     std::printf("SDL_JoystickOpen failed: %s\n", SDL_GetError());
     SDL_Quit();

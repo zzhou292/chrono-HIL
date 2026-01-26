@@ -67,8 +67,7 @@ void ChSDLInterface::Initialize() {
 
         // Otherwise, skip obvious non-gamepad devices (tweak these as needed)
         if (!preferred_substr) {
-            if (std::strstr(name, "Keyboard") ||
-                std::strstr(name, "KVM")) {
+            if (std::strstr(name, "Keyboard") || std::strstr(name, "RDMCTMZT") || std::strstr(name, "KVM")) {
                 continue;
             }
 
