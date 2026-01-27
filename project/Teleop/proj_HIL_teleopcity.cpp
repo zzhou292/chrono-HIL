@@ -56,6 +56,9 @@
 #include "chrono/physics/ChBodyEasy.h"
 
 #include "project/Teleop/Ros2Bridge.h"
+#include "project/Teleop/ActorPlayback.h"
+#include "project/Teleop/PathUtils.h"
+#include "project/Teleop/ActorConfigLoader.h"
 
 #include "chrono_hil/network/udp/ChBoostOutStreamer.h"
 #include "chrono_hil/network/sim/ChDelaySim.h"
@@ -93,16 +96,23 @@ using namespace chrono::utils;
 using namespace chrono::sensor;
 using namespace chrono::synchrono;
 
+// =============================================================================
+// Constants
+// =============================================================================
+
 const double RADS_2_RPM = 30 / CH_PI;
 const double RADS_2_DEG = 180 / CH_PI;
 const double MS_2_MPH = 2.2369;
 const double M_2_FT = 3.28084;
 const double G_2_MPSS = 9.81;
+const double rads2rpm = 30 / CH_PI;
+
+// =============================================================================
+// Global Configuration
+// =============================================================================
 
 bool render = true;
 ChVector3d driver_eyepoint(-0.45, 0.4, 0.98);
-
-// =============================================================================
 
 // Initial vehicle location and orientation
 ChVector3d initLoc(-91.788, 98.647, 0.25);
@@ -123,11 +133,10 @@ double t_end = 1000;
 const std::string UNITY_IP_OUT = "127.0.0.1";
 const int UNITY_PORT_OUT = 1209;
 
-// Conversion factors
-const double rads2rpm = 30 / CH_PI;
-
 // =============================================================================
-// std::string scenario_filename = "experiment.json";
+// Scenario Configuration
+// =============================================================================
+
 std::string scenario_filename = "test_parameters_1.json";
 std::vector<std::string> obj_filenames;
 std::vector<ChVector3d> obj_pos;
@@ -138,6 +147,7 @@ float cam_delay_val = 0.2;
 int lane = 0;
 std::string delay_config_file = "network/delay_configs/delay_config.json";
 
+// Recording configuration
 bool record_mode = false;
 bool recording_active = false;
 double record_interval = 0.02;
@@ -146,52 +156,11 @@ int auto_toggle_button = 6;
 int record_toggle_button = 18;
 int finish_record_button = 19;
 bool enable_ros_bridge = false;
-
 std::vector<ChVector3d> recorded_positions;
 
-enum class SpeedProfileType
-{
-  VELOCITY,
-  ACCELERATION
-};
-
-struct SpeedProfileSegment
-{
-  double start_time = 0.0;
-  double end_time = std::numeric_limits<double>::infinity();
-  bool until_end = false;
-  bool has_explicit_end = false;
-  double value = 0.0;
-};
-
-struct ActorPlayback
-{
-  std::shared_ptr<WheeledVehicle> vehicle;
-  std::shared_ptr<ChPathFollowerDriver> path_driver;
-  std::shared_ptr<ChPowertrainAssembly> powertrain;
-  std::vector<ChVector3d> waypoints;
-  double start_time = 0.0;
-  double look_ahead_distance = -1.0;
-  double path_spacing = 0.5;
-  double smoothing_window = 0.0;
-  double steering_kp = -1.0;
-  double steering_ki = 0.0;
-  double steering_kd = 0.0;
-  bool active = false;
-  SpeedProfileType profile_type = SpeedProfileType::VELOCITY;
-  std::vector<SpeedProfileSegment> profile_segments;
-  double initial_speed = 0.0;
-  double current_speed = 0.0;
-  double last_profile_time = 0.0;
-  bool profile_defined = false;
-  bool goal_reached = false;
-  double max_decel = 3.0;
-};
-
+// Actor configuration
 std::string actors_config_file = "";
 std::vector<ActorPlayback> playback_actors;
-
-// Distributed actor state (for actor nodes running via SynChrono)
 ActorPlayback distributed_actor_state;
 
 // SynChrono configuration
@@ -339,601 +308,6 @@ std::vector<float> deserializeFloats(const std::vector<char> &byteVec)
 
 // =============================================================================
 
-std::vector<ChVector3d> BuildResampledPoints(const std::vector<ChVector3d> &samples,
-                                             double spacing)
-{
-  std::vector<ChVector3d> points;
-  if (samples.empty())
-    return points;
-
-  spacing = std::max(1e-3, spacing);
-  points.push_back(samples.front());
-
-  for (size_t i = 0; i + 1 < samples.size(); ++i)
-  {
-    ChVector3d start = samples[i];
-    ChVector3d end = samples[i + 1];
-    ChVector3d delta = end - start;
-    double seg_len = delta.Length();
-    if (seg_len < 1e-6)
-      continue;
-
-    ChVector3d dir = delta / seg_len;
-    double dist = spacing;
-    while (dist < seg_len)
-    {
-      points.push_back(start + dir * dist);
-      dist += spacing;
-    }
-    points.push_back(end);
-  }
-  return points;
-}
-
-std::vector<ChVector3d> SmoothPathPoints(const std::vector<ChVector3d> &points,
-                                         double spacing,
-                                         double smoothing_window)
-{
-  if (points.size() <= 2 || smoothing_window <= 0.0)
-    return points;
-
-  int window_half = static_cast<int>(std::round(std::max(smoothing_window / spacing, 1.0)));
-  window_half = std::max(1, window_half);
-  std::vector<ChVector3d> smoothed(points.size());
-
-  for (size_t i = 0; i < points.size(); ++i)
-  {
-    ChVector3d accum(0, 0, 0);
-    int count = 0;
-    int start = static_cast<int>(std::max<int>(0, i - window_half));
-    int end = static_cast<int>(std::min<int>(points.size() - 1, i + window_half));
-    for (int j = start; j <= end; ++j)
-    {
-      accum += points[j];
-      ++count;
-    }
-    smoothed[i] = accum / static_cast<double>(count);
-  }
-
-  // Preserve endpoints exactly to avoid drift
-  smoothed.front() = points.front();
-  smoothed.back() = points.back();
-  return smoothed;
-}
-
-ChQuaterniond EstimateInitialRotation(const std::vector<ChVector3d> &points)
-{
-  if (points.size() < 2)
-    return QUNIT;
-
-  ChVector3d dir = points[1] - points[0];
-  dir.z() = 0.0;
-  if (dir.Length2() < 1e-8)
-    return QUNIT;
-  dir.Normalize();
-  double yaw = std::atan2(dir.y(), dir.x());
-  ChQuaterniond rot;
-  rot.SetFromAngleZ(yaw);
-  return rot;
-}
-
-bool LoadWaypointCSV(const std::string &filename, std::vector<ChVector3d> &out_points)
-{
-  std::ifstream infile(filename);
-  if (!infile.is_open())
-  {
-    std::cerr << "Unable to open waypoint CSV: " << filename << std::endl;
-    return false;
-  }
-
-  out_points.clear();
-  std::string line;
-  while (std::getline(infile, line))
-  {
-    if (line.empty())
-      continue;
-    if (line[0] == '#')
-      continue;
-    std::stringstream ss(line);
-    double x, y, z;
-    char delim;
-    if (!(ss >> x))
-    {
-      continue; // skip header or invalid lines
-    }
-    if (ss.peek() == ',' || ss.peek() == ';')
-      ss >> delim;
-    if (!(ss >> y))
-      continue;
-    if (ss.peek() == ',' || ss.peek() == ';')
-      ss >> delim;
-    if (!(ss >> z))
-      continue;
-    out_points.emplace_back(x, y, z);
-  }
-
-  if (out_points.size() < 2)
-  {
-    std::cerr << "Waypoint CSV must contain at least two points: " << filename << std::endl;
-    return false;
-  }
-
-  return true;
-}
-
-bool ParseSpeedProfileJSON(const rapidjson::Value &profile_json, ActorPlayback &actor)
-{
-  if (!profile_json.IsObject() || !profile_json.HasMember("type") || !profile_json.HasMember("entries"))
-  {
-    std::cerr << "Speed profile must contain 'type' and 'entries'.\n";
-    return false;
-  }
-
-  std::string type = profile_json["type"].GetString();
-  if (type == "velocity")
-  {
-    actor.profile_type = SpeedProfileType::VELOCITY;
-    actor.initial_speed = 0.0;
-    actor.max_decel = profile_json.HasMember("max_decel") ? profile_json["max_decel"].GetDouble() : 3.0;
-    if (actor.max_decel < 0.1)
-      actor.max_decel = 3.0;
-  }
-  else if (type == "acceleration")
-  {
-    actor.profile_type = SpeedProfileType::ACCELERATION;
-    actor.initial_speed = profile_json.HasMember("initial_speed") ? profile_json["initial_speed"].GetDouble() : 0.0;
-    actor.current_speed = actor.initial_speed;
-    actor.max_decel = profile_json.HasMember("max_decel") ? std::max(0.1, profile_json["max_decel"].GetDouble()) : 3.0;
-  }
-  else
-  {
-    std::cerr << "Unknown speed profile type: " << type << "\n";
-    return false;
-  }
-
-  const auto &entries = profile_json["entries"];
-  if (!entries.IsArray() || entries.Empty())
-  {
-    std::cerr << "Speed profile entries must be a non-empty array.\n";
-    return false;
-  }
-
-  actor.profile_segments.clear();
-  for (const auto &entry : entries.GetArray())
-  {
-    if (!entry.HasMember("start_time") || !entry.HasMember("value"))
-    {
-      std::cerr << "Each speed profile entry must have 'start_time' and 'value'.\n";
-      return false;
-    }
-
-    SpeedProfileSegment seg;
-    seg.start_time = entry["start_time"].GetDouble();
-    seg.value = entry["value"].GetDouble();
-    seg.until_end = entry.HasMember("until_end") && entry["until_end"].GetBool();
-    if (entry.HasMember("end_time"))
-    {
-      seg.end_time = entry["end_time"].GetDouble();
-      seg.has_explicit_end = true;
-    }
-    else if (entry.HasMember("duration"))
-    {
-      seg.end_time = seg.start_time + entry["duration"].GetDouble();
-      seg.has_explicit_end = true;
-    }
-    else if (seg.until_end)
-    {
-      seg.end_time = std::numeric_limits<double>::infinity();
-    }
-    actor.profile_segments.push_back(seg);
-  }
-
-  std::sort(actor.profile_segments.begin(), actor.profile_segments.end(),
-            [](const SpeedProfileSegment &a, const SpeedProfileSegment &b) { return a.start_time < b.start_time; });
-
-  for (size_t i = 0; i + 1 < actor.profile_segments.size(); ++i)
-  {
-    auto &seg = actor.profile_segments[i];
-    auto &next = actor.profile_segments[i + 1];
-    if (!seg.until_end && !seg.has_explicit_end)
-    {
-      seg.end_time = next.start_time;
-    }
-    else if (!seg.until_end && seg.end_time > next.start_time)
-    {
-      seg.end_time = next.start_time;
-    }
-  }
-
-  actor.profile_defined = true;
-  actor.last_profile_time = 0.0;
-  if (actor.profile_type == SpeedProfileType::VELOCITY)
-  {
-    actor.initial_speed = actor.profile_segments.front().value;
-    actor.current_speed = actor.initial_speed;
-  }
-  else
-  {
-    actor.current_speed = actor.initial_speed;
-  }
-  return true;
-}
-
-const SpeedProfileSegment *GetActiveSegment(const ActorPlayback &actor, double local_time)
-{
-  const SpeedProfileSegment *active = nullptr;
-  for (const auto &segment : actor.profile_segments)
-  {
-    if (local_time < segment.start_time)
-      break;
-    if (segment.until_end || local_time < segment.end_time)
-      active = &segment;
-  }
-  return active;
-}
-
-double EvaluateDesiredSpeed(ActorPlayback &actor, double local_time, double step, bool within_stop_zone)
-{
-  if (!actor.profile_defined || actor.profile_segments.empty())
-    return 0.0;
-
-  const SpeedProfileSegment *segment = GetActiveSegment(actor, local_time);
-  if (actor.profile_type == SpeedProfileType::VELOCITY)
-  {
-    double target = segment ? std::max(0.0, segment->value) : 0.0;
-    double dt = step;
-    if (within_stop_zone)
-    {
-      actor.current_speed = std::max(0.0, actor.current_speed - actor.max_decel * dt);
-      target = std::min(target, actor.current_speed);
-    }
-    else
-    {
-      actor.current_speed = target;
-    }
-    return target;
-  }
-
-  double accel = segment ? segment->value : 0.0;
-  double dt = local_time - actor.last_profile_time;
-  if (dt < 0.0 || dt > 1.0)
-    dt = step;
-  if (within_stop_zone && accel > 0)
-  {
-    accel = -actor.max_decel;
-  }
-  actor.current_speed = std::max(0.0, actor.current_speed + accel * dt);
-  actor.last_profile_time = local_time;
-  return actor.current_speed;
-}
-
-bool InitializePlaybackActors(const std::string &config_path,
-                              WheeledVehicle &reference_vehicle,
-                              const std::string &vehicle_filename,
-                              const std::string &engine_filename,
-                              const std::string &transmission_filename,
-                              const std::string &tire_filename,
-                              const std::string &steering_file,
-                              const std::string &speed_file)
-{
-  std::ifstream ifs(config_path);
-  if (!ifs.is_open())
-  {
-    std::cerr << "Failed to open actor configuration file: " << config_path << std::endl;
-    return false;
-  }
-
-  std::stringstream buffer;
-  buffer << ifs.rdbuf();
-  rapidjson::Document d;
-  d.Parse(buffer.str().c_str());
-  if (d.HasParseError())
-  {
-    std::cerr << "Failed to parse actor configuration file: " << config_path << std::endl;
-    return false;
-  }
-  if (!d.IsObject() || !d.HasMember("actors") || !d["actors"].IsArray())
-  {
-    std::cerr << "Actor configuration missing 'actors' array: " << config_path << std::endl;
-    return false;
-  }
-
-  const auto &actors_array = d["actors"].GetArray();
-  for (const auto &actor_entry : actors_array)
-  {
-    if (!actor_entry.IsObject() || !actor_entry.HasMember("path_file"))
-      continue;
-
-    ActorPlayback actor;
-    actor.start_time = actor_entry.HasMember("start_time") ? actor_entry["start_time"].GetDouble() : 0.0;
-    if (actor_entry.HasMember("look_ahead"))
-    {
-      actor.look_ahead_distance = actor_entry["look_ahead"].GetDouble();
-    }
-    if (actor_entry.HasMember("path_spacing"))
-    {
-      actor.path_spacing = std::max(0.05, actor_entry["path_spacing"].GetDouble());
-    }
-    if (actor_entry.HasMember("smooth_window"))
-    {
-      actor.smoothing_window = std::max(0.0, actor_entry["smooth_window"].GetDouble());
-    }
-    if (actor_entry.HasMember("steering_kp"))
-    {
-      actor.steering_kp = actor_entry["steering_kp"].GetDouble();
-    }
-    if (actor_entry.HasMember("steering_ki"))
-    {
-      actor.steering_ki = actor_entry["steering_ki"].GetDouble();
-    }
-    if (actor_entry.HasMember("steering_kd"))
-    {
-      actor.steering_kd = actor_entry["steering_kd"].GetDouble();
-    }
-    std::string path_file = actor_entry["path_file"].GetString();
-    if (!LoadWaypointCSV(path_file, actor.waypoints))
-    {
-      std::cerr << "Skipping actor due to failed path load: " << path_file << std::endl;
-      continue;
-    }
-    if (!actor_entry.HasMember("speed_profile"))
-    {
-      std::cerr << "Actor entry missing speed_profile; skipping.\n";
-      continue;
-    }
-    if (!ParseSpeedProfileJSON(actor_entry["speed_profile"], actor))
-    {
-      std::cerr << "Failed to parse speed profile for actor path " << path_file << std::endl;
-      continue;
-    }
-
-    std::vector<ChVector3d> path_points = BuildResampledPoints(actor.waypoints, actor.path_spacing);
-    // if (!path_points.empty())
-    // {
-    //   ChVector3d last = path_points.back();
-    //   if (path_points.size() >= 2)
-    //   {
-    //     ChVector3d dir = path_points.back() - path_points[path_points.size() - 2];
-    //     double len = dir.Length();
-    //     if (len > 1e-6)
-    //     {
-    //       dir /= len;
-    //       double tail_length = std::max(3.0, actor.look_ahead_distance > 0.0 ? actor.look_ahead_distance : 3.0);
-    //       path_points.push_back(last + dir * tail_length);
-    //     }
-    //   }
-    //   else
-    //   {
-    //     path_points.push_back(last);
-    //   }
-    // }
-    if (actor.smoothing_window > 0.0)
-    {
-      path_points = SmoothPathPoints(path_points, actor.path_spacing, actor.smoothing_window);
-    }
-    auto path_curve = chrono_types::make_shared<ChBezierCurve>(path_points, false);
-    actor.waypoints = path_points;
-
-    auto actor_vehicle = chrono_types::make_shared<WheeledVehicle>(reference_vehicle.GetSystem(), vehicle_filename);
-    actor_vehicle->SetCollisionSystemType(ChCollisionSystem::Type::BULLET);
-    ChQuaterniond start_rot = EstimateInitialRotation(path_points);
-    actor_vehicle->Initialize(ChCoordsys<>(path_points.front(), start_rot));
-    actor_vehicle->GetChassis()->SetFixed(false);
-    actor_vehicle->SetChassisVisualizationType(VisualizationType::MESH);
-    actor_vehicle->SetSuspensionVisualizationType(VisualizationType::PRIMITIVES);
-    actor_vehicle->SetSteeringVisualizationType(VisualizationType::PRIMITIVES);
-    actor_vehicle->SetWheelVisualizationType(VisualizationType::MESH);
-
-    auto actor_engine = ReadEngineJSON(engine_filename);
-    auto actor_transmission = ReadTransmissionJSON(transmission_filename);
-    actor.powertrain = chrono_types::make_shared<ChPowertrainAssembly>(actor_engine, actor_transmission);
-    actor_vehicle->InitializePowertrain(actor.powertrain);
-
-    for (auto &axle : actor_vehicle->GetAxles())
-    {
-      for (auto &wheel : axle->GetWheels())
-      {
-        auto tire = ReadTireJSON(tire_filename);
-        tire->SetStepsize(tire_step_size);
-        actor_vehicle->InitializeTire(tire, wheel, VisualizationType::MESH);
-      }
-    }
-    auto driver = chrono_types::make_shared<ChPathFollowerDriver>(*actor_vehicle, steering_file, speed_file, path_curve,
-                                                                  "actor_path", 0.0);
-    if (actor.look_ahead_distance > 0.0)
-    {
-      driver->GetSteeringController().SetLookAheadDistance(actor.look_ahead_distance);
-    }
-    driver->GetSteeringController().SetGains(actor.steering_kp, actor.steering_ki, actor.steering_kd);
-    driver->Initialize();
-    actor.path_driver = driver;
-
-    actor.vehicle = actor_vehicle;
-    actor.active = (actor.start_time <= 0.0);
-
-    playback_actors.push_back(std::move(actor));
-  }
-
-  if (playback_actors.empty())
-  {
-    std::cerr << "No valid actors were initialized from " << config_path << std::endl;
-    return false;
-  }
-
-  std::cout << "Loaded " << playback_actors.size() << " playback actor(s) from " << config_path << std::endl;
-  return true;
-}
-
-// Initialize a single actor for distributed (SynChrono) mode
-// Returns the ActorPlayback struct with vehicle and driver initialized
-// actor_index is 0-based index into the actors array in the config file
-bool InitializeSingleDistributedActor(const std::string &config_path,
-                                       int actor_index,
-                                       WheeledVehicle &my_vehicle,
-                                       const std::string &vehicle_filename,
-                                       const std::string &engine_filename,
-                                       const std::string &transmission_filename,
-                                       const std::string &tire_filename,
-                                       const std::string &steering_file,
-                                       const std::string &speed_file,
-                                       ActorPlayback &out_actor)
-{
-  std::ifstream ifs(config_path);
-  if (!ifs.is_open())
-  {
-    std::cerr << "Failed to open actor configuration file: " << config_path << std::endl;
-    return false;
-  }
-
-  std::stringstream buffer;
-  buffer << ifs.rdbuf();
-  rapidjson::Document d;
-  d.Parse(buffer.str().c_str());
-  if (d.HasParseError())
-  {
-    std::cerr << "Failed to parse actor configuration file: " << config_path << std::endl;
-    return false;
-  }
-  if (!d.IsObject() || !d.HasMember("actors") || !d["actors"].IsArray())
-  {
-    std::cerr << "Actor configuration missing 'actors' array: " << config_path << std::endl;
-    return false;
-  }
-
-  const auto &actors_array = d["actors"].GetArray();
-  if (actor_index < 0 || actor_index >= static_cast<int>(actors_array.Size()))
-  {
-    std::cerr << "Actor index " << actor_index << " out of range (0-" << actors_array.Size() - 1 << ")" << std::endl;
-    return false;
-  }
-
-  const auto &actor_entry = actors_array[actor_index];
-  if (!actor_entry.IsObject() || !actor_entry.HasMember("path_file"))
-  {
-    std::cerr << "Actor entry at index " << actor_index << " is invalid or missing path_file" << std::endl;
-    return false;
-  }
-
-  ActorPlayback actor;
-  actor.start_time = actor_entry.HasMember("start_time") ? actor_entry["start_time"].GetDouble() : 0.0;
-  if (actor_entry.HasMember("look_ahead"))
-  {
-    actor.look_ahead_distance = actor_entry["look_ahead"].GetDouble();
-  }
-  if (actor_entry.HasMember("path_spacing"))
-  {
-    actor.path_spacing = std::max(0.05, actor_entry["path_spacing"].GetDouble());
-  }
-  if (actor_entry.HasMember("smooth_window"))
-  {
-    actor.smoothing_window = std::max(0.0, actor_entry["smooth_window"].GetDouble());
-  }
-  if (actor_entry.HasMember("steering_kp"))
-  {
-    actor.steering_kp = actor_entry["steering_kp"].GetDouble();
-  }
-  if (actor_entry.HasMember("steering_ki"))
-  {
-    actor.steering_ki = actor_entry["steering_ki"].GetDouble();
-  }
-  if (actor_entry.HasMember("steering_kd"))
-  {
-    actor.steering_kd = actor_entry["steering_kd"].GetDouble();
-  }
-  std::string path_file = actor_entry["path_file"].GetString();
-  if (!LoadWaypointCSV(path_file, actor.waypoints))
-  {
-    std::cerr << "Failed to load path for actor " << actor_index << ": " << path_file << std::endl;
-    return false;
-  }
-  if (!actor_entry.HasMember("speed_profile"))
-  {
-    std::cerr << "Actor " << actor_index << " missing speed_profile" << std::endl;
-    return false;
-  }
-  if (!ParseSpeedProfileJSON(actor_entry["speed_profile"], actor))
-  {
-    std::cerr << "Failed to parse speed profile for actor " << actor_index << std::endl;
-    return false;
-  }
-
-  std::vector<ChVector3d> path_points = BuildResampledPoints(actor.waypoints, actor.path_spacing);
-  if (actor.smoothing_window > 0.0)
-  {
-    path_points = SmoothPathPoints(path_points, actor.path_spacing, actor.smoothing_window);
-  }
-  auto path_curve = chrono_types::make_shared<ChBezierCurve>(path_points, false);
-  actor.waypoints = path_points;
-
-  // For distributed actor, we use my_vehicle directly (it's already initialized at the right position)
-  // Just need to set up the path driver
-  auto driver = chrono_types::make_shared<ChPathFollowerDriver>(my_vehicle, steering_file, speed_file, path_curve,
-                                                                "actor_path", 0.0);
-  if (actor.look_ahead_distance > 0.0)
-  {
-    driver->GetSteeringController().SetLookAheadDistance(actor.look_ahead_distance);
-  }
-  driver->GetSteeringController().SetGains(actor.steering_kp, actor.steering_ki, actor.steering_kd);
-  driver->Initialize();
-  actor.path_driver = driver;
-  actor.vehicle = nullptr; // Distributed actor uses my_vehicle directly, not a separate vehicle
-  actor.active = true; // Distributed actors start active immediately
-
-  out_actor = std::move(actor);
-  std::cout << "Loaded distributed actor " << actor_index << " from " << config_path << std::endl;
-  return true;
-}
-
-// Get the starting position and rotation for a distributed actor from config
-bool GetActorStartPose(const std::string &config_path,
-                       int actor_index,
-                       ChVector3d &out_pos,
-                       ChQuaterniond &out_rot)
-{
-  std::ifstream ifs(config_path);
-  if (!ifs.is_open())
-    return false;
-
-  std::stringstream buffer;
-  buffer << ifs.rdbuf();
-  rapidjson::Document d;
-  d.Parse(buffer.str().c_str());
-  if (d.HasParseError() || !d.IsObject() || !d.HasMember("actors") || !d["actors"].IsArray())
-    return false;
-
-  const auto &actors_array = d["actors"].GetArray();
-  if (actor_index < 0 || actor_index >= static_cast<int>(actors_array.Size()))
-    return false;
-
-  const auto &actor_entry = actors_array[actor_index];
-  if (!actor_entry.IsObject() || !actor_entry.HasMember("path_file"))
-    return false;
-
-  // Load waypoints to get starting position
-  std::vector<ChVector3d> waypoints;
-  std::string path_file = actor_entry["path_file"].GetString();
-  if (!LoadWaypointCSV(path_file, waypoints) || waypoints.empty())
-    return false;
-
-  double path_spacing = actor_entry.HasMember("path_spacing") ? 
-      std::max(0.05, actor_entry["path_spacing"].GetDouble()) : 0.5;
-  double smoothing = actor_entry.HasMember("smooth_window") ?
-      std::max(0.0, actor_entry["smooth_window"].GetDouble()) : 0.0;
-
-  std::vector<ChVector3d> path_points = BuildResampledPoints(waypoints, path_spacing);
-  if (smoothing > 0.0)
-  {
-    path_points = SmoothPathPoints(path_points, path_spacing, smoothing);
-  }
-
-  if (path_points.empty())
-    return false;
-
-  out_pos = path_points.front();
-  out_rot = EstimateInitialRotation(path_points);
-  return true;
-}
-
 int main(int argc, char *argv[])
 {
   // get cli
@@ -1035,6 +409,7 @@ int main(int argc, char *argv[])
   auto communicator = chrono_types::make_shared<SynDDSCommunicator>(qos);
   SynChronoManager syn_manager(node_id, num_nodes, communicator);
   syn_manager.SetHeartbeat(heartbeat);
+  syn_manager.SetInterpolate(true);  // Enable velocity-based interpolation for smoother zombie motion
 
   // --------------
   // Create systems
@@ -1524,7 +899,7 @@ int main(int argc, char *argv[])
   // Only load local playback actors for ego node (distributed actors are handled via SynChrono)
   if (is_ego_node && !actors_config_file.empty())
   {
-    InitializePlaybackActors(actors_config_file, my_vehicle, vehicle_filename, engine_filename, transmission_filename, tire_filename, steering_controller_file_IG_nl, speed_controller_file_IG_nl);
+    InitializePlaybackActors(actors_config_file, my_vehicle, vehicle_filename, engine_filename, transmission_filename, tire_filename, steering_controller_file_IG_nl, speed_controller_file_IG_nl, tire_step_size, playback_actors);
   }
 
   // -----------------------
@@ -1533,6 +908,12 @@ int main(int argc, char *argv[])
   auto agent = chrono_types::make_shared<SynWheeledVehicleAgent>(&my_vehicle, zombie_filename);
   syn_manager.AddAgent(agent);
   syn_manager.Initialize(my_vehicle.GetSystem());
+  syn_manager.SetInterpolate(true);  // Enable velocity-based interpolation for smooth zombie motion
+  
+  // Reset realtime timer AFTER SynChrono initialization completes
+  // This ensures all nodes start measuring wall time from the same point,
+  // avoiding the offset caused by waiting at SynChrono barriers during init
+  realtime_timer.Reset();
   
   std::cout << "SynChrono initialized with " << num_nodes << " node(s)" << std::endl;
 
@@ -1555,6 +936,11 @@ int main(int argc, char *argv[])
 #endif
 
   // simulation loop - use syn_manager.IsOk() to check for distributed sync status
+  // Track timing for all nodes
+  double max_lag_observed = 0.0;
+  double last_timing_report = 0.0;
+  const double timing_report_interval = 2.0;  // Report every 2 seconds
+  
   while (syn_manager.IsOk())
   {
     auto now = std::chrono::high_resolution_clock::now();
@@ -1562,6 +948,20 @@ int main(int argc, char *argv[])
                               now.time_since_epoch())
                               .count();
     double time = my_vehicle.GetSystem()->GetChTime();
+    
+    // Track wall vs sim time for all nodes
+    double wall_time = realtime_timer.GetTimeSeconds();
+    double current_lag = wall_time - time;
+    if (current_lag > max_lag_observed) {
+      max_lag_observed = current_lag;
+    }
+    
+    // Periodic timing report for all nodes
+    if (time - last_timing_report >= timing_report_interval) {
+      std::cout << "[Node " << node_id << " Timing] Wall: " << std::fixed << std::setprecision(2) << wall_time 
+                << "s Sim: " << time << "s Lag: " << current_lag << "s MaxLag: " << max_lag_observed << "s" << std::endl;
+      last_timing_report = time;
+    }
 
     // Update delay based on current simulation time if using JSON config (ego only)
     if (is_ego_node && use_json_delay_config) {
@@ -1740,6 +1140,7 @@ int main(int argc, char *argv[])
 
     // Update modules (process inputs from other modules)
     syn_manager.Synchronize(time);  // SynChrono synchronization between nodes
+    syn_manager.InterpolateZombies(time);  // Smooth zombie motion between sync updates
     terrain.Synchronize(time);
     my_vehicle.Synchronize(time, driver_inputs, terrain);
 
@@ -1760,7 +1161,25 @@ int main(int argc, char *argv[])
     std::vector<TrackedVehicleState> ros_actor_states;
     if (is_ego_node && ros_bridge)
     {
-      ros_actor_states.reserve(playback_actors.size());
+      // Reserve space for local playback actors + SynChrono zombies
+      ros_actor_states.reserve(playback_actors.size() + syn_manager.GetZombies().size());
+      
+      // Add SynChrono zombie vehicles to ROS actor states
+      uint32_t zombie_id = 1000;  // Start zombie IDs at 1000 to avoid collision with local actors
+      for (auto& zombie_pair : syn_manager.GetZombies())
+      {
+        if (auto wheeled_zombie = std::dynamic_pointer_cast<SynWheeledVehicleAgent>(zombie_pair.second))
+        {
+          TrackedVehicleState state;
+          state.id = zombie_id++;
+          state.label = "syn_zombie";
+          state.active = true;
+          state.pos = wheeled_zombie->GetZombiePos();
+          state.rot = wheeled_zombie->GetZombieRot();
+          state.lin_vel = ChVector3d(0, 0, 0);  // Velocity not directly available from zombie
+          ros_actor_states.push_back(state);
+        }
+      }
     }
 #endif
     if (is_ego_node)
@@ -1895,24 +1314,14 @@ int main(int argc, char *argv[])
     // Increment frame number
     step_number++;
 
-    if (step_number == 0)
-    {
-      realtime_timer.Reset();
-    }
-
-    // if (step_number % 10 == 0) {
-
-    // Check for simulation running slower than wall time (ego node only)
+    // Visual indicator for simulation running slower than wall time (ego node only)
+    // The timing stats are already printed above for all nodes
     if (is_ego_node && indicator_slow)
     {
-      if (realtime_timer.GetTimeSeconds() > time + 1.00) {
+      if (current_lag > 1.00) {
           ChVector3d sphere_local_pos_slow(2.54, 0.381 + 0.5, 1.04); 
           ChVector3d sphere_global_pos_slow = my_vehicle.GetChassisBody()->TransformPointLocalToParent(sphere_local_pos_slow);
           indicator_slow->SetPos(sphere_global_pos_slow);
-          
-          if (step_number % 50 == 0) {
-               std::cout << "[Slow Warning] Wall: " << realtime_timer.GetTimeSeconds() << " Sim: " << time << " Lag: " << (realtime_timer.GetTimeSeconds() - time) << "s" << std::endl;
-          }
       } else {
           indicator_slow->SetPos(ChVector3d(0, 0, -100));
       }

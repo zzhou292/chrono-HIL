@@ -75,6 +75,12 @@ foreach(PROGRAM ${DEMOS})
   )
 
   if(PROGRAM STREQUAL "proj_HIL_teleopcity")
+    # Add the actor/path utility sources
+    target_sources(${PROGRAM} PRIVATE 
+      ActorPlayback.cpp
+      PathUtils.cpp
+      ActorConfigLoader.cpp
+    )
     if(HAVE_ROS2_BRIDGE)
       target_sources(${PROGRAM} PRIVATE Ros2Bridge.cpp)
       target_compile_definitions(${PROGRAM} PRIVATE ENABLE_ROS2_BRIDGE)
