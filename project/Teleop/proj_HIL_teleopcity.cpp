@@ -191,6 +191,9 @@ struct ActorPlayback
 std::string actors_config_file = "";
 std::vector<ActorPlayback> playback_actors;
 
+// Distributed actor state (for actor nodes running via SynChrono)
+ActorPlayback distributed_actor_state;
+
 // SynChrono configuration
 double heartbeat = 0.02; // 50 Hz synchronization
 int node_id = 1;
@@ -1171,8 +1174,10 @@ int main(int argc, char *argv[])
 
     // std::string joystick_file =
     //     (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
+    // std::string joystick_file =
+    //     (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G29.json");
     std::string joystick_file =
-        (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G29.json");
+        (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/ps4_controller.json");
     SDLDriver.SetJoystickConfigFile(joystick_file);
     SDLDriver.AddCallbackButtons(auto_toggle_button);
     if (record_mode)
@@ -1410,17 +1415,25 @@ int main(int argc, char *argv[])
       return 1;
     }
     
-    // Get speed (default to cruise_speed)
+    // Get start_time for distributed actor
+    distributed_actor_state.start_time = actor_cfg.HasMember("start_time") ? actor_cfg["start_time"].GetDouble() : 0.0;
+    distributed_actor_state.active = false;
+    
+    // Parse speed profile (object format with type and entries)
     double actor_target_speed = cruise_speed * MPH_TO_MS;
-    if (actor_cfg.HasMember("speed_profile") && actor_cfg["speed_profile"].IsArray()) {
-      const auto& speed_arr = actor_cfg["speed_profile"].GetArray();
-      if (speed_arr.Size() >= 2) {
-        // Use the second element as target speed in m/s
-        actor_target_speed = speed_arr[1].GetDouble();
+    if (actor_cfg.HasMember("speed_profile") && actor_cfg["speed_profile"].IsObject()) {
+      if (!ParseSpeedProfileJSON(actor_cfg["speed_profile"], distributed_actor_state)) {
+        std::cerr << "WARNING: Failed to parse speed_profile for actor " << actor_index << ", using default speed" << std::endl;
+      } else {
+        // Get initial target speed from first velocity entry or initial_speed for acceleration
+        actor_target_speed = distributed_actor_state.initial_speed;
+        std::cout << "  Speed profile type: " << (distributed_actor_state.profile_type == SpeedProfileType::VELOCITY ? "velocity" : "acceleration") << std::endl;
+        std::cout << "  Initial speed: " << distributed_actor_state.initial_speed << " m/s" << std::endl;
+        std::cout << "  Max decel: " << distributed_actor_state.max_decel << " m/s^2" << std::endl;
       }
     }
     
-    // Get driver parameters
+    // Get driver parameters - support both individual fields and array format
     double look_ahead = 5.0;
     double steering_p = 0.8, steering_i = 0.0, steering_d = 0.0;
     double speed_p = 0.6, speed_i = 0.05, speed_d = 0.0;
@@ -1428,6 +1441,17 @@ int main(int argc, char *argv[])
     if (actor_cfg.HasMember("look_ahead") && actor_cfg["look_ahead"].IsNumber()) {
       look_ahead = actor_cfg["look_ahead"].GetDouble();
     }
+    // Support individual steering gain fields (steering_kp, steering_ki, steering_kd)
+    if (actor_cfg.HasMember("steering_kp") && actor_cfg["steering_kp"].IsNumber()) {
+      steering_p = actor_cfg["steering_kp"].GetDouble();
+    }
+    if (actor_cfg.HasMember("steering_ki") && actor_cfg["steering_ki"].IsNumber()) {
+      steering_i = actor_cfg["steering_ki"].GetDouble();
+    }
+    if (actor_cfg.HasMember("steering_kd") && actor_cfg["steering_kd"].IsNumber()) {
+      steering_d = actor_cfg["steering_kd"].GetDouble();
+    }
+    // Also support array format for backwards compatibility
     if (actor_cfg.HasMember("steering_gains") && actor_cfg["steering_gains"].IsArray()) {
       const auto& sg = actor_cfg["steering_gains"].GetArray();
       if (sg.Size() >= 3) {
@@ -1481,10 +1505,20 @@ int main(int argc, char *argv[])
     actor_path_driver->GetSpeedController().SetGains(speed_p, speed_i, speed_d);
     actor_path_driver->Initialize();
     
+    // Store in distributed_actor_state for speed profile evaluation
+    distributed_actor_state.path_driver = actor_path_driver;
+    distributed_actor_state.waypoints = path_points;
+    distributed_actor_state.look_ahead_distance = look_ahead;
+    distributed_actor_state.steering_kp = steering_p;
+    distributed_actor_state.steering_ki = steering_i;
+    distributed_actor_state.steering_kd = steering_d;
+    
     std::cout << "Actor node " << node_id << " initialized path follower driver:" << std::endl;
     std::cout << "  Path file: " << actor_path_file << std::endl;
-    std::cout << "  Target speed: " << actor_target_speed << " m/s" << std::endl;
+    std::cout << "  Start time: " << distributed_actor_state.start_time << " s" << std::endl;
+    std::cout << "  Initial target speed: " << actor_target_speed << " m/s" << std::endl;
     std::cout << "  Look ahead: " << look_ahead << " m" << std::endl;
+    std::cout << "  Steering gains (P/I/D): " << steering_p << "/" << steering_i << "/" << steering_d << std::endl;
   }
 
   // Only load local playback actors for ego node (distributed actors are handled via SynChrono)
@@ -1632,8 +1666,55 @@ int main(int argc, char *argv[])
       // ACTOR NODE: Use path follower driver for autonomous driving
       if (actor_path_driver)
       {
-        actor_path_driver->Synchronize(time);
-        driver_inputs = actor_path_driver->GetInputs();
+        // Check if actor should be active based on start_time
+        if (!distributed_actor_state.active && time >= distributed_actor_state.start_time)
+        {
+          distributed_actor_state.active = true;
+          distributed_actor_state.last_profile_time = 0.0;
+          std::cout << "Actor node " << node_id << " activated at time " << time << std::endl;
+        }
+        
+        if (distributed_actor_state.active)
+        {
+          // Calculate local time since actor activation
+          double local_time = time - distributed_actor_state.start_time;
+          
+          // Evaluate speed profile if defined
+          if (distributed_actor_state.profile_defined)
+          {
+            // Check if near end of path
+            bool within_stop_zone = false;
+            if (!distributed_actor_state.waypoints.empty())
+            {
+              ChVector3d actor_pos = my_vehicle.GetChassis()->GetPos();
+              ChVector3d path_end = distributed_actor_state.waypoints.back();
+              double dist_to_end = (actor_pos - path_end).Length();
+              double stop_distance = distributed_actor_state.look_ahead_distance > 0.0 
+                                     ? distributed_actor_state.look_ahead_distance * 1.5 : 10.0;
+              within_stop_zone = (dist_to_end < stop_distance);
+              
+              if (within_stop_zone && !distributed_actor_state.goal_reached)
+              {
+                distributed_actor_state.goal_reached = true;
+                std::cout << "Actor node " << node_id << " approaching end of path" << std::endl;
+              }
+            }
+            
+            // Get desired speed from profile
+            double desired_speed = EvaluateDesiredSpeed(distributed_actor_state, local_time, step_size, within_stop_zone);
+            actor_path_driver->SetDesiredSpeed(desired_speed);
+          }
+          
+          actor_path_driver->Synchronize(time);
+          driver_inputs = actor_path_driver->GetInputs();
+        }
+        else
+        {
+          // Actor not yet active - stay stopped
+          driver_inputs.m_throttle = 0.0;
+          driver_inputs.m_braking = 1.0;
+          driver_inputs.m_steering = 0.0;
+        }
       }
       else
       {
