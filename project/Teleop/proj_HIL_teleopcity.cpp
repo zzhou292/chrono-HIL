@@ -60,6 +60,23 @@
 #include "chrono_hil/network/udp/ChBoostOutStreamer.h"
 #include "chrono_hil/network/sim/ChDelaySim.h"
 
+// SynChrono includes for distributed simulation
+#include "chrono_synchrono/SynChronoManager.h"
+#include "chrono_synchrono/SynConfig.h"
+#include "chrono_synchrono/agent/SynWheeledVehicleAgent.h"
+#include "chrono_synchrono/communication/dds/SynDDSCommunicator.h"
+#include "chrono_synchrono/utils/SynDataLoader.h"
+#include "chrono_synchrono/utils/SynLog.h"
+
+// FastDDS Quality of Service
+#include <fastdds/dds/domain/qos/DomainParticipantQos.hpp>
+#include <fastdds/rtps/transport/UDPv4TransportDescriptor.h>
+#include <fastdds/rtps/transport/UDPv6TransportDescriptor.h>
+
+using namespace eprosima::fastdds::dds;
+using namespace eprosima::fastdds::rtps;
+using namespace eprosima::fastrtps::rtps;
+
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -74,6 +91,7 @@ using namespace chrono::vehicle::sedan;
 using namespace chrono::hil;
 using namespace chrono::utils;
 using namespace chrono::sensor;
+using namespace chrono::synchrono;
 
 const double RADS_2_RPM = 30 / CH_PI;
 const double RADS_2_DEG = 180 / CH_PI;
@@ -172,6 +190,12 @@ struct ActorPlayback
 
 std::string actors_config_file = "";
 std::vector<ActorPlayback> playback_actors;
+
+// SynChrono configuration
+double heartbeat = 0.02; // 50 Hz synchronization
+int node_id = 1;
+int num_nodes = 1;
+
 // =============================================================================
 void AddCommandLineOptions(ChCLI &cli)
 {
@@ -191,6 +215,12 @@ void AddCommandLineOptions(ChCLI &cli)
   cli.AddOption<int>("Recording", "record_button", "Joystick button index for record toggle", std::to_string(record_toggle_button));
   cli.AddOption<int>("Recording", "finish_button", "Joystick button index to finish recording and exit", std::to_string(finish_record_button));
   cli.AddOption<std::string>("Playback", "actors_config", "Path to actor playback configuration file", actors_config_file);
+  
+  // SynChrono / DDS options for distributed simulation
+  cli.AddOption<int>("DDS", "d,node_id", "ID for this Node (1 = ego with SDL, 2+ = path-following actors)", "1");
+  cli.AddOption<int>("DDS", "n,num_nodes", "Total number of Nodes in the simulation", "1");
+  cli.AddOption<double>("DDS", "heartbeat", "SynChrono heartbeat interval (seconds)", std::to_string(heartbeat));
+  cli.AddOption<std::vector<std::string>>("DDS", "ip", "IP Addresses for DDS initialPeersList", "127.0.0.1");
 }
 // =============================================================================
 void ReadParameterFiles()
@@ -731,6 +761,176 @@ bool InitializePlaybackActors(const std::string &config_path,
   return true;
 }
 
+// Initialize a single actor for distributed (SynChrono) mode
+// Returns the ActorPlayback struct with vehicle and driver initialized
+// actor_index is 0-based index into the actors array in the config file
+bool InitializeSingleDistributedActor(const std::string &config_path,
+                                       int actor_index,
+                                       WheeledVehicle &my_vehicle,
+                                       const std::string &vehicle_filename,
+                                       const std::string &engine_filename,
+                                       const std::string &transmission_filename,
+                                       const std::string &tire_filename,
+                                       const std::string &steering_file,
+                                       const std::string &speed_file,
+                                       ActorPlayback &out_actor)
+{
+  std::ifstream ifs(config_path);
+  if (!ifs.is_open())
+  {
+    std::cerr << "Failed to open actor configuration file: " << config_path << std::endl;
+    return false;
+  }
+
+  std::stringstream buffer;
+  buffer << ifs.rdbuf();
+  rapidjson::Document d;
+  d.Parse(buffer.str().c_str());
+  if (d.HasParseError())
+  {
+    std::cerr << "Failed to parse actor configuration file: " << config_path << std::endl;
+    return false;
+  }
+  if (!d.IsObject() || !d.HasMember("actors") || !d["actors"].IsArray())
+  {
+    std::cerr << "Actor configuration missing 'actors' array: " << config_path << std::endl;
+    return false;
+  }
+
+  const auto &actors_array = d["actors"].GetArray();
+  if (actor_index < 0 || actor_index >= static_cast<int>(actors_array.Size()))
+  {
+    std::cerr << "Actor index " << actor_index << " out of range (0-" << actors_array.Size() - 1 << ")" << std::endl;
+    return false;
+  }
+
+  const auto &actor_entry = actors_array[actor_index];
+  if (!actor_entry.IsObject() || !actor_entry.HasMember("path_file"))
+  {
+    std::cerr << "Actor entry at index " << actor_index << " is invalid or missing path_file" << std::endl;
+    return false;
+  }
+
+  ActorPlayback actor;
+  actor.start_time = actor_entry.HasMember("start_time") ? actor_entry["start_time"].GetDouble() : 0.0;
+  if (actor_entry.HasMember("look_ahead"))
+  {
+    actor.look_ahead_distance = actor_entry["look_ahead"].GetDouble();
+  }
+  if (actor_entry.HasMember("path_spacing"))
+  {
+    actor.path_spacing = std::max(0.05, actor_entry["path_spacing"].GetDouble());
+  }
+  if (actor_entry.HasMember("smooth_window"))
+  {
+    actor.smoothing_window = std::max(0.0, actor_entry["smooth_window"].GetDouble());
+  }
+  if (actor_entry.HasMember("steering_kp"))
+  {
+    actor.steering_kp = actor_entry["steering_kp"].GetDouble();
+  }
+  if (actor_entry.HasMember("steering_ki"))
+  {
+    actor.steering_ki = actor_entry["steering_ki"].GetDouble();
+  }
+  if (actor_entry.HasMember("steering_kd"))
+  {
+    actor.steering_kd = actor_entry["steering_kd"].GetDouble();
+  }
+  std::string path_file = actor_entry["path_file"].GetString();
+  if (!LoadWaypointCSV(path_file, actor.waypoints))
+  {
+    std::cerr << "Failed to load path for actor " << actor_index << ": " << path_file << std::endl;
+    return false;
+  }
+  if (!actor_entry.HasMember("speed_profile"))
+  {
+    std::cerr << "Actor " << actor_index << " missing speed_profile" << std::endl;
+    return false;
+  }
+  if (!ParseSpeedProfileJSON(actor_entry["speed_profile"], actor))
+  {
+    std::cerr << "Failed to parse speed profile for actor " << actor_index << std::endl;
+    return false;
+  }
+
+  std::vector<ChVector3d> path_points = BuildResampledPoints(actor.waypoints, actor.path_spacing);
+  if (actor.smoothing_window > 0.0)
+  {
+    path_points = SmoothPathPoints(path_points, actor.path_spacing, actor.smoothing_window);
+  }
+  auto path_curve = chrono_types::make_shared<ChBezierCurve>(path_points, false);
+  actor.waypoints = path_points;
+
+  // For distributed actor, we use my_vehicle directly (it's already initialized at the right position)
+  // Just need to set up the path driver
+  auto driver = chrono_types::make_shared<ChPathFollowerDriver>(my_vehicle, steering_file, speed_file, path_curve,
+                                                                "actor_path", 0.0);
+  if (actor.look_ahead_distance > 0.0)
+  {
+    driver->GetSteeringController().SetLookAheadDistance(actor.look_ahead_distance);
+  }
+  driver->GetSteeringController().SetGains(actor.steering_kp, actor.steering_ki, actor.steering_kd);
+  driver->Initialize();
+  actor.path_driver = driver;
+  actor.vehicle = nullptr; // Distributed actor uses my_vehicle directly, not a separate vehicle
+  actor.active = true; // Distributed actors start active immediately
+
+  out_actor = std::move(actor);
+  std::cout << "Loaded distributed actor " << actor_index << " from " << config_path << std::endl;
+  return true;
+}
+
+// Get the starting position and rotation for a distributed actor from config
+bool GetActorStartPose(const std::string &config_path,
+                       int actor_index,
+                       ChVector3d &out_pos,
+                       ChQuaterniond &out_rot)
+{
+  std::ifstream ifs(config_path);
+  if (!ifs.is_open())
+    return false;
+
+  std::stringstream buffer;
+  buffer << ifs.rdbuf();
+  rapidjson::Document d;
+  d.Parse(buffer.str().c_str());
+  if (d.HasParseError() || !d.IsObject() || !d.HasMember("actors") || !d["actors"].IsArray())
+    return false;
+
+  const auto &actors_array = d["actors"].GetArray();
+  if (actor_index < 0 || actor_index >= static_cast<int>(actors_array.Size()))
+    return false;
+
+  const auto &actor_entry = actors_array[actor_index];
+  if (!actor_entry.IsObject() || !actor_entry.HasMember("path_file"))
+    return false;
+
+  // Load waypoints to get starting position
+  std::vector<ChVector3d> waypoints;
+  std::string path_file = actor_entry["path_file"].GetString();
+  if (!LoadWaypointCSV(path_file, waypoints) || waypoints.empty())
+    return false;
+
+  double path_spacing = actor_entry.HasMember("path_spacing") ? 
+      std::max(0.05, actor_entry["path_spacing"].GetDouble()) : 0.5;
+  double smoothing = actor_entry.HasMember("smooth_window") ?
+      std::max(0.0, actor_entry["smooth_window"].GetDouble()) : 0.0;
+
+  std::vector<ChVector3d> path_points = BuildResampledPoints(waypoints, path_spacing);
+  if (smoothing > 0.0)
+  {
+    path_points = SmoothPathPoints(path_points, path_spacing, smoothing);
+  }
+
+  if (path_points.empty())
+    return false;
+
+  out_pos = path_points.front();
+  out_rot = EstimateInitialRotation(path_points);
+  return true;
+}
+
 int main(int argc, char *argv[])
 {
   // get cli
@@ -751,6 +951,10 @@ int main(int argc, char *argv[])
       "audi/json/audi_AutomaticTransmissionSimpleMap.json");
   std::string tire_filename =
       vehicle::GetDataFile("audi/json/audi_TMeasyTire.json");
+  // Note: Using Sedan.json as zombie since audi.json doesn't exist in standard Chrono data
+  // The Sedan has similar proportions to the Audi for visualization purposes
+  std::string zombie_filename =
+      CHRONO_DATA_DIR + std::string("synchrono/vehicle/Sedan.json");
 
   scenario_filename = cli.GetAsType<std::string>("sim_params");
   delay_val = cli.GetAsType<float>("delay_val");
@@ -764,12 +968,40 @@ int main(int argc, char *argv[])
   finish_record_button = cli.GetAsType<int>("finish_button");
   actors_config_file = cli.GetAsType<std::string>("actors_config");
   enable_ros_bridge = cli.GetAsType<bool>("ros_bridge");
+  
+  // Parse SynChrono/DDS options
+  node_id = cli.GetAsType<int>("node_id");
+  num_nodes = cli.GetAsType<int>("num_nodes");
+  heartbeat = cli.GetAsType<double>("heartbeat");
+  const std::vector<std::string> ip_list = cli.GetAsType<std::vector<std::string>>("ip");
+  
+  // Determine if this node is the ego (node_id == 1) or an actor node
+  const bool is_ego_node = (node_id == 1);
+  const int actor_index = node_id - 2; // Actor index in config (node 2 = actor 0, node 3 = actor 1, etc.)
+  
+  std::cout << "=== SynChrono Configuration ===" << std::endl;
+  std::cout << "Node ID: " << node_id << " / " << num_nodes << std::endl;
+  std::cout << "Role: " << (is_ego_node ? "EGO (SDL driver)" : "ACTOR (path follower, actor index " + std::to_string(actor_index) + ")") << std::endl;
+  std::cout << "Heartbeat: " << heartbeat << "s" << std::endl;
+  if (!actors_config_file.empty())
+  {
+    std::cout << "Actors config: " << actors_config_file << std::endl;
+  }
+  std::cout << "===============================" << std::endl;
+  
+  // For actor nodes, we need the actors_config to know where to start and what path to follow
+  if (!is_ego_node && actors_config_file.empty())
+  {
+    std::cerr << "ERROR: Actor nodes (node_id > 1) require --actors_config to be specified!" << std::endl;
+    return 1;
+  }
+  
   if (record_interval <= 0.0)
   {
     record_interval = 0.1;
   }
   recorded_positions.clear();
-  if (record_mode)
+  if (record_mode && is_ego_node)
   {
     std::cout << "Recording mode enabled. Use button " << record_toggle_button
               << " to toggle capture and button " << finish_record_button
@@ -777,9 +1009,52 @@ int main(int argc, char *argv[])
   }
 
   ReadParameterFiles();
+  
+  // -----------------------
+  // Create SynChronoManager
+  // -----------------------
+  DomainParticipantQos qos;
+  qos.name("/syn/node/" + std::to_string(node_id) + ".0");
+  qos.transport().user_transports.push_back(
+      std::make_shared<UDPv4TransportDescriptor>());
+  qos.transport().use_builtin_transports = false;
+  qos.wire_protocol().builtin.avoid_builtin_multicast = false;
+
+  // Set the initialPeersList
+  for (const auto &ip : ip_list)
+  {
+    Locator_t locator;
+    locator.kind = LOCATOR_KIND_UDPv4;
+    IPLocator::setIPv4(locator, ip);
+    qos.wire_protocol().builtin.initialPeersList.push_back(locator);
+  }
+  
+  auto communicator = chrono_types::make_shared<SynDDSCommunicator>(qos);
+  SynChronoManager syn_manager(node_id, num_nodes, communicator);
+  syn_manager.SetHeartbeat(heartbeat);
+
   // --------------
   // Create systems
   // --------------
+  
+  // For actor nodes, get the starting position from the actor config file
+  if (!is_ego_node)
+  {
+    ChVector3d actor_start_pos;
+    ChQuaterniond actor_start_rot;
+    if (GetActorStartPose(actors_config_file, actor_index, actor_start_pos, actor_start_rot))
+    {
+      initLoc = actor_start_pos;
+      initRot = actor_start_rot;
+      std::cout << "Actor node " << node_id << " (actor " << actor_index << ") starting at path position: " 
+                << initLoc.x() << ", " << initLoc.y() << ", " << initLoc.z() << std::endl;
+    }
+    else
+    {
+      std::cerr << "ERROR: Failed to get start pose for actor " << actor_index << " from config!" << std::endl;
+      return 1;
+    }
+  }
 
   // Create the Sedan vehicle, set parameters, and initialize
   WheeledVehicle my_vehicle(vehicle_filename, ChContactMethod::SMC);
@@ -889,23 +1164,27 @@ int main(int argc, char *argv[])
   ChSDLInterface SDLDriver;
   // Set the time response for steering and throttle keyboard inputs.
 
-  SDLDriver.Initialize();
-
-  // std::string joystick_file =
-  //     (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
-  std::string joystick_file =
-(STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G29.json");
-  SDLDriver.SetJoystickConfigFile(joystick_file);
-  SDLDriver.AddCallbackButtons(auto_toggle_button);
-  if (record_mode)
+  // Only initialize SDL driver for ego node
+  if (is_ego_node)
   {
-    SDLDriver.AddCallbackButtons(record_toggle_button);
-    SDLDriver.AddCallbackButtons(finish_record_button);
+    SDLDriver.Initialize();
+
+    // std::string joystick_file =
+    //     (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
+    std::string joystick_file =
+        (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G29.json");
+    SDLDriver.SetJoystickConfigFile(joystick_file);
+    SDLDriver.AddCallbackButtons(auto_toggle_button);
+    if (record_mode)
+    {
+      SDLDriver.AddCallbackButtons(record_toggle_button);
+      SDLDriver.AddCallbackButtons(finish_record_button);
+    }
   }
 
 #ifdef ENABLE_ROS2_BRIDGE
   std::unique_ptr<Ros2Bridge> ros_bridge;
-  if (enable_ros_bridge)
+  if (enable_ros_bridge && is_ego_node)
   {
     std::cout << "Initializing ROS2 bridge..." << std::endl;
     Ros2BridgeConfig ros_config;
@@ -917,7 +1196,7 @@ int main(int argc, char *argv[])
     }
   }
 #else
-  if (enable_ros_bridge)
+  if (enable_ros_bridge && is_ego_node)
   {
     std::cout << "ROS2 bridge requested but Chrono was built without ROS2 dependencies." << std::endl;
   }
@@ -927,62 +1206,71 @@ int main(int argc, char *argv[])
   // Add sensor manager and simulation
   // ---------------------------------
 
-  auto manager =
-      chrono_types::make_shared<ChSensorManager>(my_vehicle.GetSystem());
-  Background b;
-  b.mode = BackgroundMode::ENVIRONMENT_MAP; // GRADIENT
-  b.env_tex =
-      std::string(STRINGIFY(HIL_DATA_DIR)) + ("/Environments/sky_2_4k.hdr");
-  manager->scene->SetBackground(b);
-  float brightness = 1.5f;
-  manager->scene->AddPointLight({0, 0, 10000},
-                                {brightness, brightness, brightness}, 100000);
-  manager->scene->SetAmbientLight({.1, .1, .1});
-  manager->scene->SetSceneEpsilon(1e-3);
-  manager->scene->EnableDynamicOrigin(true);
-  manager->scene->SetOriginOffsetThreshold(500.f);
+  // Sensor manager is only needed for ego node (visualization)
+  std::shared_ptr<ChSensorManager> manager;
+  std::shared_ptr<ChCameraSensor> driver_cam;
+  std::shared_ptr<ChBodyEasySphere> indicator_green;
+  std::shared_ptr<ChBodyEasySphere> indicator_red;
+  std::shared_ptr<ChBodyEasySphere> indicator_slow;
+  
+  if (is_ego_node)
+  {
+    manager = chrono_types::make_shared<ChSensorManager>(my_vehicle.GetSystem());
+    Background b;
+    b.mode = BackgroundMode::ENVIRONMENT_MAP; // GRADIENT
+    b.env_tex =
+        std::string(STRINGIFY(HIL_DATA_DIR)) + ("/Environments/sky_2_4k.hdr");
+    manager->scene->SetBackground(b);
+    float brightness = 1.5f;
+    manager->scene->AddPointLight({0, 0, 10000},
+                                  {brightness, brightness, brightness}, 100000);
+    manager->scene->SetAmbientLight({.1, .1, .1});
+    manager->scene->SetSceneEpsilon(1e-3);
+    manager->scene->EnableDynamicOrigin(true);
+    manager->scene->SetOriginOffsetThreshold(500.f);
 
-  // camera at driver's eye location for Audi
-  ChQuaterniond driver_cam_rot;
-  driver_cam_rot.SetFromAngleAxis(0, {0, 1, 0});
-  auto driver_cam = chrono_types::make_shared<ChCameraSensor>(
-      my_vehicle.GetChassisBody(), // body camera is attached to
-      35,                          // update rate in Hz
-      chrono::ChFrame<double>({0.54, .381, 1.04},
-                              driver_cam_rot), // offset pose
-      5760,                                    // image width
-      1080,                                    // image height
-      3.14 / 1.5,                              // fov
-      1);
+    // camera at driver's eye location for Audi
+    ChQuaterniond driver_cam_rot;
+    driver_cam_rot.SetFromAngleAxis(0, {0, 1, 0});
+    driver_cam = chrono_types::make_shared<ChCameraSensor>(
+        my_vehicle.GetChassisBody(), // body camera is attached to
+        35,                          // update rate in Hz
+        chrono::ChFrame<double>({0.54, .381, 1.04},
+                                driver_cam_rot), // offset pose
+        5760,                                    // image width
+        1080,                                    // image height
+        3.14 / 1.5,                              // fov
+        1);
 
-  driver_cam->SetName("DriverCam");
-  driver_cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
-      5760, 1080, "Camera1", false));
-  driver_cam->SetLag(cam_delay_val * 0.001);
-  driver_cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
-  manager->AddSensor(driver_cam);
+    driver_cam->SetName("DriverCam");
+    driver_cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
+        5760, 1080, "Camera1", false));
+    driver_cam->SetLag(cam_delay_val * 0.001);
+    driver_cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
+    manager->AddSensor(driver_cam);
 
-  // Create warning indicators (Green and Red spheres)
-  auto indicator_green = chrono_types::make_shared<ChBodyEasySphere>(0.15, 100, true, false);
-  indicator_green->SetPos(ChVector3d(0, 0, -100));
-  indicator_green->SetFixed(true);
-  indicator_green->EnableCollision(false);
-  indicator_green->GetVisualShape(0)->SetColor(ChColor(0.0f, 1.0f, 0.0f)); // Green
-  my_vehicle.GetSystem()->Add(indicator_green);
+    // Create warning indicators (Green and Red spheres)
+    indicator_green = chrono_types::make_shared<ChBodyEasySphere>(0.15, 100, true, false);
+    indicator_green->SetPos(ChVector3d(0, 0, -100));
+    indicator_green->SetFixed(true);
+    indicator_green->EnableCollision(false);
+    indicator_green->GetVisualShape(0)->SetColor(ChColor(0.0f, 1.0f, 0.0f)); // Green
+    my_vehicle.GetSystem()->Add(indicator_green);
 
-  auto indicator_red = chrono_types::make_shared<ChBodyEasySphere>(0.15, 100, true, false);
-  indicator_red->SetPos(ChVector3d(0, 0, -100));
-  indicator_red->SetFixed(true);
-  indicator_red->EnableCollision(false);
-  indicator_red->GetVisualShape(0)->SetColor(ChColor(1.0f, 0.0f, 0.0f)); // Red
-  my_vehicle.GetSystem()->Add(indicator_red);
+    indicator_red = chrono_types::make_shared<ChBodyEasySphere>(0.15, 100, true, false);
+    indicator_red->SetPos(ChVector3d(0, 0, -100));
+    indicator_red->SetFixed(true);
+    indicator_red->EnableCollision(false);
+    indicator_red->GetVisualShape(0)->SetColor(ChColor(1.0f, 0.0f, 0.0f)); // Red
+    my_vehicle.GetSystem()->Add(indicator_red);
 
-  auto indicator_slow = chrono_types::make_shared<ChBodyEasySphere>(0.15, 100, true, false);
-  indicator_slow->SetPos(ChVector3d(0, 0, -100));
-  indicator_slow->SetFixed(true);
-  indicator_slow->EnableCollision(false);
-  indicator_slow->GetVisualShape(0)->SetColor(ChColor(1.0f, 1.0f, 0.0f)); // Yellow
-  my_vehicle.GetSystem()->Add(indicator_slow);
+    indicator_slow = chrono_types::make_shared<ChBodyEasySphere>(0.15, 100, true, false);
+    indicator_slow->SetPos(ChVector3d(0, 0, -100));
+    indicator_slow->SetFixed(true);
+    indicator_slow->EnableCollision(false);
+    indicator_slow->GetVisualShape(0)->SetColor(ChColor(1.0f, 1.0f, 0.0f)); // Yellow
+    my_vehicle.GetSystem()->Add(indicator_slow);
+  }
 
   // Initialize simulation frame counters
   int step_number = 0;
@@ -1045,28 +1333,174 @@ int main(int argc, char *argv[])
       "/Environments/nads/Driver/SteeringController_IG_nl.json";
   std::string speed_controller_file_IG_nl =
       std::string(STRINGIFY(HIL_DATA_DIR)) + "/Environments/nads/Driver/SpeedController_IG_nl.json";
+  
+  // Outer path only used by ego vehicle in auto mode
   std::string outer_path_file = "";
+  std::shared_ptr<ChBezierCurve> outer_path;
+  std::vector<double> followerParam = {30, 1.5, 2.0, 5.0, 3.0, 4.0, AUDI_LENGTH};
+  
+  // Create path follower driver for ego vehicle (used in auto mode)
+  std::shared_ptr<ChNSFFollowerDriver> PFdriver;
+  
+  if (is_ego_node)
+  {
+    // Ego vehicle uses lane-based outer path for auto mode
+    if (lane == 0)
+      outer_path_file = std::string(STRINGIFY(HIL_DATA_DIR)) +
+                        "/Environments/nads/bezier_curve_points.txt";
+    else if (lane == 1)
+      outer_path_file = std::string(STRINGIFY(HIL_DATA_DIR)) +
+                        "/Environments/nads/nads_path_5.txt";
 
-  if (lane == 0)
-    outer_path_file = std::string(STRINGIFY(HIL_DATA_DIR)) +
-                      "/Environments/nads/bezier_curve_points.txt";
-  else if (lane == 1)
-    outer_path_file = std::string(STRINGIFY(HIL_DATA_DIR)) +
-                      "/Environments/nads/nads_path_5.txt";
+    outer_path = ChBezierCurve::Read(outer_path_file, true);
+    
+    PFdriver = chrono_types::make_shared<ChNSFFollowerDriver>(
+        my_vehicle, steering_controller_file_IG_nl, speed_controller_file_IG_nl,
+        outer_path, "road", cruise_speed * MPH_TO_MS, followerParam);
+    PFdriver->Initialize();
+  }
 
-  auto outer_path = ChBezierCurve::Read(outer_path_file, true);
-  std::vector<double>
-      followerParam = {30, 1.5, 2.0, 5.0, 3.0, 4.0, AUDI_LENGTH};
+  // For actor nodes, create path follower from actor config
+  std::shared_ptr<ChPathFollowerDriver> actor_path_driver;
+  if (!is_ego_node)
+  {
+    // Load actor-specific path from config
+    std::string full_actors_config_path;
+    if (actors_config_file[0] == '/') {
+      full_actors_config_path = actors_config_file;
+    } else {
+      full_actors_config_path = std::string(STRINGIFY(HIL_DATA_DIR)) + "/" + actors_config_file;
+    }
+    
+    std::ifstream actor_ifs(full_actors_config_path);
+    if (!actor_ifs.is_open()) {
+      std::cerr << "ERROR: Could not open actor config file for driver: " << full_actors_config_path << std::endl;
+      return 1;
+    }
+    std::stringstream actor_buffer;
+    actor_buffer << actor_ifs.rdbuf();
+    actor_ifs.close();
+    
+    rapidjson::Document actors_doc;
+    actors_doc.Parse(actor_buffer.str().c_str());
+    
+    if (actors_doc.HasParseError() || !actors_doc.HasMember("actors") || !actors_doc["actors"].IsArray()) {
+      std::cerr << "ERROR: Actor config file missing 'actors' array or has parse error!" << std::endl;
+      return 1;
+    }
+    
+    const auto& actors_array = actors_doc["actors"].GetArray();
+    if (actor_index >= static_cast<int>(actors_array.Size())) {
+      std::cerr << "ERROR: Actor index " << actor_index << " out of range (only " 
+                << actors_array.Size() << " actors in config)" << std::endl;
+      return 1;
+    }
+    
+    const auto& actor_cfg = actors_array[actor_index];
+    
+    // Get path file
+    std::string actor_path_file;
+    if (actor_cfg.HasMember("path_file") && actor_cfg["path_file"].IsString()) {
+      actor_path_file = actor_cfg["path_file"].GetString();
+      if (actor_path_file[0] != '/') {
+        actor_path_file = std::string(STRINGIFY(HIL_DATA_DIR)) + "/" + actor_path_file;
+      }
+    } else {
+      std::cerr << "ERROR: Actor " << actor_index << " missing 'path_file'!" << std::endl;
+      return 1;
+    }
+    
+    // Get speed (default to cruise_speed)
+    double actor_target_speed = cruise_speed * MPH_TO_MS;
+    if (actor_cfg.HasMember("speed_profile") && actor_cfg["speed_profile"].IsArray()) {
+      const auto& speed_arr = actor_cfg["speed_profile"].GetArray();
+      if (speed_arr.Size() >= 2) {
+        // Use the second element as target speed in m/s
+        actor_target_speed = speed_arr[1].GetDouble();
+      }
+    }
+    
+    // Get driver parameters
+    double look_ahead = 5.0;
+    double steering_p = 0.8, steering_i = 0.0, steering_d = 0.0;
+    double speed_p = 0.6, speed_i = 0.05, speed_d = 0.0;
+    
+    if (actor_cfg.HasMember("look_ahead") && actor_cfg["look_ahead"].IsNumber()) {
+      look_ahead = actor_cfg["look_ahead"].GetDouble();
+    }
+    if (actor_cfg.HasMember("steering_gains") && actor_cfg["steering_gains"].IsArray()) {
+      const auto& sg = actor_cfg["steering_gains"].GetArray();
+      if (sg.Size() >= 3) {
+        steering_p = sg[0].GetDouble();
+        steering_i = sg[1].GetDouble();
+        steering_d = sg[2].GetDouble();
+      }
+    }
+    if (actor_cfg.HasMember("speed_gains") && actor_cfg["speed_gains"].IsArray()) {
+      const auto& spg = actor_cfg["speed_gains"].GetArray();
+      if (spg.Size() >= 3) {
+        speed_p = spg[0].GetDouble();
+        speed_i = spg[1].GetDouble();
+        speed_d = spg[2].GetDouble();
+      }
+    }
+    
+    // Get path processing parameters
+    double path_spacing = 0.5;
+    double smoothing_window = 0.0;
+    if (actor_cfg.HasMember("path_spacing") && actor_cfg["path_spacing"].IsNumber()) {
+      path_spacing = std::max(0.05, actor_cfg["path_spacing"].GetDouble());
+    }
+    if (actor_cfg.HasMember("smooth_window") && actor_cfg["smooth_window"].IsNumber()) {
+      smoothing_window = std::max(0.0, actor_cfg["smooth_window"].GetDouble());
+    }
+    
+    // Load waypoints from CSV and build bezier curve (same as local playback actors)
+    std::vector<ChVector3d> waypoints;
+    if (!LoadWaypointCSV(actor_path_file, waypoints) || waypoints.empty()) {
+      std::cerr << "ERROR: Failed to load waypoints from " << actor_path_file << std::endl;
+      return 1;
+    }
+    
+    std::vector<ChVector3d> path_points = BuildResampledPoints(waypoints, path_spacing);
+    if (smoothing_window > 0.0) {
+      path_points = SmoothPathPoints(path_points, path_spacing, smoothing_window);
+    }
+    
+    if (path_points.empty()) {
+      std::cerr << "ERROR: No path points after processing for actor " << actor_index << std::endl;
+      return 1;
+    }
+    
+    auto actor_path = chrono_types::make_shared<ChBezierCurve>(path_points, false);
+    
+    actor_path_driver = chrono_types::make_shared<ChPathFollowerDriver>(
+        my_vehicle, actor_path, "actor_path", actor_target_speed);
+    actor_path_driver->GetSteeringController().SetLookAheadDistance(look_ahead);
+    actor_path_driver->GetSteeringController().SetGains(steering_p, steering_i, steering_d);
+    actor_path_driver->GetSpeedController().SetGains(speed_p, speed_i, speed_d);
+    actor_path_driver->Initialize();
+    
+    std::cout << "Actor node " << node_id << " initialized path follower driver:" << std::endl;
+    std::cout << "  Path file: " << actor_path_file << std::endl;
+    std::cout << "  Target speed: " << actor_target_speed << " m/s" << std::endl;
+    std::cout << "  Look ahead: " << look_ahead << " m" << std::endl;
+  }
 
-  std::shared_ptr<ChNSFFollowerDriver> PFdriver = chrono_types::make_shared<ChNSFFollowerDriver>(
-      my_vehicle, steering_controller_file_IG_nl, speed_controller_file_IG_nl,
-      outer_path, "road", cruise_speed * MPH_TO_MS, followerParam);
-  PFdriver->Initialize();
-
-  if (!actors_config_file.empty())
+  // Only load local playback actors for ego node (distributed actors are handled via SynChrono)
+  if (is_ego_node && !actors_config_file.empty())
   {
     InitializePlaybackActors(actors_config_file, my_vehicle, vehicle_filename, engine_filename, transmission_filename, tire_filename, steering_controller_file_IG_nl, speed_controller_file_IG_nl);
   }
+
+  // -----------------------
+  // Add vehicle as SynChrono agent and initialize
+  // -----------------------
+  auto agent = chrono_types::make_shared<SynWheeledVehicleAgent>(&my_vehicle, zombie_filename);
+  syn_manager.AddAgent(agent);
+  syn_manager.Initialize(my_vehicle.GetSystem());
+  
+  std::cout << "SynChrono initialized with " << num_nodes << " node(s)" << std::endl;
 
   auto last_auto_toggle = std::chrono::system_clock::now();
   auto last_record_toggle = last_auto_toggle;
@@ -1086,8 +1520,8 @@ int main(int argc, char *argv[])
   bool warning_active = false;
 #endif
 
-  // simulation loop
-  while (true)
+  // simulation loop - use syn_manager.IsOk() to check for distributed sync status
+  while (syn_manager.IsOk())
   {
     auto now = std::chrono::high_resolution_clock::now();
     auto dds_time_stamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1095,8 +1529,8 @@ int main(int argc, char *argv[])
                               .count();
     double time = my_vehicle.GetSystem()->GetChTime();
 
-    // Update delay based on current simulation time if using JSON config
-    if (use_json_delay_config) {
+    // Update delay based on current simulation time if using JSON config (ego only)
+    if (is_ego_node && use_json_delay_config) {
       sim.updateDelayForTime(time);
     }
 
@@ -1117,78 +1551,101 @@ int main(int argc, char *argv[])
       break;
 #endif
 
-    // Run Control & Comms at 50Hz (20ms) to match ROS rate
-    if (step_number % 20 == 0)
+    // =====================================================
+    // Driver input handling - differs between ego and actor
+    // =====================================================
+    if (is_ego_node)
     {
-      // Create a vector of floats
-      std::vector<float> floats = {static_cast<float>(auto_mode), SDLDriver.GetSteering(), SDLDriver.GetThrottle(), SDLDriver.GetBraking()};
-
-      // Serialize the vector of floats to a vector of chars
-      std::vector<char> serializedData = serializeFloats(floats);
-      sim.addPacket(serializedData);
-
-      // Get the packet back
-      std::vector<char> receivedData = sim.getDelayedPacket();
-      if (!receivedData.empty())
+      // EGO NODE: Run Control & Comms at 50Hz (20ms) to match ROS rate
+      if (step_number % 20 == 0)
       {
-        // Deserialize the data back to floats
-        std::vector<float> receivedFloats = deserializeFloats(receivedData);
-        if (receivedFloats[0] == 0) // manual mode
-        {
-          driver_inputs.m_steering = receivedFloats[1];
-          driver_inputs.m_throttle = receivedFloats[2];
-          driver_inputs.m_braking = receivedFloats[3];
+        // Create a vector of floats
+        std::vector<float> floats = {static_cast<float>(auto_mode), SDLDriver.GetSteering(), SDLDriver.GetThrottle(), SDLDriver.GetBraking()};
 
-          // std::cout << "Manual: " << driver_inputs.m_steering << " " << driver_inputs.m_throttle << " " << driver_inputs.m_braking << std::endl;
-        }
-        else
-        {
-          driver_inputs = PFdriver->GetInputs();
-        }
-      }
-      
-      // Update raw inputs snapshot for logging/publishing
-      raw_inputs = driver_inputs;
+        // Serialize the vector of floats to a vector of chars
+        std::vector<char> serializedData = serializeFloats(floats);
+        sim.addPacket(serializedData);
 
-#ifdef ENABLE_ROS2_BRIDGE
-      if (ros_bridge)
-      {
-        // Check for new command
-        if (auto cmd = ros_bridge->GetSafetyCommand())
+        // Get the packet back
+        std::vector<char> receivedData = sim.getDelayedPacket();
+        if (!receivedData.empty())
         {
-          if (cmd->valid)
+          // Deserialize the data back to floats
+          std::vector<float> receivedFloats = deserializeFloats(receivedData);
+          if (receivedFloats[0] == 0) // manual mode
           {
-            last_safety_cmd = *cmd;
-            last_safety_time = time;
+            driver_inputs.m_steering = receivedFloats[1];
+            driver_inputs.m_throttle = receivedFloats[2];
+            driver_inputs.m_braking = receivedFloats[3];
+
+            // std::cout << "Manual: " << driver_inputs.m_steering << " " << driver_inputs.m_throttle << " " << driver_inputs.m_braking << std::endl;
+          }
+          else
+          {
+            driver_inputs = PFdriver->GetInputs();
           }
         }
         
-        ros_bridge->PublishDriverInput(time, auto_mode, raw_inputs, driver_inputs);
-        ros_bridge->PublishEgoState(time, my_vehicle, driver_inputs.m_steering, driver_inputs.m_steering);
+        // Update raw inputs snapshot for logging/publishing
+        raw_inputs = driver_inputs;
+
+#ifdef ENABLE_ROS2_BRIDGE
+        if (ros_bridge)
+        {
+          // Check for new command
+          if (auto cmd = ros_bridge->GetSafetyCommand())
+          {
+            if (cmd->valid)
+            {
+              last_safety_cmd = *cmd;
+              last_safety_time = time;
+            }
+          }
+          
+          ros_bridge->PublishDriverInput(time, auto_mode, raw_inputs, driver_inputs);
+          ros_bridge->PublishEgoState(time, my_vehicle, driver_inputs.m_steering, driver_inputs.m_steering);
+        }
+#endif
+      }
+
+#ifdef ENABLE_ROS2_BRIDGE
+      // Apply safety command (Persistent override with timeout)
+      if (ros_bridge && last_safety_time > 0 && (time - last_safety_time) < SAFETY_CMD_TIMEOUT)
+      {
+          double alpha = last_safety_cmd.throttle;
+          if (alpha >= 0.0)
+          {
+            driver_inputs.m_throttle = alpha;
+            driver_inputs.m_braking = 0.0;
+          }
+          else
+          {
+            driver_inputs.m_throttle = 0.0;
+            driver_inputs.m_braking = -alpha;
+          }
+          driver_inputs.m_steering = last_safety_cmd.steering;
       }
 #endif
     }
-
-#ifdef ENABLE_ROS2_BRIDGE
-    // Apply safety command (Persistent override with timeout)
-    if (ros_bridge && last_safety_time > 0 && (time - last_safety_time) < SAFETY_CMD_TIMEOUT)
+    else
     {
-        double alpha = last_safety_cmd.throttle;
-        if (alpha >= 0.0)
-        {
-          driver_inputs.m_throttle = alpha;
-          driver_inputs.m_braking = 0.0;
-        }
-        else
-        {
-          driver_inputs.m_throttle = 0.0;
-          driver_inputs.m_braking = -alpha;
-        }
-        driver_inputs.m_steering = last_safety_cmd.steering;
+      // ACTOR NODE: Use path follower driver for autonomous driving
+      if (actor_path_driver)
+      {
+        actor_path_driver->Synchronize(time);
+        driver_inputs = actor_path_driver->GetInputs();
+      }
+      else
+      {
+        // No driver available for actor node - should not happen if config was loaded properly
+        std::cerr << "ERROR: Actor node has no path driver!" << std::endl;
+        driver_inputs.m_throttle = 0.0;
+        driver_inputs.m_braking = 1.0;
+        driver_inputs.m_steering = 0.0;
+      }
     }
-#endif
 
-    if (record_mode && recording_active)
+    if (is_ego_node && record_mode && recording_active)
     {
       if (last_recorded_time < 0.0 || (time - last_recorded_time) >= record_interval)
       {
@@ -1201,45 +1658,57 @@ int main(int argc, char *argv[])
     // =======================
 
     // Update modules (process inputs from other modules)
+    syn_manager.Synchronize(time);  // SynChrono synchronization between nodes
     terrain.Synchronize(time);
     my_vehicle.Synchronize(time, driver_inputs, terrain);
 
     // Advance simulation for one time for all modules
     terrain.Advance(step_size);
     my_vehicle.Advance(step_size);
+    
+    // Advance path follower driver for actor nodes
+    if (!is_ego_node && actor_path_driver)
+    {
+      actor_path_driver->Advance(step_size);
+    }
+    
     // vis->Advance(step_size);
+    
+    // Local playback actors (only for ego node, distributed actors handled by SynChrono)
 #ifdef ENABLE_ROS2_BRIDGE
     std::vector<TrackedVehicleState> ros_actor_states;
-    if (ros_bridge)
+    if (is_ego_node && ros_bridge)
     {
       ros_actor_states.reserve(playback_actors.size());
     }
 #endif
-    for (auto &actor : playback_actors)
+    if (is_ego_node)
     {
-      if (!actor.vehicle || !actor.path_driver)
-        continue;
-
-      // Activation Logic
-      if (!actor.active)
+      for (auto &actor : playback_actors)
       {
-        if (time >= actor.start_time)
+        if (!actor.vehicle || !actor.path_driver)
+          continue;
+
+        // Activation Logic
+        if (!actor.active)
         {
-          actor.active = true;
-          actor.path_driver->Reset();
-          actor.current_speed = actor.initial_speed;
-          actor.last_profile_time = 0.0;
-          actor.goal_reached = false;
+          if (time >= actor.start_time)
+          {
+            actor.active = true;
+            actor.path_driver->Reset();
+            actor.current_speed = actor.initial_speed;
+            actor.last_profile_time = 0.0;
+            actor.goal_reached = false;
+          }
         }
-      }
 
-      // Physics Logic (only if active)
-      if (actor.active)
-      {
-        double local_time = time - actor.start_time;
-        ChVector3d goal = actor.waypoints.back();
-        double dist_to_goal = (actor.vehicle->GetChassis()->GetPos() - goal).Length();
-        double slowdown_dist = actor.look_ahead_distance > 0.0 ? std::max(30.0, actor.look_ahead_distance * 3) : 6.0;
+        // Physics Logic (only if active)
+        if (actor.active)
+        {
+          double local_time = time - actor.start_time;
+          ChVector3d goal = actor.waypoints.back();
+          double dist_to_goal = (actor.vehicle->GetChassis()->GetPos() - goal).Length();
+          double slowdown_dist = actor.look_ahead_distance > 0.0 ? std::max(30.0, actor.look_ahead_distance * 3) : 6.0;
         bool within_stop_zone = (!actor.goal_reached && dist_to_goal < slowdown_dist);
         double steering_scale = 1.0;
 
@@ -1290,23 +1759,24 @@ int main(int argc, char *argv[])
       }
 
 #ifdef ENABLE_ROS2_BRIDGE
-      if (ros_bridge)
-      {
-        TrackedVehicleState state;
-        state.id = static_cast<uint32_t>(&actor - &playback_actors[0]);
-        state.label = "path";
-        state.active = actor.active;
-        auto body = actor.vehicle->GetChassisBody();
-        state.pos = body->GetPos();
-        state.rot = body->GetRot();
-        state.lin_vel = body->GetPosDt();
-        ros_actor_states.push_back(state);
-      }
+        if (ros_bridge)
+        {
+          TrackedVehicleState state;
+          state.id = static_cast<uint32_t>(&actor - &playback_actors[0]);
+          state.label = "path";
+          state.active = actor.active;
+          auto body = actor.vehicle->GetChassisBody();
+          state.pos = body->GetPos();
+          state.rot = body->GetRot();
+          state.lin_vel = body->GetPosDt();
+          ros_actor_states.push_back(state);
+        }
 #endif
-    }
+      } // end for playback_actors
+    } // end if (is_ego_node) for local actors
 
 #ifdef ENABLE_ROS2_BRIDGE
-    if (ros_bridge)
+    if (is_ego_node && ros_bridge)
     {
       ros_bridge->PublishActors(time, ros_actor_states);
       if (auto warning = ros_bridge->GetWarningStatus())
@@ -1335,7 +1805,11 @@ int main(int argc, char *argv[])
     }
 #endif
 
-    manager->Update();
+    // Update sensor manager (ego node only)
+    if (is_ego_node && manager)
+    {
+      manager->Update();
+    }
 
     // Increment frame number
     step_number++;
@@ -1347,109 +1821,120 @@ int main(int argc, char *argv[])
 
     // if (step_number % 10 == 0) {
 
-    // Check for simulation running slower than wall time
-    if (realtime_timer.GetTimeSeconds() > time + 1.00) {
-        ChVector3d sphere_local_pos_slow(2.54, 0.381 + 0.5, 1.04); 
-        ChVector3d sphere_global_pos_slow = my_vehicle.GetChassisBody()->TransformPointLocalToParent(sphere_local_pos_slow);
-        indicator_slow->SetPos(sphere_global_pos_slow);
-        
-        if (step_number % 50 == 0) {
-             std::cout << "[Slow Warning] Wall: " << realtime_timer.GetTimeSeconds() << " Sim: " << time << " Lag: " << (realtime_timer.GetTimeSeconds() - time) << "s" << std::endl;
-        }
-    } else {
-        indicator_slow->SetPos(ChVector3d(0, 0, -100));
-    }
-
-    realtime_timer.Spin(time);
-
-    if (step_number % 50 == 0)
+    // Check for simulation running slower than wall time (ego node only)
+    if (is_ego_node && indicator_slow)
     {
-
-      // Stream out data
-      boost_streamer.AddData(my_vehicle.GetSystem()->GetChTime()); // sim time
-      boost_streamer.AddData(my_vehicle.GetSpeed() *
-                             MS_TO_MPH); // vehicle speed
-      boost_streamer.AddData(my_vehicle.GetEngine()->GetMotorSpeed() *
-                             rads2rpm); // RPM
-      boost_streamer.AddData(
-          my_vehicle.GetChassis()->GetPos().x()); // vehicle x pos
-      boost_streamer.AddData(
-          my_vehicle.GetChassis()->GetPos().y());       // vehicle y pos
-      boost_streamer.AddData(driver_inputs.m_throttle); // throttle data
-      boost_streamer.AddData(driver_inputs.m_braking);  // brake data
-      boost_streamer.AddData(driver_inputs.m_steering); // steering data
-      boost_streamer.AddData(auto_mode);                // auto mode
-
-      boost_streamer.Synchronize();
-    }
-
-    SDLDriver.GetButtonStatus(check_button_idx, check_button_val);
-    auto button_now = std::chrono::system_clock::now();
-    for (size_t bi = 0; bi < check_button_idx.size(); ++bi)
-    {
-      if (check_button_val[bi] != 1)
-        continue;
-
-      if (check_button_idx[bi] == auto_toggle_button)
-      {
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(button_now - last_auto_toggle).count() >= 300)
-        {
-          auto_mode = (auto_mode + 1) % 2;
-          last_auto_toggle = button_now;
-        }
-      }
-      else if (record_mode && check_button_idx[bi] == record_toggle_button)
-      {
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(button_now - last_record_toggle).count() >= 300)
-        {
-          recording_active = !recording_active;
-          if (recording_active)
-          {
-            last_recorded_time = -1.0;
-            capture_sample(time, pos);
-            std::cout << "Recording started: " << record_output_file << std::endl;
+      if (realtime_timer.GetTimeSeconds() > time + 1.00) {
+          ChVector3d sphere_local_pos_slow(2.54, 0.381 + 0.5, 1.04); 
+          ChVector3d sphere_global_pos_slow = my_vehicle.GetChassisBody()->TransformPointLocalToParent(sphere_local_pos_slow);
+          indicator_slow->SetPos(sphere_global_pos_slow);
+          
+          if (step_number % 50 == 0) {
+               std::cout << "[Slow Warning] Wall: " << realtime_timer.GetTimeSeconds() << " Sim: " << time << " Lag: " << (realtime_timer.GetTimeSeconds() - time) << "s" << std::endl;
           }
-          else
-          {
-            capture_sample(time, pos);
-            std::cout << "Recording paused." << std::endl;
-          }
-          last_record_toggle = button_now;
-        }
+      } else {
+          indicator_slow->SetPos(ChVector3d(0, 0, -100));
       }
-      else if (record_mode && check_button_idx[bi] == finish_record_button)
+    }
+
+    // Real-time synchronization (ego node spins, actor nodes run as fast as possible but sync via SynChrono)
+    if (is_ego_node)
+    {
+      realtime_timer.Spin(time);
+
+      if (step_number % 50 == 0)
       {
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(button_now - last_finish_toggle).count() >= 300)
+        // Stream out data (ego node only)
+        boost_streamer.AddData(my_vehicle.GetSystem()->GetChTime()); // sim time
+        boost_streamer.AddData(my_vehicle.GetSpeed() *
+                               MS_TO_MPH); // vehicle speed
+        boost_streamer.AddData(my_vehicle.GetEngine()->GetMotorSpeed() *
+                               rads2rpm); // RPM
+        boost_streamer.AddData(
+            my_vehicle.GetChassis()->GetPos().x()); // vehicle x pos
+        boost_streamer.AddData(
+            my_vehicle.GetChassis()->GetPos().y());       // vehicle y pos
+        boost_streamer.AddData(driver_inputs.m_throttle); // throttle data
+        boost_streamer.AddData(driver_inputs.m_braking);  // brake data
+        boost_streamer.AddData(driver_inputs.m_steering); // steering data
+        boost_streamer.AddData(auto_mode);                // auto mode
+
+        boost_streamer.Synchronize();
+      }
+
+      // SDL button handling (ego node only)
+      SDLDriver.GetButtonStatus(check_button_idx, check_button_val);
+      auto button_now = std::chrono::system_clock::now();
+      for (size_t bi = 0; bi < check_button_idx.size(); ++bi)
+      {
+        if (check_button_val[bi] != 1)
+          continue;
+
+        if (check_button_idx[bi] == auto_toggle_button)
         {
-          if (recording_active)
+          if (std::chrono::duration_cast<std::chrono::milliseconds>(button_now - last_auto_toggle).count() >= 300)
           {
-            capture_sample(time, pos);
-            recording_active = false;
-            std::cout << "Recording stopped by finish command." << std::endl;
+            auto_mode = (auto_mode + 1) % 2;
+            last_auto_toggle = button_now;
           }
-          finish_requested = true;
-          last_finish_toggle = button_now;
-          std::cout << "Finish recording requested." << std::endl;
+        }
+        else if (record_mode && check_button_idx[bi] == record_toggle_button)
+        {
+          if (std::chrono::duration_cast<std::chrono::milliseconds>(button_now - last_record_toggle).count() >= 300)
+          {
+            recording_active = !recording_active;
+            if (recording_active)
+            {
+              last_recorded_time = -1.0;
+              capture_sample(time, pos);
+              std::cout << "Recording started: " << record_output_file << std::endl;
+            }
+            else
+            {
+              capture_sample(time, pos);
+              std::cout << "Recording paused." << std::endl;
+            }
+            last_record_toggle = button_now;
+          }
+        }
+        else if (record_mode && check_button_idx[bi] == finish_record_button)
+        {
+          if (std::chrono::duration_cast<std::chrono::milliseconds>(button_now - last_finish_toggle).count() >= 300)
+          {
+            if (recording_active)
+            {
+              capture_sample(time, pos);
+              recording_active = false;
+              std::cout << "Recording stopped by finish command." << std::endl;
+            }
+            finish_requested = true;
+            last_finish_toggle = button_now;
+            std::cout << "Finish recording requested." << std::endl;
+          }
         }
       }
-    }
 
-    if (finish_requested)
-    {
-      if (record_mode)
+      if (finish_requested)
       {
-        std::cout << "Exiting simulation after recording finish request." << std::endl;
+        if (record_mode)
+        {
+          std::cout << "Exiting simulation after recording finish request." << std::endl;
+        }
+        break;
       }
-      break;
-    }
 
-    PFdriver->Advance(step_size);
-    PFdriver->Synchronize(time, step_size);
+      // Advance PF driver for ego auto mode
+      if (PFdriver)
+      {
+        PFdriver->Advance(step_size);
+        PFdriver->Synchronize(time, step_size);
+      }
 
-    if (SDLDriver.Synchronize() == 1)
-    {
-      break;
-    }
+      if (SDLDriver.Synchronize() == 1)
+      {
+        break;
+      }
+    } // end if (is_ego_node) block
 
     // if (render == true && step_number % render_step == 0)
     // {
@@ -1458,8 +1943,12 @@ int main(int argc, char *argv[])
     //   vis->EndScene();
     //   vis->Synchronize(time, driver_inputs);
     // }
-  }
-  if (record_mode)
+  } // end simulation loop
+  
+  // Cleanup SynChrono
+  syn_manager.QuitSimulation();
+  
+  if (is_ego_node && record_mode)
   {
     if (!recorded_positions.empty())
     {
