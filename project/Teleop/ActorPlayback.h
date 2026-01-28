@@ -25,7 +25,7 @@
 #include "chrono_vehicle/wheeled_vehicle/vehicle/WheeledVehicle.h"
 #include "chrono_vehicle/ChPowertrainAssembly.h"
 
-#include "rapidjson/document.h"
+#include "chrono_thirdparty/rapidjson/document.h"
 
 namespace chrono {
 namespace hil {

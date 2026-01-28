@@ -388,28 +388,37 @@ int main(int argc, char *argv[])
   ReadParameterFiles();
   
   // -----------------------
-  // Create SynChronoManager
+  // Create SynChronoManager (only if multi-node)
   // -----------------------
-  DomainParticipantQos qos;
-  qos.name("/syn/node/" + std::to_string(node_id) + ".0");
-  qos.transport().user_transports.push_back(
-      std::make_shared<UDPv4TransportDescriptor>());
-  qos.transport().use_builtin_transports = false;
-  qos.wire_protocol().builtin.avoid_builtin_multicast = false;
-
-  // Set the initialPeersList
-  for (const auto &ip : ip_list)
-  {
-    Locator_t locator;
-    locator.kind = LOCATOR_KIND_UDPv4;
-    IPLocator::setIPv4(locator, ip);
-    qos.wire_protocol().builtin.initialPeersList.push_back(locator);
-  }
+  const bool use_synchrono = (num_nodes > 1);
+  std::unique_ptr<SynChronoManager> syn_manager_ptr;
   
-  auto communicator = chrono_types::make_shared<SynDDSCommunicator>(qos);
-  SynChronoManager syn_manager(node_id, num_nodes, communicator);
-  syn_manager.SetHeartbeat(heartbeat);
-  syn_manager.SetInterpolate(true);  // Enable velocity-based interpolation for smoother zombie motion
+  if (use_synchrono)
+  {
+    DomainParticipantQos qos;
+    qos.name("/syn/node/" + std::to_string(node_id) + ".0");
+    qos.transport().user_transports.push_back(
+        std::make_shared<UDPv4TransportDescriptor>());
+    qos.transport().use_builtin_transports = false;
+    qos.wire_protocol().builtin.avoid_builtin_multicast = false;
+
+    // Set the initialPeersList
+    for (const auto &ip : ip_list)
+    {
+      Locator_t locator;
+      locator.kind = LOCATOR_KIND_UDPv4;
+      IPLocator::setIPv4(locator, ip);
+      qos.wire_protocol().builtin.initialPeersList.push_back(locator);
+    }
+    
+    auto communicator = chrono_types::make_shared<SynDDSCommunicator>(qos);
+    syn_manager_ptr = std::make_unique<SynChronoManager>(node_id, num_nodes, communicator);
+    syn_manager_ptr->SetHeartbeat(heartbeat);
+  }
+  else
+  {
+    std::cout << "Single-node mode: SynChrono disabled" << std::endl;
+  }
 
   // --------------
   // Create systems
@@ -481,17 +490,17 @@ int main(int argc, char *argv[])
   std::shared_ptr<RigidTerrain::Patch> patch;
 
   // add terrain patch (this is used for collision i.e. is the physical terrain that the vehicle interacts with)
-  // patch = terrain.AddPatch(patch_mat, CSYSNORM,
-  //                          std::string(STRINGIFY(HIL_DATA_DIR)) +
-  //                              "/Environments/map_project/remote.obj",
-  //                          true, 0, false);
-
-  
-  // add terrain patch (this is used for collision i.e. is the physical terrain that the vehicle interacts with)
   patch = terrain.AddPatch(patch_mat, CSYSNORM,
                            std::string(STRINGIFY(HIL_DATA_DIR)) +
-                               "/Environments/nads/newnads/terrain.obj",
+                               "/Environments/nads/roadrunner_loop/remote.obj",
                            true, 0, false);
+
+  
+  // // add terrain patch (this is used for collision i.e. is the physical terrain that the vehicle interacts with)
+  // patch = terrain.AddPatch(patch_mat, CSYSNORM,
+  //                          std::string(STRINGIFY(HIL_DATA_DIR)) +
+  //                              "/Environments/nads/newnads/terrain.obj",
+  //                          true, 0, false);
 
   // std::cout << "HIL Data Dir: " << STRINGIFY(HIL_DATA_DIR) << std::endl;
 
@@ -499,12 +508,14 @@ int main(int argc, char *argv[])
 
   // add vis mesh (this is used for visualization only)
   auto terrain_mesh = chrono_types::make_shared<ChTriangleMeshConnected>();
-  // terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
-  //                                     "/Environments/map_project/remote.obj",
-  //                                 true, true);
-    terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
-                                      "/Environments/nads/newnads/terrain.obj",
+
+  terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
+                                      "/Environments/nads/roadrunner_loop/remote.obj",
                                   true, true);
+    // terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
+    //                                   "/Environments/nads/newnads/terrain.obj",
+    //                               true, true);
+
   terrain_mesh->Transform(ChVector3d(0, 0, 0),
                           ChMatrix33<>(1)); // scale to a different size
   auto terrain_shape = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
@@ -551,8 +562,10 @@ int main(int argc, char *argv[])
     //     (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
     // std::string joystick_file =
     //     (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G29.json");
+    // std::string joystick_file =
+    //     (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/ps4_controller.json");
     std::string joystick_file =
-        (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/ps4_controller.json");
+        (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
     SDLDriver.SetJoystickConfigFile(joystick_file);
     SDLDriver.AddCallbackButtons(auto_toggle_button);
     if (record_mode)
@@ -800,8 +813,15 @@ int main(int argc, char *argv[])
       if (!ParseSpeedProfileJSON(actor_cfg["speed_profile"], distributed_actor_state)) {
         std::cerr << "WARNING: Failed to parse speed_profile for actor " << actor_index << ", using default speed" << std::endl;
       } else {
-        // Get initial target speed from first velocity entry or initial_speed for acceleration
-        actor_target_speed = distributed_actor_state.initial_speed;
+        // For velocity profiles, use the initial speed from the first entry
+        // For acceleration profiles, the speed is managed dynamically by EvaluateDesiredSpeed(),
+        // so we keep a reasonable default for the driver initialization
+        if (distributed_actor_state.profile_type == SpeedProfileType::VELOCITY) {
+          actor_target_speed = distributed_actor_state.initial_speed;
+        }
+        // For acceleration profiles, keep the default cruise_speed as initial target -
+        // SetDesiredSpeed() will override this during simulation
+        
         std::cout << "  Speed profile type: " << (distributed_actor_state.profile_type == SpeedProfileType::VELOCITY ? "velocity" : "acceleration") << std::endl;
         std::cout << "  Initial speed: " << distributed_actor_state.initial_speed << " m/s" << std::endl;
         std::cout << "  Max decel: " << distributed_actor_state.max_decel << " m/s^2" << std::endl;
@@ -903,19 +923,20 @@ int main(int argc, char *argv[])
   }
 
   // -----------------------
-  // Add vehicle as SynChrono agent and initialize
+  // Add vehicle as SynChrono agent and initialize (only if multi-node)
   // -----------------------
-  auto agent = chrono_types::make_shared<SynWheeledVehicleAgent>(&my_vehicle, zombie_filename);
-  syn_manager.AddAgent(agent);
-  syn_manager.Initialize(my_vehicle.GetSystem());
-  syn_manager.SetInterpolate(true);  // Enable velocity-based interpolation for smooth zombie motion
+  if (use_synchrono && syn_manager_ptr)
+  {
+    auto agent = chrono_types::make_shared<SynWheeledVehicleAgent>(&my_vehicle, zombie_filename);
+    syn_manager_ptr->AddAgent(agent);
+    syn_manager_ptr->Initialize(my_vehicle.GetSystem());
+    std::cout << "SynChrono initialized with " << num_nodes << " node(s)" << std::endl;
+  }
   
   // Reset realtime timer AFTER SynChrono initialization completes
   // This ensures all nodes start measuring wall time from the same point,
   // avoiding the offset caused by waiting at SynChrono barriers during init
   realtime_timer.Reset();
-  
-  std::cout << "SynChrono initialized with " << num_nodes << " node(s)" << std::endl;
 
   auto last_auto_toggle = std::chrono::system_clock::now();
   auto last_record_toggle = last_auto_toggle;
@@ -935,32 +956,51 @@ int main(int argc, char *argv[])
   bool warning_active = false;
 #endif
 
-  // simulation loop - use syn_manager.IsOk() to check for distributed sync status
-  // Track timing for all nodes
+  // simulation loop
+  // For multi-node: use syn_manager.IsOk() to check for distributed sync status
+  // For single-node: run until t_end or user quits
   double max_lag_observed = 0.0;
   double last_timing_report = 0.0;
   const double timing_report_interval = 2.0;  // Report every 2 seconds
+  const double warmup_time = 3.0;  // Don't track max lag during warmup (SynChrono sync overhead)
+  bool simulation_running = true;
+  double step_start_wall = 0.0;
+  double total_physics_time = 0.0;
+  double total_spin_time = 0.0;
+  int timing_sample_count = 0;
   
-  while (syn_manager.IsOk())
+  while (simulation_running && (!use_synchrono || syn_manager_ptr->IsOk()))
   {
+    step_start_wall = realtime_timer.GetTimeSeconds();
+    
     auto now = std::chrono::high_resolution_clock::now();
     auto dds_time_stamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
                               now.time_since_epoch())
                               .count();
     double time = my_vehicle.GetSystem()->GetChTime();
     
-    // Track wall vs sim time for all nodes
+    // Pre-step wall time vs sim time (this is BEFORE spin from previous iteration)
     double wall_time = realtime_timer.GetTimeSeconds();
     double current_lag = wall_time - time;
-    if (current_lag > max_lag_observed) {
+    // Only track max lag after warmup period to avoid SynChrono init overhead
+    if (time > warmup_time && current_lag > max_lag_observed) {
       max_lag_observed = current_lag;
     }
     
-    // Periodic timing report for all nodes
-    if (time - last_timing_report >= timing_report_interval) {
-      std::cout << "[Node " << node_id << " Timing] Wall: " << std::fixed << std::setprecision(2) << wall_time 
-                << "s Sim: " << time << "s Lag: " << current_lag << "s MaxLag: " << max_lag_observed << "s" << std::endl;
+    // Periodic timing report for all nodes - shows ACTUAL performance breakdown
+    if (time - last_timing_report >= timing_report_interval && timing_sample_count > 0) {
+      double avg_physics_ms = (total_physics_time / timing_sample_count) * 1000.0;
+      double avg_spin_ms = (total_spin_time / timing_sample_count) * 1000.0;
+      double realtime_factor = time / wall_time;  // >1 = faster than realtime, <1 = slower
+      std::cout << "[Node " << node_id << " Timing] SimTime: " << std::fixed << std::setprecision(2) << time 
+                << "s | RT Factor: " << std::setprecision(3) << realtime_factor
+                << " | Avg Step: " << std::setprecision(2) << avg_physics_ms << "ms physics + " 
+                << avg_spin_ms << "ms spin (budget: " << (step_size * 1000.0) << "ms)" << std::endl;
       last_timing_report = time;
+      // Reset accumulators
+      total_physics_time = 0.0;
+      total_spin_time = 0.0;
+      timing_sample_count = 0;
     }
 
     // Update delay based on current simulation time if using JSON config (ego only)
@@ -1139,8 +1179,10 @@ int main(int argc, char *argv[])
     // =======================
 
     // Update modules (process inputs from other modules)
-    syn_manager.Synchronize(time);  // SynChrono synchronization between nodes
-    syn_manager.InterpolateZombies(time);  // Smooth zombie motion between sync updates
+    if (use_synchrono && syn_manager_ptr)
+    {
+      syn_manager_ptr->Synchronize(time);  // SynChrono synchronization between nodes
+    }
     terrain.Synchronize(time);
     my_vehicle.Synchronize(time, driver_inputs, terrain);
 
@@ -1162,22 +1204,26 @@ int main(int argc, char *argv[])
     if (is_ego_node && ros_bridge)
     {
       // Reserve space for local playback actors + SynChrono zombies
-      ros_actor_states.reserve(playback_actors.size() + syn_manager.GetZombies().size());
+      size_t zombie_count = (use_synchrono && syn_manager_ptr) ? syn_manager_ptr->GetZombies().size() : 0;
+      ros_actor_states.reserve(playback_actors.size() + zombie_count);
       
       // Add SynChrono zombie vehicles to ROS actor states
-      uint32_t zombie_id = 1000;  // Start zombie IDs at 1000 to avoid collision with local actors
-      for (auto& zombie_pair : syn_manager.GetZombies())
+      if (use_synchrono && syn_manager_ptr)
       {
-        if (auto wheeled_zombie = std::dynamic_pointer_cast<SynWheeledVehicleAgent>(zombie_pair.second))
+        uint32_t zombie_id = 1000;  // Start zombie IDs at 1000 to avoid collision with local actors
+        for (auto& zombie_pair : syn_manager_ptr->GetZombies())
         {
-          TrackedVehicleState state;
-          state.id = zombie_id++;
-          state.label = "syn_zombie";
-          state.active = true;
-          state.pos = wheeled_zombie->GetZombiePos();
-          state.rot = wheeled_zombie->GetZombieRot();
-          state.lin_vel = ChVector3d(0, 0, 0);  // Velocity not directly available from zombie
-          ros_actor_states.push_back(state);
+          if (auto wheeled_zombie = std::dynamic_pointer_cast<SynWheeledVehicleAgent>(zombie_pair.second))
+          {
+            TrackedVehicleState state;
+            state.id = zombie_id++;
+            state.label = "syn_zombie";
+            state.active = true;
+            state.pos = wheeled_zombie->GetZombiePos();
+            state.rot = wheeled_zombie->GetZombieRot();
+            state.lin_vel = ChVector3d(0, 0, 0);  // Velocity not directly available from zombie
+            ros_actor_states.push_back(state);
+          }
         }
       }
     }
@@ -1313,6 +1359,10 @@ int main(int argc, char *argv[])
 
     // Increment frame number
     step_number++;
+    
+    // Measure physics time (everything from start of loop to here)
+    double pre_spin_wall = realtime_timer.GetTimeSeconds();
+    double physics_duration = pre_spin_wall - step_start_wall;
 
     // Visual indicator for simulation running slower than wall time (ego node only)
     // The timing stats are already printed above for all nodes
@@ -1331,6 +1381,15 @@ int main(int argc, char *argv[])
     if (is_ego_node)
     {
       realtime_timer.Spin(time);
+      
+      // Measure spin (wait) time
+      double post_spin_wall = realtime_timer.GetTimeSeconds();
+      double spin_duration = post_spin_wall - pre_spin_wall;
+      
+      // Accumulate for averaging
+      total_physics_time += physics_duration;
+      total_spin_time += spin_duration;
+      timing_sample_count++;
 
       if (step_number % 50 == 0)
       {
@@ -1436,7 +1495,10 @@ int main(int argc, char *argv[])
   } // end simulation loop
   
   // Cleanup SynChrono
-  syn_manager.QuitSimulation();
+  if (use_synchrono && syn_manager_ptr)
+  {
+    syn_manager_ptr->QuitSimulation();
+  }
   
   if (is_ego_node && record_mode)
   {

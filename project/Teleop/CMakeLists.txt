@@ -38,7 +38,13 @@ else()
   set(HAVE_ROS2_BRIDGE OFF)
 endif()
 
-
+# Extract Chrono include directories from the imported target if not already set
+if((NOT DEFINED CHRONO_INCLUDE_DIRS OR NOT CHRONO_INCLUDE_DIRS) AND TARGET Chrono::Chrono_core)
+    get_target_property(_chrono_core_includes Chrono::Chrono_core INTERFACE_INCLUDE_DIRECTORIES)
+    if(_chrono_core_includes)
+        set(CHRONO_INCLUDE_DIRS "${_chrono_core_includes}")
+    endif()
+endif()
 
 #--------------------------------------------------------------
 # Include paths and libraries
@@ -61,7 +67,7 @@ foreach(PROGRAM ${DEMOS})
   target_compile_options(${PROGRAM} PUBLIC ${CHRONO_CXX_FLAGS})
   target_link_options(${PROGRAM} PUBLIC ${CH_LINKERFLAG_SHARED})
 
-  target_include_directories(${PROGRAM} PRIVATE ${CMAKE_SOURCE_DIR})
+  target_include_directories(${PROGRAM} PRIVATE ${CMAKE_SOURCE_DIR} ${CHRONO_INCLUDE_DIRS})
 
   target_link_libraries(${PROGRAM}
       PRIVATE
