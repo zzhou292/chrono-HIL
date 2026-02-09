@@ -153,8 +153,8 @@ bool recording_active = false;
 double record_interval = 0.02;
 std::string record_output_file = "recorded_path.csv";
 int auto_toggle_button = 6;
-int record_toggle_button = 18;
-int finish_record_button = 19;
+int record_toggle_button = 7;
+int finish_record_button = 11;
 bool enable_ros_bridge = false;
 std::vector<ChVector3d> recorded_positions;
 
@@ -167,6 +167,12 @@ ActorPlayback distributed_actor_state;
 double heartbeat = 0.02; // 50 Hz synchronization
 int node_id = 1;
 int num_nodes = 1;
+int lead_node_id = 2;  // Node ID of the lead vehicle (for Unity streaming)
+
+// Relative timing configuration (actors start when ego starts moving)
+bool start_on_ego_input = false;
+double ego_start_time = -1.0;  // -1 means ego hasn't started yet
+double ego_velocity_threshold = 0.5;  // m/s threshold to detect ego moving
 
 // =============================================================================
 void AddCommandLineOptions(ChCLI &cli)
@@ -192,7 +198,12 @@ void AddCommandLineOptions(ChCLI &cli)
   cli.AddOption<int>("DDS", "d,node_id", "ID for this Node (1 = ego with SDL, 2+ = path-following actors)", "1");
   cli.AddOption<int>("DDS", "n,num_nodes", "Total number of Nodes in the simulation", "1");
   cli.AddOption<double>("DDS", "heartbeat", "SynChrono heartbeat interval (seconds)", std::to_string(heartbeat));
+  cli.AddOption<int>("DDS", "lead_node_id", "Node ID of the lead vehicle for Unity streaming", std::to_string(lead_node_id));
   cli.AddOption<std::vector<std::string>>("DDS", "ip", "IP Addresses for DDS initialPeersList", "127.0.0.1");
+  
+  // Relative timing options (actors start when ego starts moving)
+  cli.AddOption<bool>("Timing", "start_on_ego_input", "Start actors when ego receives first input (relative timing mode)", "false");
+  cli.AddOption<double>("Timing", "ego_velocity_threshold", "Velocity threshold (m/s) to detect ego moving (for actor nodes)", std::to_string(ego_velocity_threshold));
 }
 // =============================================================================
 void ReadParameterFiles()
@@ -350,7 +361,12 @@ int main(int argc, char *argv[])
   node_id = cli.GetAsType<int>("node_id");
   num_nodes = cli.GetAsType<int>("num_nodes");
   heartbeat = cli.GetAsType<double>("heartbeat");
+  lead_node_id = cli.GetAsType<int>("lead_node_id");
   const std::vector<std::string> ip_list = cli.GetAsType<std::vector<std::string>>("ip");
+  
+  // Parse relative timing options
+  start_on_ego_input = cli.GetAsType<bool>("start_on_ego_input");
+  ego_velocity_threshold = cli.GetAsType<double>("ego_velocity_threshold");
   
   // Determine if this node is the ego (node_id == 1) or an actor node
   const bool is_ego_node = (node_id == 1);
@@ -360,6 +376,11 @@ int main(int argc, char *argv[])
   std::cout << "Node ID: " << node_id << " / " << num_nodes << std::endl;
   std::cout << "Role: " << (is_ego_node ? "EGO (SDL driver)" : "ACTOR (path follower, actor index " + std::to_string(actor_index) + ")") << std::endl;
   std::cout << "Heartbeat: " << heartbeat << "s" << std::endl;
+  if (start_on_ego_input)
+  {
+    std::cout << "Relative timing: ENABLED (actors start when ego moves)" << std::endl;
+    std::cout << "  Velocity threshold: " << ego_velocity_threshold << " m/s" << std::endl;
+  }
   if (!actors_config_file.empty())
   {
     std::cout << "Actors config: " << actors_config_file << std::endl;
@@ -492,7 +513,7 @@ int main(int argc, char *argv[])
   // add terrain patch (this is used for collision i.e. is the physical terrain that the vehicle interacts with)
   patch = terrain.AddPatch(patch_mat, CSYSNORM,
                            std::string(STRINGIFY(HIL_DATA_DIR)) +
-                               "/Environments/nads/roadrunner_loop/remote.obj",
+                               "/Environments/nads/newnads/terrain.obj",
                            true, 0, false);
 
   
@@ -510,7 +531,7 @@ int main(int argc, char *argv[])
   auto terrain_mesh = chrono_types::make_shared<ChTriangleMeshConnected>();
 
   terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
-                                      "/Environments/nads/roadrunner_loop/remote.obj",
+                                      "/Environments/nads/newnads/terrain.obj",
                                   true, true);
     // terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
     //                                   "/Environments/nads/newnads/terrain.obj",
@@ -679,6 +700,11 @@ int main(int argc, char *argv[])
 
   DriverInputs driver_inputs;
   DriverInputs raw_inputs;
+
+  // Lead vehicle (zombie) tracking for velocity computation
+  ChVector3d prev_lead_pos(0, 0, 0);
+  double prev_lead_time = 0.0;
+  bool lead_initialized = false;
 
   addObjs(*my_vehicle.GetSystem());
 
@@ -1062,6 +1088,19 @@ int main(int argc, char *argv[])
         
         // Update raw inputs snapshot for logging/publishing
         raw_inputs = driver_inputs;
+        
+        // Detect first human input for relative timing mode (ego node)
+        if (start_on_ego_input && ego_start_time < 0.0)
+        {
+          // Check if there's any meaningful input (throttle, braking, or steering)
+          if (std::abs(driver_inputs.m_throttle) > 0.01 || 
+              std::abs(driver_inputs.m_braking) > 0.01 ||
+              std::abs(driver_inputs.m_steering) > 0.05)
+          {
+            ego_start_time = time;
+            std::cout << "[RELATIVE TIMING] Ego start detected at time " << time << "s" << std::endl;
+          }
+        }
 
 #ifdef ENABLE_ROS2_BRIDGE
         if (ros_bridge)
@@ -1106,18 +1145,86 @@ int main(int argc, char *argv[])
       // ACTOR NODE: Use path follower driver for autonomous driving
       if (actor_path_driver)
       {
-        // Check if actor should be active based on start_time
-        if (!distributed_actor_state.active && time >= distributed_actor_state.start_time)
+        // Detect ego movement for relative timing mode (actor nodes)
+        if (start_on_ego_input && ego_start_time < 0.0 && use_synchrono && syn_manager_ptr)
+        {
+          // Look for ego zombie (node 1)
+          for (auto& zombie_pair : syn_manager_ptr->GetZombies())
+          {
+            if (zombie_pair.first.GetNodeID() != 1)
+              continue;
+            
+            if (auto ego_zombie = std::dynamic_pointer_cast<SynWheeledVehicleAgent>(zombie_pair.second))
+            {
+              // Static variables to track ego position for velocity calculation
+              static ChVector3d prev_ego_zombie_pos;
+              static double prev_ego_zombie_time = -1.0;
+              static int ego_zombie_sample_count = 0;
+              
+              ChVector3d ego_pos = ego_zombie->GetZombiePos();
+              
+              // Need at least 2 samples to calculate velocity
+              if (ego_zombie_sample_count >= 1 && time > prev_ego_zombie_time)
+              {
+                double dt = time - prev_ego_zombie_time;
+                if (dt > 0.0001)  // Sanity check for dt
+                {
+                  double ego_vx = (ego_pos.x() - prev_ego_zombie_pos.x()) / dt;
+                  double ego_vy = (ego_pos.y() - prev_ego_zombie_pos.y()) / dt;
+                  double ego_speed = std::sqrt(ego_vx * ego_vx + ego_vy * ego_vy);
+                  
+                  if (ego_speed > ego_velocity_threshold && ego_speed < 100.0)  // Sanity cap at 100 m/s
+                  {
+                    ego_start_time = time;
+                    std::cout << "[RELATIVE TIMING] Actor node " << node_id 
+                              << " detected ego movement at time " << time 
+                              << "s (speed: " << ego_speed << " m/s)" << std::endl;
+                  }
+                }
+              }
+              
+              prev_ego_zombie_pos = ego_pos;
+              prev_ego_zombie_time = time;
+              ego_zombie_sample_count++;
+              break;
+            }
+          }
+        }
+        
+        // Check if actor should be active
+        // In relative timing mode, start_time is relative to ego_start_time
+        double effective_start_time = distributed_actor_state.start_time;
+        if (start_on_ego_input)
+        {
+          // In relative mode: if ego hasn't started, actor can't start
+          // If ego has started, effective_start_time = ego_start_time + config_start_time
+          if (ego_start_time < 0.0)
+          {
+            effective_start_time = std::numeric_limits<double>::infinity();  // Never start until ego moves
+          }
+          else
+          {
+            effective_start_time = ego_start_time + distributed_actor_state.start_time;
+          }
+        }
+        
+        if (!distributed_actor_state.active && time >= effective_start_time)
         {
           distributed_actor_state.active = true;
           distributed_actor_state.last_profile_time = 0.0;
-          std::cout << "Actor node " << node_id << " activated at time " << time << std::endl;
+          std::cout << "Actor node " << node_id << " activated at time " << time;
+          if (start_on_ego_input)
+          {
+            std::cout << " (relative timing: " << distributed_actor_state.start_time << "s after ego start)";
+          }
+          std::cout << std::endl;
         }
         
         if (distributed_actor_state.active)
         {
           // Calculate local time since actor activation
-          double local_time = time - distributed_actor_state.start_time;
+          // In relative timing mode, this is time since effective_start_time
+          double local_time = time - effective_start_time;
           
           // Evaluate speed profile if defined
           if (distributed_actor_state.profile_defined)
@@ -1394,19 +1501,96 @@ int main(int argc, char *argv[])
       if (step_number % 50 == 0)
       {
         // Stream out data (ego node only)
-        boost_streamer.AddData(my_vehicle.GetSystem()->GetChTime()); // sim time
-        boost_streamer.AddData(my_vehicle.GetSpeed() *
-                               MS_TO_MPH); // vehicle speed
-        boost_streamer.AddData(my_vehicle.GetEngine()->GetMotorSpeed() *
-                               rads2rpm); // RPM
-        boost_streamer.AddData(
-            my_vehicle.GetChassis()->GetPos().x()); // vehicle x pos
-        boost_streamer.AddData(
-            my_vehicle.GetChassis()->GetPos().y());       // vehicle y pos
-        boost_streamer.AddData(driver_inputs.m_throttle); // throttle data
-        boost_streamer.AddData(driver_inputs.m_braking);  // brake data
-        boost_streamer.AddData(driver_inputs.m_steering); // steering data
-        boost_streamer.AddData(auto_mode);                // auto mode
+        double current_time = my_vehicle.GetSystem()->GetChTime();
+        
+        // 1. sim_time
+        boost_streamer.AddData(current_time);
+        // 2. latency_condition_ms
+        boost_streamer.AddData(delay_val);
+        
+        // Ego vehicle data
+        ChVector3d ego_pos = my_vehicle.GetChassis()->GetPos();
+        ChQuaterniond ego_rot = my_vehicle.GetChassis()->GetRot();
+        ChVector3d ego_vel = my_vehicle.GetChassisBody()->GetPosDt();
+        auto ego_euler = ego_rot.GetCardanAnglesXYZ();
+        
+        // 3-5. ego_x, ego_y, ego_z
+        boost_streamer.AddData(ego_pos.x());
+        boost_streamer.AddData(ego_pos.y());
+        boost_streamer.AddData(ego_pos.z());
+        // 6. ego_yaw (degrees)
+        boost_streamer.AddData(ego_euler.z() * RADS_2_DEG);
+        // 7-9. ego_vx, ego_vy, ego_vz
+        boost_streamer.AddData(ego_vel.x());
+        boost_streamer.AddData(ego_vel.y());
+        boost_streamer.AddData(ego_vel.z());
+        // 10. ego_speed (mph)
+        boost_streamer.AddData(my_vehicle.GetSpeed() * MS_TO_MPH);
+        // 11. engine_rpm
+        boost_streamer.AddData(my_vehicle.GetEngine()->GetMotorSpeed() * rads2rpm);
+        // 12. steering_input
+        boost_streamer.AddData(driver_inputs.m_steering);
+        // 13. throttle_input
+        boost_streamer.AddData(driver_inputs.m_throttle);
+        // 14. brake_input
+        boost_streamer.AddData(driver_inputs.m_braking);
+        
+        // Lead vehicle data from SynChrono zombie
+        float lead_x = 0.0f, lead_y = 0.0f, lead_z = 0.0f;
+        float lead_yaw = 0.0f;
+        float lead_vx = 0.0f, lead_vy = 0.0f, lead_vz = 0.0f;
+        float lead_speed = 0.0f;
+        
+        if (use_synchrono && syn_manager_ptr && !syn_manager_ptr->GetZombies().empty())
+        {
+          // Find zombie by lead_node_id
+          for (auto& zombie_pair : syn_manager_ptr->GetZombies())
+          {
+            if (zombie_pair.first.GetNodeID() != lead_node_id)
+              continue;
+              
+            if (auto wheeled_zombie = std::dynamic_pointer_cast<SynWheeledVehicleAgent>(zombie_pair.second))
+            {
+              ChVector3d lead_pos = wheeled_zombie->GetZombiePos();
+              ChQuaterniond lead_rot = wheeled_zombie->GetZombieRot();
+              auto lead_euler = lead_rot.GetCardanAnglesXYZ();
+              
+              lead_x = lead_pos.x();
+              lead_y = lead_pos.y();
+              lead_z = lead_pos.z();
+              lead_yaw = lead_euler.z() * RADS_2_DEG;
+              
+              // Compute velocity from position delta
+              if (lead_initialized && current_time > prev_lead_time)
+              {
+                double dt = current_time - prev_lead_time;
+                lead_vx = (lead_pos.x() - prev_lead_pos.x()) / dt;
+                lead_vy = (lead_pos.y() - prev_lead_pos.y()) / dt;
+                lead_vz = (lead_pos.z() - prev_lead_pos.z()) / dt;
+                lead_speed = std::sqrt(lead_vx * lead_vx + lead_vy * lead_vy + lead_vz * lead_vz) * MS_TO_MPH;
+              }
+              
+              // Update previous state
+              prev_lead_pos = lead_pos;
+              prev_lead_time = current_time;
+              lead_initialized = true;
+              break;  // Found the lead vehicle, stop searching
+            }
+          }
+        }
+        
+        // 15-17. lead_x, lead_y, lead_z
+        boost_streamer.AddData(lead_x);
+        boost_streamer.AddData(lead_y);
+        boost_streamer.AddData(lead_z);
+        // 18. lead_yaw (degrees)
+        boost_streamer.AddData(lead_yaw);
+        // 19-21. lead_vx, lead_vy, lead_vz
+        boost_streamer.AddData(lead_vx);
+        boost_streamer.AddData(lead_vy);
+        boost_streamer.AddData(lead_vz);
+        // 22. lead_speed (mph)
+        boost_streamer.AddData(lead_speed);
 
         boost_streamer.Synchronize();
       }
