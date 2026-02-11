@@ -49,10 +49,16 @@ std::vector<ChVector3d> SmoothPathPoints(const std::vector<ChVector3d>& points,
 ChQuaterniond EstimateInitialRotation(const std::vector<ChVector3d>& points);
 
 /// Load waypoints from a CSV file
-/// @param filename Path to CSV file (x,y,z format)
+/// @param filename Path to CSV file (`x,y` or `x,y,z` format)
 /// @param out_points Output vector to store loaded points
 /// @return true if loading succeeded (at least 2 points)
 bool LoadWaypointCSV(const std::string& filename, std::vector<ChVector3d>& out_points);
+
+/// Check if a path forms a closed loop (first point close to last point)
+/// @param points Path points to check
+/// @param threshold Distance threshold (meters) to consider points "close" (default 5.0m)
+/// @return true if the path is a loop
+bool IsPathLoop(const std::vector<ChVector3d>& points, double threshold = 5.0);
 
 }  // namespace hil
 }  // namespace chrono

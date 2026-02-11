@@ -54,6 +54,7 @@
 #include "chrono_vehicle/powertrain/ChAutomaticTransmissionSimpleMap.h"
 #include "chrono/physics/ChInertiaUtils.h"
 #include "chrono/physics/ChBodyEasy.h"
+#include "chrono/physics/ChContactContainer.h"
 
 #include "project/Teleop/Ros2Bridge.h"
 #include "project/Teleop/ActorPlayback.h"
@@ -86,6 +87,7 @@ using namespace eprosima::fastrtps::rtps;
 #include <algorithm>
 #include <limits>
 #include <cmath>
+#include <unordered_set>
 
 using namespace chrono;
 using namespace chrono::irrlicht;
@@ -153,8 +155,8 @@ bool recording_active = false;
 double record_interval = 0.02;
 std::string record_output_file = "recorded_path.csv";
 int auto_toggle_button = 6;
-int record_toggle_button = 7;
-int finish_record_button = 11;
+int record_toggle_button = 18;
+int finish_record_button = 19;
 bool enable_ros_bridge = false;
 std::vector<ChVector3d> recorded_positions;
 
@@ -200,8 +202,8 @@ void AddCommandLineOptions(ChCLI &cli)
   cli.AddOption<double>("DDS", "heartbeat", "SynChrono heartbeat interval (seconds)", std::to_string(heartbeat));
   cli.AddOption<int>("DDS", "lead_node_id", "Node ID of the lead vehicle for Unity streaming", std::to_string(lead_node_id));
   cli.AddOption<std::vector<std::string>>("DDS", "ip", "IP Addresses for DDS initialPeersList", "127.0.0.1");
-  
-  // Relative timing options (actors start when ego starts moving)
+
+  // Relative timing options (actors start when ego receives first input)
   cli.AddOption<bool>("Timing", "start_on_ego_input", "Start actors when ego receives first input (relative timing mode)", "false");
   cli.AddOption<double>("Timing", "ego_velocity_threshold", "Velocity threshold (m/s) to detect ego moving (for actor nodes)", std::to_string(ego_velocity_threshold));
 }
@@ -316,6 +318,46 @@ std::vector<float> deserializeFloats(const std::vector<char> &byteVec)
 
   return floatVec;
 }
+
+class EgoActorContactReporter : public ChContactContainer::ReportContactCallback {
+  public:
+    EgoActorContactReporter(ChBody* ego_body, const std::vector<ChBody*>& actor_bodies)
+        : m_ego_body(ego_body), m_actor_bodies(actor_bodies.begin(), actor_bodies.end()) {}
+
+    void Reset() { m_collision_detected = false; }
+    bool CollisionDetected() const { return m_collision_detected; }
+
+    virtual bool OnReportContact(const ChVector3d&,
+                                 const ChVector3d&,
+                                 const ChMatrix33<>&,
+                                 double,
+                                 double,
+                                 const ChVector3d&,
+                                 const ChVector3d&,
+                                 ChContactable* contactobjA,
+                                 ChContactable* contactobjB,
+                                 int) override {
+      auto* bodyA = dynamic_cast<ChBody*>(contactobjA);
+      auto* bodyB = dynamic_cast<ChBody*>(contactobjB);
+      if (!bodyA || !bodyB)
+        return true;
+
+      bool ego_actor_contact =
+          (bodyA == m_ego_body && m_actor_bodies.find(bodyB) != m_actor_bodies.end()) ||
+          (bodyB == m_ego_body && m_actor_bodies.find(bodyA) != m_actor_bodies.end());
+
+      if (ego_actor_contact) {
+        m_collision_detected = true;
+      }
+
+      return true;
+    }
+
+  private:
+    ChBody* m_ego_body = nullptr;
+    std::unordered_set<ChBody*> m_actor_bodies;
+    bool m_collision_detected = false;
+};
 
 // =============================================================================
 
@@ -511,17 +553,17 @@ int main(int argc, char *argv[])
   std::shared_ptr<RigidTerrain::Patch> patch;
 
   // add terrain patch (this is used for collision i.e. is the physical terrain that the vehicle interacts with)
+  // patch = terrain.AddPatch(patch_mat, CSYSNORM,
+  //                          std::string(STRINGIFY(HIL_DATA_DIR)) +
+  //                              "/Environments/nads/roadrunner_loop/remote.obj",
+  //                          true, 0, false);
+
+  
+  // // add terrain patch (this is used for collision i.e. is the physical terrain that the vehicle interacts with)
   patch = terrain.AddPatch(patch_mat, CSYSNORM,
                            std::string(STRINGIFY(HIL_DATA_DIR)) +
                                "/Environments/nads/newnads/terrain.obj",
                            true, 0, false);
-
-  
-  // // add terrain patch (this is used for collision i.e. is the physical terrain that the vehicle interacts with)
-  // patch = terrain.AddPatch(patch_mat, CSYSNORM,
-  //                          std::string(STRINGIFY(HIL_DATA_DIR)) +
-  //                              "/Environments/nads/newnads/terrain.obj",
-  //                          true, 0, false);
 
   // std::cout << "HIL Data Dir: " << STRINGIFY(HIL_DATA_DIR) << std::endl;
 
@@ -530,12 +572,12 @@ int main(int argc, char *argv[])
   // add vis mesh (this is used for visualization only)
   auto terrain_mesh = chrono_types::make_shared<ChTriangleMeshConnected>();
 
+  // terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
+  //                                     "/Environments/nads/roadrunner_loop/remote.obj",
+  //                                 true, true);
   terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
-                                      "/Environments/nads/newnads/terrain.obj",
-                                  true, true);
-    // terrain_mesh->LoadWavefrontMesh(std::string(STRINGIFY(HIL_DATA_DIR)) +
-    //                                   "/Environments/nads/newnads/terrain.obj",
-    //                               true, true);
+                                    "/Environments/nads/newnads/terrain.obj",
+                                true, true);
 
   terrain_mesh->Transform(ChVector3d(0, 0, 0),
                           ChMatrix33<>(1)); // scale to a different size
@@ -626,6 +668,7 @@ int main(int argc, char *argv[])
   std::shared_ptr<ChBodyEasySphere> indicator_green;
   std::shared_ptr<ChBodyEasySphere> indicator_red;
   std::shared_ptr<ChBodyEasySphere> indicator_slow;
+  std::shared_ptr<ChBodyEasySphere> indicator_collision;
   
   if (is_ego_node)
   {
@@ -684,6 +727,14 @@ int main(int argc, char *argv[])
     indicator_slow->EnableCollision(false);
     indicator_slow->GetVisualShape(0)->SetColor(ChColor(1.0f, 1.0f, 0.0f)); // Yellow
     my_vehicle.GetSystem()->Add(indicator_slow);
+
+    // Collision warning indicator (purple)
+    indicator_collision = chrono_types::make_shared<ChBodyEasySphere>(0.15, 100, true, false);
+    indicator_collision->SetPos(ChVector3d(0, 0, -100));
+    indicator_collision->SetFixed(true);
+    indicator_collision->EnableCollision(false);
+    indicator_collision->GetVisualShape(0)->SetColor(ChColor(0.7f, 0.0f, 0.9f)); // Purple
+    my_vehicle.GetSystem()->Add(indicator_collision);
   }
 
   // Initialize simulation frame counters
@@ -700,6 +751,7 @@ int main(int argc, char *argv[])
 
   DriverInputs driver_inputs;
   DriverInputs raw_inputs;
+  float runtime_delay_ms = 0.0f;  // Actual sampled delay (ms) from delay simulator
 
   // Lead vehicle (zombie) tracking for velocity computation
   ChVector3d prev_lead_pos(0, 0, 0);
@@ -713,34 +765,37 @@ int main(int argc, char *argv[])
   // Very high bandwidth limit (effectively unlimited for most scenarios)
   ChDelaySim sim(normalDist, 1e9f);
   
-  // Load delay configuration from JSON file if it exists
+  // Load delay configuration from JSON file if it exists (ego node only)
   // Priority: If delay_val is explicitly set (non-zero), use it instead of JSON
   bool use_json_delay_config = false;
-  if (delay_val > 0.0f) {
-    // User specified a manual delay value - use it instead of JSON
-    std::cout << "Using command-line delay value: " << delay_val << "ms (ignoring JSON config)" << std::endl;
-  } else if (!delay_config_file.empty()) {
-    // No manual delay specified, try to load JSON config
-    // Check if delay_config_file is an absolute path
-    std::string full_delay_config_path;
-    if (delay_config_file[0] == '/') {
-      // Already an absolute path
-      full_delay_config_path = delay_config_file;
+  if (is_ego_node)
+  {
+    if (delay_val > 0.0f) {
+      // User specified a manual delay value - use it instead of JSON
+      std::cout << "Using command-line delay value: " << delay_val << "ms (ignoring JSON config)" << std::endl;
+    } else if (!delay_config_file.empty()) {
+      // No manual delay specified, try to load JSON config
+      // Check if delay_config_file is an absolute path
+      std::string full_delay_config_path;
+      if (delay_config_file[0] == '/') {
+        // Already an absolute path
+        full_delay_config_path = delay_config_file;
+      } else {
+        // Relative path - prepend HIL_DATA_DIR
+        full_delay_config_path = std::string(STRINGIFY(HIL_DATA_DIR)) + "/" + delay_config_file;
+      }
+      
+      std::cout << "Attempting to load delay configuration from: " << full_delay_config_path << std::endl;
+      if (sim.loadDelayConfig(full_delay_config_path)) {
+        use_json_delay_config = true;
+        sim.setLogging(true); // Enable logging when using JSON config
+        std::cout << "Successfully loaded delay configuration from JSON file." << std::endl;
+      } else {
+        std::cout << "Failed to load delay config. Using zero delay." << std::endl;
+      }
     } else {
-      // Relative path - prepend HIL_DATA_DIR
-      full_delay_config_path = std::string(STRINGIFY(HIL_DATA_DIR)) + "/" + delay_config_file;
+      std::cout << "No delay configuration specified. Using zero delay." << std::endl;
     }
-    
-    std::cout << "Attempting to load delay configuration from: " << full_delay_config_path << std::endl;
-    if (sim.loadDelayConfig(full_delay_config_path)) {
-      use_json_delay_config = true;
-      sim.setLogging(true); // Enable logging when using JSON config
-      std::cout << "Successfully loaded delay configuration from JSON file." << std::endl;
-    } else {
-      std::cout << "Failed to load delay config. Using zero delay." << std::endl;
-    }
-  } else {
-    std::cout << "No delay configuration specified. Using zero delay." << std::endl;
   }
 
   std::vector<int> check_button_idx;
@@ -916,8 +971,19 @@ int main(int argc, char *argv[])
       std::cerr << "ERROR: No path points after processing for actor " << actor_index << std::endl;
       return 1;
     }
+
+    // For closed-loop mode, drop a near-duplicate seam endpoint (common in recorded CSV loops).
+    if (path_points.size() > 3) {
+      double seam_threshold = std::max(0.5, path_spacing * 1.5);
+      double seam_dist = (path_points.front() - path_points.back()).Length();
+      if (seam_dist <= seam_threshold) {
+        path_points.pop_back();
+        std::cout << "  Removed duplicate loop seam point (dist=" << seam_dist << " m)" << std::endl;
+      }
+    }
     
-    auto actor_path = chrono_types::make_shared<ChBezierCurve>(path_points, false);
+    // Distributed actors: closed loop path following in CSV point order.
+    auto actor_path = chrono_types::make_shared<ChBezierCurve>(path_points, true);
     
     actor_path_driver = chrono_types::make_shared<ChPathFollowerDriver>(
         my_vehicle, actor_path, "actor_path", actor_target_speed);
@@ -940,12 +1006,28 @@ int main(int argc, char *argv[])
     std::cout << "  Initial target speed: " << actor_target_speed << " m/s" << std::endl;
     std::cout << "  Look ahead: " << look_ahead << " m" << std::endl;
     std::cout << "  Steering gains (P/I/D): " << steering_p << "/" << steering_i << "/" << steering_d << std::endl;
+    std::cout << "  Path mode: CLOSED Bezier loop=true (continuous looping)" << std::endl;
   }
 
   // Only load local playback actors for ego node (distributed actors are handled via SynChrono)
   if (is_ego_node && !actors_config_file.empty())
   {
     InitializePlaybackActors(actors_config_file, my_vehicle, vehicle_filename, engine_filename, transmission_filename, tire_filename, steering_controller_file_IG_nl, speed_controller_file_IG_nl, tire_step_size, playback_actors);
+  }
+
+  // Collision monitoring setup (ego vs local playback actors)
+  std::vector<ChBody*> local_actor_bodies;
+  std::shared_ptr<EgoActorContactReporter> ego_actor_contact_reporter;
+  if (is_ego_node) {
+    for (auto& actor : playback_actors) {
+      if (actor.vehicle) {
+        local_actor_bodies.push_back(actor.vehicle->GetChassisBody().get());
+      }
+    }
+    if (!local_actor_bodies.empty()) {
+      ego_actor_contact_reporter =
+          chrono_types::make_shared<EgoActorContactReporter>(my_vehicle.GetChassisBody().get(), local_actor_bodies);
+    }
   }
 
   // -----------------------
@@ -1029,9 +1111,14 @@ int main(int argc, char *argv[])
       timing_sample_count = 0;
     }
 
-    // Update delay based on current simulation time if using JSON config (ego only)
+    // Update delay schedule (ego only).
+    // In relative-timing mode, delay timeline starts with the first ego input.
     if (is_ego_node && use_json_delay_config) {
-      sim.updateDelayForTime(time);
+      if (!start_on_ego_input) {
+        sim.updateDelayForTime(time);
+      } else if (ego_start_time >= 0.0) {
+        sim.updateDelayForTime(time - ego_start_time);
+      }
     }
 
     ChVector3d pos = my_vehicle.GetChassis()->GetPos();
@@ -1059,26 +1146,50 @@ int main(int argc, char *argv[])
       // EGO NODE: Run Control & Comms at 50Hz (20ms) to match ROS rate
       if (step_number % 20 == 0)
       {
+        const float sdl_steering = SDLDriver.GetSteering();
+        const float sdl_throttle = SDLDriver.GetThrottle();
+        const float sdl_braking = SDLDriver.GetBraking();
+
         // Create a vector of floats
-        std::vector<float> floats = {static_cast<float>(auto_mode), SDLDriver.GetSteering(), SDLDriver.GetThrottle(), SDLDriver.GetBraking()};
+        std::vector<float> floats = {static_cast<float>(auto_mode), sdl_steering, sdl_throttle, sdl_braking};
 
         // Serialize the vector of floats to a vector of chars
         std::vector<char> serializedData = serializeFloats(floats);
-        sim.addPacket(serializedData);
 
-        // Get the packet back
-        std::vector<char> receivedData = sim.getDelayedPacket();
-        if (!receivedData.empty())
+        // Only apply delay once relative timing has been armed by first ego input.
+        bool delay_active = !start_on_ego_input || ego_start_time >= 0.0;
+        if (delay_active)
         {
-          // Deserialize the data back to floats
-          std::vector<float> receivedFloats = deserializeFloats(receivedData);
-          if (receivedFloats[0] == 0) // manual mode
-          {
-            driver_inputs.m_steering = receivedFloats[1];
-            driver_inputs.m_throttle = receivedFloats[2];
-            driver_inputs.m_braking = receivedFloats[3];
+          sim.addPacket(serializedData);
 
-            // std::cout << "Manual: " << driver_inputs.m_steering << " " << driver_inputs.m_throttle << " " << driver_inputs.m_braking << std::endl;
+          // Get the packet back
+          std::vector<char> receivedData = sim.getDelayedPacket();
+          runtime_delay_ms = sim.getExpectedDelayMs();
+          if (!receivedData.empty())
+          {
+            // Deserialize the data back to floats
+            std::vector<float> receivedFloats = deserializeFloats(receivedData);
+            if (receivedFloats[0] == 0) // manual mode
+            {
+              driver_inputs.m_steering = receivedFloats[1];
+              driver_inputs.m_throttle = receivedFloats[2];
+              driver_inputs.m_braking = receivedFloats[3];
+            }
+            else
+            {
+              driver_inputs = PFdriver->GetInputs();
+            }
+          }
+        }
+        else
+        {
+          // Delay not yet active: pass through direct input.
+          runtime_delay_ms = 0.0f;
+          if (auto_mode == 0)
+          {
+            driver_inputs.m_steering = sdl_steering;
+            driver_inputs.m_throttle = sdl_throttle;
+            driver_inputs.m_braking = sdl_braking;
           }
           else
           {
@@ -1088,18 +1199,93 @@ int main(int argc, char *argv[])
         
         // Update raw inputs snapshot for logging/publishing
         raw_inputs = driver_inputs;
-        
-        // Detect first human input for relative timing mode (ego node)
+
+        // Detect first sustained manual input for relative timing mode.
         if (start_on_ego_input && ego_start_time < 0.0)
         {
-          // Check if there's any meaningful input (throttle, braking, or steering)
-          if (std::abs(driver_inputs.m_throttle) > 0.01 || 
-              std::abs(driver_inputs.m_braking) > 0.01 ||
-              std::abs(driver_inputs.m_steering) > 0.05)
+          static int ego_input_count = 0;
+          static int neutral_sample_count = 0;
+          static double neutral_steering = 0.0;
+          static double neutral_throttle = 0.0;
+          static double neutral_braking = 0.0;
+          static bool prev_input_valid = false;
+          static float prev_sdl_steering = 0.0f;
+          static float prev_sdl_throttle = 0.0f;
+          static float prev_sdl_braking = 0.0f;
+          static bool logged_neutral = false;
+
+          const int neutral_samples_required = 50;   // 1.0s at 50Hz
+          const int required_input_samples = 10;     // 0.2s at 50Hz
+          const double axis_deadzone = 0.08;
+          const double axis_delta_threshold = 0.03;
+
+          if (neutral_sample_count < neutral_samples_required)
           {
-            ego_start_time = time;
-            std::cout << "[RELATIVE TIMING] Ego start detected at time " << time << "s" << std::endl;
+            neutral_steering += sdl_steering;
+            neutral_throttle += sdl_throttle;
+            neutral_braking += sdl_braking;
+            neutral_sample_count++;
+
+            if (neutral_sample_count == neutral_samples_required)
+            {
+              neutral_steering /= neutral_samples_required;
+              neutral_throttle /= neutral_samples_required;
+              neutral_braking /= neutral_samples_required;
+              if (!logged_neutral)
+              {
+                std::cout << "[RELATIVE TIMING] Captured SDL neutral baseline: steer=" << neutral_steering
+                          << ", throttle=" << neutral_throttle
+                          << ", brake=" << neutral_braking << std::endl;
+                logged_neutral = true;
+              }
+            }
           }
+
+          bool baseline_ready = (neutral_sample_count >= neutral_samples_required);
+          bool has_meaningful_manual_input = false;
+          if (auto_mode == 0)
+          {
+            if (baseline_ready)
+            {
+              if (std::abs(static_cast<double>(sdl_steering) - neutral_steering) > axis_deadzone ||
+                  std::abs(static_cast<double>(sdl_throttle) - neutral_throttle) > axis_deadzone ||
+                  std::abs(static_cast<double>(sdl_braking) - neutral_braking) > axis_deadzone)
+              {
+                has_meaningful_manual_input = true;
+              }
+            }
+
+            if (prev_input_valid)
+            {
+              if (std::abs(static_cast<double>(sdl_steering - prev_sdl_steering)) > axis_delta_threshold ||
+                  std::abs(static_cast<double>(sdl_throttle - prev_sdl_throttle)) > axis_delta_threshold ||
+                  std::abs(static_cast<double>(sdl_braking - prev_sdl_braking)) > axis_delta_threshold)
+              {
+                has_meaningful_manual_input = true;
+              }
+            }
+          }
+
+          if (has_meaningful_manual_input)
+          {
+            ego_input_count++;
+            if (ego_input_count >= required_input_samples)
+            {
+              ego_start_time = time;
+              std::cout << "[RELATIVE TIMING] Ego start detected at time " << time
+                        << "s (manual input sustained for " << ego_input_count << " samples)" << std::endl;
+              std::cout << "[RELATIVE TIMING] Delay injection is now ACTIVE" << std::endl;
+            }
+          }
+          else
+          {
+            ego_input_count = 0;
+          }
+
+          prev_sdl_steering = sdl_steering;
+          prev_sdl_throttle = sdl_throttle;
+          prev_sdl_braking = sdl_braking;
+          prev_input_valid = true;
         }
 
 #ifdef ENABLE_ROS2_BRIDGE
@@ -1148,70 +1334,76 @@ int main(int argc, char *argv[])
         // Detect ego movement for relative timing mode (actor nodes)
         if (start_on_ego_input && ego_start_time < 0.0 && use_synchrono && syn_manager_ptr)
         {
-          // Look for ego zombie (node 1)
           for (auto& zombie_pair : syn_manager_ptr->GetZombies())
           {
             if (zombie_pair.first.GetNodeID() != 1)
               continue;
-            
+
             if (auto ego_zombie = std::dynamic_pointer_cast<SynWheeledVehicleAgent>(zombie_pair.second))
             {
-              // Static variables to track ego position for velocity calculation
-              static ChVector3d prev_ego_zombie_pos;
-              static double prev_ego_zombie_time = -1.0;
-              static int ego_zombie_sample_count = 0;
-              
+              static ChVector3d window_start_pos;
+              static double window_start_time = -1.0;
+              static int ego_moving_count = 0;
+              const double motion_window_dt = std::max(heartbeat * 0.9, 0.02);
+              const int required_moving_windows = 10;
+
               ChVector3d ego_pos = ego_zombie->GetZombiePos();
-              
-              // Need at least 2 samples to calculate velocity
-              if (ego_zombie_sample_count >= 1 && time > prev_ego_zombie_time)
+              if (window_start_time < 0.0)
               {
-                double dt = time - prev_ego_zombie_time;
-                if (dt > 0.0001)  // Sanity check for dt
+                window_start_pos = ego_pos;
+                window_start_time = time;
+                break;
+              }
+
+              double dt = time - window_start_time;
+              if (dt >= motion_window_dt)
+              {
+                double ego_speed = (ego_pos - window_start_pos).Length() / dt;
+                if (ego_speed > ego_velocity_threshold && ego_speed < 100.0)
                 {
-                  double ego_vx = (ego_pos.x() - prev_ego_zombie_pos.x()) / dt;
-                  double ego_vy = (ego_pos.y() - prev_ego_zombie_pos.y()) / dt;
-                  double ego_speed = std::sqrt(ego_vx * ego_vx + ego_vy * ego_vy);
-                  
-                  if (ego_speed > ego_velocity_threshold && ego_speed < 100.0)  // Sanity cap at 100 m/s
+                  ego_moving_count++;
+                  if (ego_moving_count >= required_moving_windows)
                   {
                     ego_start_time = time;
-                    std::cout << "[RELATIVE TIMING] Actor node " << node_id 
-                              << " detected ego movement at time " << time 
+                    std::cout << "[RELATIVE TIMING] Actor node " << node_id
+                              << " detected sustained ego movement at time " << time
                               << "s (speed: " << ego_speed << " m/s)" << std::endl;
                   }
                 }
+                else
+                {
+                  ego_moving_count = 0;
+                }
+
+                window_start_pos = ego_pos;
+                window_start_time = time;
               }
-              
-              prev_ego_zombie_pos = ego_pos;
-              prev_ego_zombie_time = time;
-              ego_zombie_sample_count++;
               break;
             }
           }
         }
-        
-        // Check if actor should be active
-        // In relative timing mode, start_time is relative to ego_start_time
+
+        // Check if actor should be active.
+        // In relative timing mode, start_time is relative to ego_start_time.
         double effective_start_time = distributed_actor_state.start_time;
         if (start_on_ego_input)
         {
-          // In relative mode: if ego hasn't started, actor can't start
-          // If ego has started, effective_start_time = ego_start_time + config_start_time
           if (ego_start_time < 0.0)
           {
-            effective_start_time = std::numeric_limits<double>::infinity();  // Never start until ego moves
+            effective_start_time = std::numeric_limits<double>::infinity();
           }
           else
           {
             effective_start_time = ego_start_time + distributed_actor_state.start_time;
           }
         }
-        
+
         if (!distributed_actor_state.active && time >= effective_start_time)
         {
           distributed_actor_state.active = true;
+          distributed_actor_state.goal_reached = false;
           distributed_actor_state.last_profile_time = 0.0;
+          actor_path_driver->Reset();
           std::cout << "Actor node " << node_id << " activated at time " << time;
           if (start_on_ego_input)
           {
@@ -1223,30 +1415,13 @@ int main(int argc, char *argv[])
         if (distributed_actor_state.active)
         {
           // Calculate local time since actor activation
-          // In relative timing mode, this is time since effective_start_time
           double local_time = time - effective_start_time;
           
           // Evaluate speed profile if defined
           if (distributed_actor_state.profile_defined)
           {
-            // Check if near end of path
-            bool within_stop_zone = false;
-            if (!distributed_actor_state.waypoints.empty())
-            {
-              ChVector3d actor_pos = my_vehicle.GetChassis()->GetPos();
-              ChVector3d path_end = distributed_actor_state.waypoints.back();
-              double dist_to_end = (actor_pos - path_end).Length();
-              double stop_distance = distributed_actor_state.look_ahead_distance > 0.0 
-                                     ? distributed_actor_state.look_ahead_distance * 1.5 : 10.0;
-              within_stop_zone = (dist_to_end < stop_distance);
-              
-              if (within_stop_zone && !distributed_actor_state.goal_reached)
-              {
-                distributed_actor_state.goal_reached = true;
-                std::cout << "Actor node " << node_id << " approaching end of path" << std::endl;
-              }
-            }
-            
+            // Closed-loop behavior: never trigger end-of-path stop logic.
+            const bool within_stop_zone = false;
             // Get desired speed from profile
             double desired_speed = EvaluateDesiredSpeed(distributed_actor_state, local_time, step_size, within_stop_zone);
             actor_path_driver->SetDesiredSpeed(desired_speed);
@@ -1342,23 +1517,47 @@ int main(int argc, char *argv[])
         if (!actor.vehicle || !actor.path_driver)
           continue;
 
-        // Activation Logic
+        // Activation Logic - respect start_on_ego_input mode
         if (!actor.active)
         {
-          if (time >= actor.start_time)
+          double effective_actor_start = actor.start_time;
+          if (start_on_ego_input)
+          {
+            if (ego_start_time < 0.0)
+            {
+              effective_actor_start = std::numeric_limits<double>::infinity();
+            }
+            else
+            {
+              effective_actor_start = ego_start_time + actor.start_time;
+            }
+          }
+
+          if (time >= effective_actor_start)
           {
             actor.active = true;
             actor.path_driver->Reset();
             actor.current_speed = actor.initial_speed;
             actor.last_profile_time = 0.0;
             actor.goal_reached = false;
+            std::cout << "[LOCAL ACTOR] Activated at time " << time;
+            if (start_on_ego_input)
+            {
+              std::cout << " (relative timing: " << actor.start_time << "s after ego start)";
+            }
+            std::cout << std::endl;
           }
         }
 
         // Physics Logic (only if active)
         if (actor.active)
         {
-          double local_time = time - actor.start_time;
+          double effective_actor_start = actor.start_time;
+          if (start_on_ego_input && ego_start_time >= 0.0)
+          {
+            effective_actor_start = ego_start_time + actor.start_time;
+          }
+          double local_time = time - effective_actor_start;
           ChVector3d goal = actor.waypoints.back();
           double dist_to_goal = (actor.vehicle->GetChassis()->GetPos() - goal).Length();
           double slowdown_dist = actor.look_ahead_distance > 0.0 ? std::max(30.0, actor.look_ahead_distance * 3) : 6.0;
@@ -1428,6 +1627,75 @@ int main(int argc, char *argv[])
       } // end for playback_actors
     } // end if (is_ego_node) for local actors
 
+    // Collision warning detection (ego node):
+    //  - Local playback actors: true physics contact via contact reporter.
+    //  - Distributed actors (SynChrono zombies): proximity fallback (zombies are non-physical).
+    bool collision_warning_active = false;
+    if (is_ego_node)
+    {
+      static bool local_collision_latched = false;
+      static bool distributed_collision_latched = false;
+
+      // Local actor physical collision detection
+      if (ego_actor_contact_reporter)
+      {
+        ego_actor_contact_reporter->Reset();
+        my_vehicle.GetSystem()->GetContactContainer()->ReportAllContacts(ego_actor_contact_reporter);
+        bool local_collision = ego_actor_contact_reporter->CollisionDetected();
+        if (local_collision)
+        {
+          collision_warning_active = true;
+          if (!local_collision_latched)
+          {
+            std::cout << "[COLLISION WARNING] Ego contact detected with a local playback actor at t="
+                      << std::fixed << std::setprecision(3) << time << "s" << std::endl;
+            local_collision_latched = true;
+          }
+        }
+        else
+        {
+          local_collision_latched = false;
+        }
+      }
+
+      // Distributed actor collision fallback (zombies have no physical contact)
+      bool distributed_collision = false;
+      if (use_synchrono && syn_manager_ptr)
+      {
+        constexpr double distributed_collision_distance = 3.5;  // meters (approx body overlap)
+        ChVector3d ego_pos = my_vehicle.GetChassis()->GetPos();
+        double min_dist = std::numeric_limits<double>::infinity();
+
+        for (auto& zombie_pair : syn_manager_ptr->GetZombies())
+        {
+          if (auto wheeled_zombie = std::dynamic_pointer_cast<SynWheeledVehicleAgent>(zombie_pair.second))
+          {
+            double dist = (ego_pos - wheeled_zombie->GetZombiePos()).Length();
+            if (dist < min_dist)
+              min_dist = dist;
+            if (dist <= distributed_collision_distance)
+              distributed_collision = true;
+          }
+        }
+
+        if (distributed_collision)
+        {
+          collision_warning_active = true;
+          if (!distributed_collision_latched)
+          {
+            std::cout << "[COLLISION WARNING] Ego near distributed actor (zombie proximity trigger) at t="
+                      << std::fixed << std::setprecision(3) << time
+                      << "s, min_dist=" << min_dist << " m" << std::endl;
+            distributed_collision_latched = true;
+          }
+        }
+        else
+        {
+          distributed_collision_latched = false;
+        }
+      }
+    }
+
 #ifdef ENABLE_ROS2_BRIDGE
     if (is_ego_node && ros_bridge)
     {
@@ -1484,6 +1752,18 @@ int main(int argc, char *argv[])
       }
     }
 
+    // Purple collision bubble (ego node only)
+    if (is_ego_node && indicator_collision)
+    {
+      if (collision_warning_active) {
+          ChVector3d sphere_local_pos_collision(2.54, 0.381 - 0.5, 1.04);
+          ChVector3d sphere_global_pos_collision = my_vehicle.GetChassisBody()->TransformPointLocalToParent(sphere_local_pos_collision);
+          indicator_collision->SetPos(sphere_global_pos_collision);
+      } else {
+          indicator_collision->SetPos(ChVector3d(0, 0, -100));
+      }
+    }
+
     // Real-time synchronization (ego node spins, actor nodes run as fast as possible but sync via SynChrono)
     if (is_ego_node)
     {
@@ -1506,7 +1786,7 @@ int main(int argc, char *argv[])
         // 1. sim_time
         boost_streamer.AddData(current_time);
         // 2. latency_condition_ms
-        boost_streamer.AddData(delay_val);
+        boost_streamer.AddData(runtime_delay_ms);
         
         // Ego vehicle data
         ChVector3d ego_pos = my_vehicle.GetChassis()->GetPos();
@@ -1593,6 +1873,23 @@ int main(int argc, char *argv[])
         boost_streamer.AddData(lead_speed);
 
         boost_streamer.Synchronize();
+
+        // // temporarily printing all streamed data to console for debugging
+        // std::cout << std::fixed << std::setprecision(3);
+        // std::cout << "Time: " << current_time << "s, Delay: "
+        //           << runtime_delay_ms << "ms, Ego Pos: (" << ego_pos.x() << ", " << ego_pos.y() << ", " << ego_pos.z() << ")"
+        //           << ", Ego Yaw: " << ego_euler.z() * RADS_2_DEG << " deg"
+        //           << ", Ego Vel: (" << ego_vel.x() << ", " << ego_vel.y() << ", " << ego_vel.z() << ") m/s"
+        //           << ", Ego Speed: " << my_vehicle.GetSpeed() * MS_TO_MPH << " mph"
+        //           << ", Engine RPM: " << my_vehicle.GetEngine()->GetMotorSpeed() * rads2rpm
+        //           << ", Steering: " << driver_inputs.m_steering
+        //           << ", Throttle: " << driver_inputs.m_throttle
+        //           << ", Brake: " << driver_inputs.m_braking
+        //           << ", Lead Pos: (" << lead_x << ", " << lead_y << ", " << lead_z << ")"
+        //           << ", Lead Yaw: " << lead_yaw << " deg"
+        //           << ", Lead Vel: (" << lead_vx << ", " << lead_vy << ", " << lead_vz << ") m/s"
+        //           << ", Lead Speed: " << lead_speed << " mph"
+        //           << std::endl;
       }
 
       // SDL button handling (ego node only)

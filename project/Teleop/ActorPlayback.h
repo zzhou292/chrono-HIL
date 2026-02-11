@@ -113,7 +113,10 @@ const SpeedProfileSegment* GetActiveSegment(const ActorPlayback& actor, double l
 /// @param step Simulation step size
 /// @param within_stop_zone Whether the actor is near the end of its path
 /// @return Desired speed in m/s
-double EvaluateDesiredSpeed(ActorPlayback& actor, double local_time, double step, bool within_stop_zone);
+double EvaluateDesiredSpeed(ActorPlayback& actor,
+                            double local_time,
+                            double step,
+                            bool within_stop_zone);
 
 }  // namespace hil
 }  // namespace chrono

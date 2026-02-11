@@ -103,6 +103,12 @@ namespace chrono
             return res;
         }
 
+        float ChDelaySim::getExpectedDelayMs()
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            return expectedDelay;
+        }
+
         bool ChDelaySim::loadDelayConfig(const std::string& jsonFilePath)
         {
             rapidjson::Document d;

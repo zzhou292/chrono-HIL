@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <iomanip>
 
 namespace chrono {
 namespace hil {
@@ -100,6 +101,19 @@ bool ParseSpeedProfileJSON(const rapidjson::Value& profile_json, ActorPlayback& 
         actor.current_speed = actor.initial_speed;
     }
     
+    // Debug: Print parsed profile
+    std::cout << "[SPEED PROFILE] Parsed " << actor.profile_segments.size() << " segment(s), type: " 
+              << (actor.profile_type == SpeedProfileType::VELOCITY ? "VELOCITY" : "ACCELERATION")
+              << ", initial_speed: " << actor.initial_speed << " m/s" << std::endl;
+    for (size_t i = 0; i < actor.profile_segments.size(); ++i) {
+        const auto& seg = actor.profile_segments[i];
+        std::cout << "  [Segment " << i << "] start_time=" << seg.start_time 
+                  << "s, end_time=" << (seg.end_time == std::numeric_limits<double>::infinity() ? "INF" : std::to_string(seg.end_time))
+                  << "s, value=" << seg.value 
+                  << (actor.profile_type == SpeedProfileType::VELOCITY ? " m/s" : " m/s^2")
+                  << (seg.until_end ? " (until_end)" : "") << std::endl;
+    }
+    
     return true;
 }
 
@@ -120,6 +134,10 @@ double EvaluateDesiredSpeed(ActorPlayback& actor, double local_time, double step
 
     const SpeedProfileSegment* segment = GetActiveSegment(actor, local_time);
     
+    // Debug logging (only log periodically to avoid spam)
+    static double last_debug_time = -1.0;
+    bool should_log = (local_time - last_debug_time >= 1.0) || (local_time < 0.1 && last_debug_time < 0.0);
+    
     if (actor.profile_type == SpeedProfileType::VELOCITY) {
         double target = segment ? std::max(0.0, segment->value) : 0.0;
         double dt = step;
@@ -129,19 +147,54 @@ double EvaluateDesiredSpeed(ActorPlayback& actor, double local_time, double step
         } else {
             actor.current_speed = target;
         }
+        // Debug output for velocity profile
+        if (should_log) {
+            last_debug_time = local_time;
+            std::cout << "[VEL PROFILE] local_time=" << std::fixed << std::setprecision(2) << local_time 
+                      << "s, segment=" << (segment ? "FOUND" : "NONE");
+            if (!segment && !actor.profile_segments.empty()) {
+                std::cout << " (first segment starts at " << actor.profile_segments.front().start_time << "s)";
+            }
+            std::cout << ", target=" << target << " m/s" << std::endl;
+        }
         return target;
     }
 
     // Acceleration profile
-    double accel = segment ? segment->value : 0.0;
+    const double configured_accel = segment ? segment->value : 0.0;
+    double accel = configured_accel;
     double dt = local_time - actor.last_profile_time;
-    if (dt < 0.0 || dt > 1.0)
+    
+    // Use step size if dt is invalid or very small (first frame after activation)
+    if (dt < step * 0.5 || dt > 1.0)
         dt = step;
+        
     if (within_stop_zone && accel > 0) {
         accel = -actor.max_decel;
     }
+    
+    double old_speed = actor.current_speed;
     actor.current_speed = std::max(0.0, actor.current_speed + accel * dt);
     actor.last_profile_time = local_time;
+    
+    // Debug output
+    if (should_log) {
+        last_debug_time = local_time;
+        std::cout << "[ACCEL PROFILE] "
+                  << "local_time=" << std::fixed << std::setprecision(2) << local_time << "s"
+                  << ", segment=" << (segment ? "ACTIVE" : "NONE");
+        if (!segment && !actor.profile_segments.empty()) {
+            std::cout << " (first segment starts at " << actor.profile_segments.front().start_time << "s)";
+        }
+        std::cout << ", prev_speed=" << std::setprecision(2) << old_speed << " m/s"
+                  << ", configured_accel=" << std::setprecision(3) << configured_accel << " m/s^2"
+                  << ", applied_accel=" << accel << " m/s^2"
+                  << ", dt=" << std::setprecision(4) << dt << " s"
+                  << ", desired_vel=" << std::setprecision(2) << actor.current_speed << " m/s"
+                  << ", current_speed=" << std::setprecision(2) << actor.current_speed << " m/s"
+                  << std::endl;
+    }
+    
     return actor.current_speed;
 }
 

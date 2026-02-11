@@ -72,12 +72,13 @@ namespace chrono
 
             int getPacketDropCount();
             std::vector<float> getDelayBuffer();
+            float getExpectedDelayMs();
 
         private:
             std::queue<std::pair<std::chrono::steady_clock::time_point, std::vector<char>>> packetQueue;
             std::mutex queueMutex;
             std::vector<char> latestData; // Store the latest packet data
-            float expectedDelay;          // Expected delay in milliseconds
+            float expectedDelay = 0.0f;   // Expected delay in milliseconds
 
             std::default_random_engine generator;
             std::shared_ptr<DelayDistribution> delayDistribution; // Use shared_ptr for flexibility

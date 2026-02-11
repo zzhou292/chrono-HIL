@@ -19,9 +19,22 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
+#include <cctype>
 
 namespace chrono {
 namespace hil {
+
+namespace {
+std::string Trim(const std::string& s) {
+    size_t b = 0;
+    while (b < s.size() && std::isspace(static_cast<unsigned char>(s[b])))
+        ++b;
+    size_t e = s.size();
+    while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1])))
+        --e;
+    return s.substr(b, e - b);
+}
+}  // namespace
 
 std::vector<ChVector3d> BuildResampledPoints(const std::vector<ChVector3d>& samples, double spacing) {
     std::vector<ChVector3d> points;
@@ -103,25 +116,38 @@ bool LoadWaypointCSV(const std::string& filename, std::vector<ChVector3d>& out_p
     out_points.clear();
     std::string line;
     while (std::getline(infile, line)) {
+        line = Trim(line);
         if (line.empty())
             continue;
         if (line[0] == '#')
             continue;
+        if (line.size() >= 2 && line[0] == '/' && line[1] == '/')
+            continue;
+
+        const char delim = (line.find(';') != std::string::npos) ? ';' : ',';
         std::stringstream ss(line);
-        double x, y, z;
-        char delim;
-        if (!(ss >> x)) {
-            continue;  // skip header or invalid lines
+        std::string sx, sy, sz;
+        if (!std::getline(ss, sx, delim))
+            continue;
+        if (!std::getline(ss, sy, delim))
+            continue;
+        std::getline(ss, sz, delim);  // optional z
+
+        sx = Trim(sx);
+        sy = Trim(sy);
+        sz = Trim(sz);
+        if (sx.empty() || sy.empty())
+            continue;
+
+        try {
+            double x = std::stod(sx);
+            double y = std::stod(sy);
+            double z = sz.empty() ? 0.0 : std::stod(sz);
+            out_points.emplace_back(x, y, z);
+        } catch (const std::exception&) {
+            // Skip headers or malformed lines.
+            continue;
         }
-        if (ss.peek() == ',' || ss.peek() == ';')
-            ss >> delim;
-        if (!(ss >> y))
-            continue;
-        if (ss.peek() == ',' || ss.peek() == ';')
-            ss >> delim;
-        if (!(ss >> z))
-            continue;
-        out_points.emplace_back(x, y, z);
     }
 
     if (out_points.size() < 2) {
@@ -130,6 +156,14 @@ bool LoadWaypointCSV(const std::string& filename, std::vector<ChVector3d>& out_p
     }
 
     return true;
+}
+
+bool IsPathLoop(const std::vector<ChVector3d>& points, double threshold) {
+    if (points.size() < 3)  // Need at least 3 points for a meaningful loop
+        return false;
+    
+    double dist = (points.front() - points.back()).Length();
+    return dist <= threshold;
 }
 
 }  // namespace hil
