@@ -1,5 +1,6 @@
 #include "ChDelaySim.h"
 #include <fstream>
+#include <cmath>
 #include "chrono_vehicle/utils/ChUtilsJSON.h"
 
 namespace chrono
@@ -24,15 +25,40 @@ namespace chrono
             std::unique_lock<std::mutex> lock(queueMutex);
             auto currentTime = std::chrono::steady_clock::now();
             
+            // Sample delay at SEND time (this is the key fix!)
+            float sampledDelay = delayDistribution->sample(generator);
+            
+            // Quantize delay to nearest step if quantization is enabled
+            if (quantizationStep > 0.0f) {
+                sampledDelay = std::round(sampledDelay / quantizationStep) * quantizationStep;
+            }
+            if (sampledDelay < 0.0f) sampledDelay = 0.0f;
+            
+            lastSampledDelayMs = sampledDelay;
+            
+            // Calculate apply time = current wall time + sampled delay
+            auto applyTime = currentTime + std::chrono::milliseconds(static_cast<long long>(sampledDelay));
+            
             // Calculate bandwidth, avoiding division by zero or very small delays
             float currentBandwidth = 0.0f;
-            if (expectedDelay > 0.01f) {  // Only check bandwidth if delay is meaningful (> 0.01ms)
-                currentBandwidth = packetQueue.size() * 8 / (expectedDelay * 1e-3);
+            if (sampledDelay > 0.01f) {  // Only check bandwidth if delay is meaningful (> 0.01ms)
+                currentBandwidth = packetQueue.size() * 8 / (sampledDelay * 1e-3);
             }
 
             if (currentBandwidth < bandwidthLimit)
             {
-                packetQueue.push({currentTime, data});
+                DelayedPacket pkt;
+                pkt.applyTime = applyTime;
+                pkt.sourceTime = currentTime;
+                pkt.sampledDelayMs = sampledDelay;
+                pkt.data = data;
+                
+                packetQueue.push_back(pkt);
+                // Maintain heap property (min-heap by apply time)
+                std::push_heap(packetQueue.begin(), packetQueue.end(), 
+                    [](const DelayedPacket& a, const DelayedPacket& b) {
+                        return a.applyTime > b.applyTime;  // Min-heap: earliest apply time first
+                    });
             }
             else
             {
@@ -48,27 +74,50 @@ namespace chrono
         {
             std::unique_lock<std::mutex> lock(queueMutex);
             auto currentTime = std::chrono::steady_clock::now();
-            expectedDelay = delayDistribution->sample(generator);
 
+            // Process all packets whose apply time has arrived
             while (!packetQueue.empty())
             {
-                auto &front = packetQueue.front();
-                auto delay = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - front.first).count();
-                if (enableLogging)
-                {
-                    delay_buffer.push_back(delay);
+                // Peek at the earliest packet (min-heap: front has smallest apply time)
+                const DelayedPacket& front = packetQueue.front();
+                
+                // Check if this packet's apply time has arrived
+                if (front.applyTime > currentTime) {
+                    break; // No more packets ready yet
                 }
-
-                if (delay >= expectedDelay)
-                {
-                    latestData = front.second;
-                    packetQueue.pop();
+                
+                // Pop the packet from the heap
+                std::pop_heap(packetQueue.begin(), packetQueue.end(),
+                    [](const DelayedPacket& a, const DelayedPacket& b) {
+                        return a.applyTime > b.applyTime;
+                    });
+                DelayedPacket pkt = packetQueue.back();
+                packetQueue.pop_back();
+                
+                // Anti-rewind check: prevent old commands from overwriting newer ones
+                // This handles cases where a packet with large latency arrives after
+                // a packet with small latency that was sent later
+                if (enableAntiRewind && hasAppliedAnyPacket) {
+                    if (pkt.sourceTime < lastAppliedSourceTime) {
+                        antiRewindDiscardCount_buffer++;
+                        continue; // Skip this stale packet
+                    }
                 }
-                else
-                {
-                    break; // Stop processing if the next packet is not ready yet
+                
+                // Log the actual delay experienced
+                if (enableLogging) {
+                    auto actualDelay = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        currentTime - pkt.sourceTime).count();
+                    delay_buffer.push_back(static_cast<float>(actualDelay));
                 }
+                
+                // Apply this packet
+                latestData = pkt.data;
+                lastAppliedSourceTime = pkt.sourceTime;
+                hasAppliedAnyPacket = true;
+                lastSampledDelayMs = pkt.sampledDelayMs;
             }
+            
             return latestData;
         }
 
@@ -94,6 +143,13 @@ namespace chrono
             return res;
         }
 
+        int ChDelaySim::getAntiRewindDiscardCount()
+        {
+            int res = antiRewindDiscardCount_buffer;
+            antiRewindDiscardCount_buffer = 0;
+            return res;
+        }
+
         std::vector<float> ChDelaySim::getDelayBuffer()
         {
             std::vector<float> res;
@@ -106,7 +162,7 @@ namespace chrono
         float ChDelaySim::getExpectedDelayMs()
         {
             std::lock_guard<std::mutex> lock(queueMutex);
-            return expectedDelay;
+            return lastSampledDelayMs;
         }
 
         bool ChDelaySim::loadDelayConfig(const std::string& jsonFilePath)

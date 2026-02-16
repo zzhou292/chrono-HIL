@@ -63,6 +63,7 @@
 
 #include "chrono_hil/network/udp/ChBoostOutStreamer.h"
 #include "chrono_hil/network/sim/ChDelaySim.h"
+#include "chrono_hil/network/sim/ChCameraDelaySim.h"
 
 // SynChrono includes for distributed simulation
 #include "chrono_synchrono/SynChronoManager.h"
@@ -148,6 +149,8 @@ float delay_val = 0.0;
 float cam_delay_val = 0.2;
 int lane = 0;
 std::string delay_config_file = "network/delay_configs/delay_config.json";
+std::string cam_delay_config_file = "";  // Optional separate config for camera delay
+bool enable_variable_cam_delay = false;   // Use variable camera delay instead of constant SetLag()
 
 // Recording configuration
 bool record_mode = false;
@@ -173,7 +176,9 @@ int lead_node_id = 2;  // Node ID of the lead vehicle (for Unity streaming)
 
 // Relative timing configuration (actors start when ego starts moving)
 bool start_on_ego_input = false;
-double ego_start_time = -1.0;  // -1 means ego hasn't started yet
+double ego_start_time = -1.0;  // -1 means ego hasn't started yet (velocity-based, for actor activation)
+double delay_start_time = -1.0;  // -1 means delay injection hasn't started yet (SDL input-based)
+bool delay_injection_started = false;  // True once first SDL input detected
 double ego_velocity_threshold = 0.5;  // m/s threshold to detect ego moving
 
 // =============================================================================
@@ -183,10 +188,15 @@ void AddCommandLineOptions(ChCLI &cli)
                              "Path to simulation configuration file",
                              scenario_filename);
   cli.AddOption<float>("Simulation", "delay_val", "Delay value", std::to_string(delay_val));
-  cli.AddOption<float>("Simulation", "cam_delay_val", "Camera Delay value", std::to_string(cam_delay_val));
+  cli.AddOption<float>("Simulation", "cam_delay_val", "Camera Delay value (constant, in ms)", std::to_string(cam_delay_val));
   cli.AddOption<std::string>("Simulation", "delay_config",
                              "Path to delay configuration JSON file",
                              delay_config_file);
+  cli.AddOption<std::string>("Simulation", "cam_delay_config",
+                             "Path to camera delay config JSON (enables variable camera delay)",
+                             cam_delay_config_file);
+  cli.AddOption<bool>("Simulation", "variable_cam_delay", 
+                      "Enable variable camera delay using delay config", "false");
   cli.AddOption<bool>("Simulation", "ros_bridge", "Enable ROS2 safety bridge", "false");
   cli.AddOption<bool>("Simulation", "record_mode", "Enable waypoint recording mode", "false");
   cli.AddOption<std::string>("Recording", "record_output", "Output file path for recorded waypoints", record_output_file);
@@ -390,6 +400,8 @@ int main(int argc, char *argv[])
   delay_val = cli.GetAsType<float>("delay_val");
   cam_delay_val = cli.GetAsType<float>("cam_delay_val");
   delay_config_file = cli.GetAsType<std::string>("delay_config");
+  cam_delay_config_file = cli.GetAsType<std::string>("cam_delay_config");
+  enable_variable_cam_delay = cli.GetAsType<bool>("variable_cam_delay");
   record_mode = cli.GetAsType<bool>("record_mode");
   record_output_file = cli.GetAsType<std::string>("record_output");
   record_interval = cli.GetAsType<double>("record_interval");
@@ -700,9 +712,16 @@ int main(int argc, char *argv[])
         1);
 
     driver_cam->SetName("DriverCam");
-    driver_cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
-        5760, 1080, "Camera1", false));
-    driver_cam->SetLag(cam_delay_val * 0.001);
+    
+    // When using variable camera delay, we handle visualization ourselves via ChCameraDelaySim
+    // Otherwise, use the built-in ChFilterVisualize with constant lag
+    if (!enable_variable_cam_delay) {
+      driver_cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
+          5760, 1080, "Camera1", false));
+      driver_cam->SetLag(cam_delay_val * 0.001);  // Constant lag in seconds
+    } else {
+      driver_cam->SetLag(0.0f);  // No sensor-level lag; delay handled by ChCameraDelaySim
+    }
     driver_cam->PushFilter(chrono_types::make_shared<ChFilterRGBA8Access>());
     manager->AddSensor(driver_cam);
 
@@ -764,6 +783,7 @@ int main(int argc, char *argv[])
   // Initialize delay simulator with normal distribution
   // Very high bandwidth limit (effectively unlimited for most scenarios)
   ChDelaySim sim(normalDist, 1e9f);
+  sim.setQuantizationStep(10.0f);  // Quantize delays to 10ms increments
   
   // Load delay configuration from JSON file if it exists (ego node only)
   // Priority: If delay_val is explicitly set (non-zero), use it instead of JSON
@@ -795,6 +815,71 @@ int main(int argc, char *argv[])
       }
     } else {
       std::cout << "No delay configuration specified. Using zero delay." << std::endl;
+    }
+  }
+
+  // Initialize camera delay simulator (ego node only, when variable delay enabled)
+  std::unique_ptr<ChCameraDelaySim> cam_delay_sim;
+  bool use_json_cam_delay_config = false;
+  float runtime_cam_delay_ms = 0.0f;
+  
+  if (is_ego_node && enable_variable_cam_delay)
+  {
+    // Initialize with the specified delay value (in milliseconds)
+    // Use zero variance for smooth video - constant delay preserves frame order perfectly
+    std::cout << "[CameraDelaySim] Initializing with delay mean: " << cam_delay_val << "ms" << std::endl;
+    float cam_stddev = 0.001f;  // Near-zero variance for smooth constant-delay video
+    auto camDelayDist = std::make_shared<chrono::hil::NormalDistribution>(cam_delay_val, cam_stddev);
+    
+    // Buffer size: Use large buffer when JSON config might have high delays
+    // At 35Hz, 5000ms = 175 frames. Use 3x margin + extra headroom.
+    // If using JSON config, assume up to 10 seconds of delay (350 frames * 3).
+    std::string cam_config_path = cam_delay_config_file.empty() ? delay_config_file : cam_delay_config_file;
+    size_t bufferSize;
+    if (!cam_config_path.empty()) {
+      // JSON config may have large delays - use generous buffer (supports up to 10s delay at 35Hz)
+      bufferSize = 1050;  // 10s * 35fps * 3x margin
+      std::cout << "[CameraDelaySim] Using large buffer for JSON config: " << bufferSize << " frames" << std::endl;
+    } else {
+      // No JSON config - size buffer based on cam_delay_val
+      bufferSize = static_cast<size_t>((cam_delay_val / 1000.0f) * 35.0f * 3.0f) + 50;
+      std::cout << "[CameraDelaySim] Buffer size: " << bufferSize << " frames" << std::endl;
+    }
+    
+    cam_delay_sim = std::make_unique<ChCameraDelaySim>(camDelayDist, bufferSize);
+    cam_delay_sim->setQuantizationStep(0.0f);  // No quantization for video - smoother playback
+    cam_delay_sim->setAntiRewind(false);  // Disable anti-rewind for video - play frames in order
+    cam_delay_sim->setLogging(true);  // Enable logging to diagnose delay issues
+    
+    // Try to load camera delay config from the SAME config file as input delay
+    // Camera delay uses "camera_delay_periods" section, falls back to "delay_periods" if not found
+    if (!cam_config_path.empty()) {
+      std::string full_cam_config_path;
+      if (cam_config_path[0] == '/') {
+        full_cam_config_path = cam_config_path;
+      } else {
+        full_cam_config_path = std::string(STRINGIFY(HIL_DATA_DIR)) + "/" + cam_config_path;
+      }
+      
+      std::cout << "[CameraDelaySim] Loading delay config from: " << full_cam_config_path << std::endl;
+      std::cout << "  (Looking for 'camera_delay_periods' section, fallback to 'delay_periods')" << std::endl;
+      if (cam_delay_sim->loadDelayConfig(full_cam_config_path)) {
+        use_json_cam_delay_config = true;
+        std::cout << "[CameraDelaySim] Successfully loaded camera delay configuration." << std::endl;
+      } else {
+        std::cout << "[CameraDelaySim] No config loaded. Using constant delay: " 
+                  << cam_delay_val << "ms" << std::endl;
+      }
+    } else {
+      std::cout << "[CameraDelaySim] No JSON config - using constant delay: " << cam_delay_val << "ms" << std::endl;
+    }
+    
+    // Initialize display window for delayed camera feed
+    // Window is 1/3 scale (1920x360) but displays full resolution texture
+    if (!cam_delay_sim->initDisplay("Delayed Camera View", 3440, 1440)) {
+      std::cerr << "WARNING: Failed to initialize delayed camera display window." << std::endl;
+    } else {
+      std::cout << "Delayed camera display initialized (3440x1440)." << std::endl;
     }
   }
 
@@ -1112,12 +1197,12 @@ int main(int argc, char *argv[])
     }
 
     // Update delay schedule (ego only).
-    // In relative-timing mode, delay timeline starts with the first ego input.
+    // In relative-timing mode, delay timeline starts with the first SDL input.
     if (is_ego_node && use_json_delay_config) {
       if (!start_on_ego_input) {
         sim.updateDelayForTime(time);
-      } else if (ego_start_time >= 0.0) {
-        sim.updateDelayForTime(time - ego_start_time);
+      } else if (delay_start_time >= 0.0) {
+        sim.updateDelayForTime(time - delay_start_time);
       }
     }
 
@@ -1150,14 +1235,73 @@ int main(int argc, char *argv[])
         const float sdl_throttle = SDLDriver.GetThrottle();
         const float sdl_braking = SDLDriver.GetBraking();
 
+        // Capture raw (undelayed) inputs for logging BEFORE delay processing
+        raw_inputs.m_steering = sdl_steering;
+        raw_inputs.m_throttle = sdl_throttle;
+        raw_inputs.m_braking = sdl_braking;
+
         // Create a vector of floats
         std::vector<float> floats = {static_cast<float>(auto_mode), sdl_steering, sdl_throttle, sdl_braking};
 
         // Serialize the vector of floats to a vector of chars
         std::vector<char> serializedData = serializeFloats(floats);
 
-        // Only apply delay once relative timing has been armed by first ego input.
-        bool delay_active = !start_on_ego_input || ego_start_time >= 0.0;
+        // Detect first SDL input to start delay injection (raw input based).
+        // This triggers delay pipeline immediately when user provides input,
+        // even before the vehicle physically moves (which happens after the delay).
+        if (start_on_ego_input && !delay_injection_started)
+        {
+          static int delay_neutral_sample_count = 0;
+          static double delay_neutral_steering = 0.0;
+          static double delay_neutral_throttle = 0.0;
+          static double delay_neutral_braking = 0.0;
+          static bool delay_baseline_logged = false;
+          
+          const int delay_neutral_samples_required = 50;  // 1.0s at 50Hz to capture baseline
+          const double axis_deadzone = 0.08;  // Threshold for deviation from baseline
+          
+          // First, capture neutral baseline
+          if (delay_neutral_sample_count < delay_neutral_samples_required)
+          {
+            delay_neutral_steering += sdl_steering;
+            delay_neutral_throttle += sdl_throttle;
+            delay_neutral_braking += sdl_braking;
+            delay_neutral_sample_count++;
+            
+            if (delay_neutral_sample_count == delay_neutral_samples_required)
+            {
+              delay_neutral_steering /= delay_neutral_samples_required;
+              delay_neutral_throttle /= delay_neutral_samples_required;
+              delay_neutral_braking /= delay_neutral_samples_required;
+              if (!delay_baseline_logged)
+              {
+                std::cout << "[RELATIVE TIMING] Captured SDL neutral baseline: steer=" 
+                          << delay_neutral_steering << ", throttle=" << delay_neutral_throttle 
+                          << ", brake=" << delay_neutral_braking << std::endl;
+                delay_baseline_logged = true;
+              }
+            }
+          }
+          else
+          {
+            // Baseline captured - check for deviation from baseline
+            if (std::abs(sdl_steering - delay_neutral_steering) > axis_deadzone ||
+                std::abs(sdl_throttle - delay_neutral_throttle) > axis_deadzone ||
+                std::abs(sdl_braking - delay_neutral_braking) > axis_deadzone)
+            {
+              delay_injection_started = true;
+              delay_start_time = time;
+              std::cout << "[RELATIVE TIMING] First SDL input detected at time " << time
+                        << "s - delay injection STARTED" << std::endl;
+              std::cout << "  (steering delta: " << std::abs(sdl_steering - delay_neutral_steering)
+                        << ", throttle delta: " << std::abs(sdl_throttle - delay_neutral_throttle)
+                        << ", brake delta: " << std::abs(sdl_braking - delay_neutral_braking) << ")" << std::endl;
+            }
+          }
+        }
+
+        // Delay is active once: (a) not using relative timing, or (b) first SDL input detected
+        bool delay_active = !start_on_ego_input || delay_injection_started;
         if (delay_active)
         {
           sim.addPacket(serializedData);
@@ -1196,96 +1340,32 @@ int main(int argc, char *argv[])
             driver_inputs = PFdriver->GetInputs();
           }
         }
-        
-        // Update raw inputs snapshot for logging/publishing
-        raw_inputs = driver_inputs;
 
-        // Detect first sustained manual input for relative timing mode.
+        // Detect ego start based on ACTUAL vehicle velocity (not raw SDL input).
+        // This ensures actors don't start until the ego vehicle is physically moving,
+        // which accounts for any uplink delay applied to driver inputs.
+        // NOTE: This is separate from delay_injection_started (SDL-based) which
+        // controls when delay is applied. This controls when actors start.
         if (start_on_ego_input && ego_start_time < 0.0)
         {
-          static int ego_input_count = 0;
-          static int neutral_sample_count = 0;
-          static double neutral_steering = 0.0;
-          static double neutral_throttle = 0.0;
-          static double neutral_braking = 0.0;
-          static bool prev_input_valid = false;
-          static float prev_sdl_steering = 0.0f;
-          static float prev_sdl_throttle = 0.0f;
-          static float prev_sdl_braking = 0.0f;
-          static bool logged_neutral = false;
+          static int ego_moving_count = 0;
+          const int required_moving_samples = 10;  // 0.2s at 50Hz of sustained movement
 
-          const int neutral_samples_required = 50;   // 1.0s at 50Hz
-          const int required_input_samples = 10;     // 0.2s at 50Hz
-          const double axis_deadzone = 0.08;
-          const double axis_delta_threshold = 0.03;
-
-          if (neutral_sample_count < neutral_samples_required)
+          double ego_speed = my_vehicle.GetSpeed();
+          if (ego_speed > ego_velocity_threshold && ego_speed < 100.0)  // Sanity check upper bound
           {
-            neutral_steering += sdl_steering;
-            neutral_throttle += sdl_throttle;
-            neutral_braking += sdl_braking;
-            neutral_sample_count++;
-
-            if (neutral_sample_count == neutral_samples_required)
-            {
-              neutral_steering /= neutral_samples_required;
-              neutral_throttle /= neutral_samples_required;
-              neutral_braking /= neutral_samples_required;
-              if (!logged_neutral)
-              {
-                std::cout << "[RELATIVE TIMING] Captured SDL neutral baseline: steer=" << neutral_steering
-                          << ", throttle=" << neutral_throttle
-                          << ", brake=" << neutral_braking << std::endl;
-                logged_neutral = true;
-              }
-            }
-          }
-
-          bool baseline_ready = (neutral_sample_count >= neutral_samples_required);
-          bool has_meaningful_manual_input = false;
-          if (auto_mode == 0)
-          {
-            if (baseline_ready)
-            {
-              if (std::abs(static_cast<double>(sdl_steering) - neutral_steering) > axis_deadzone ||
-                  std::abs(static_cast<double>(sdl_throttle) - neutral_throttle) > axis_deadzone ||
-                  std::abs(static_cast<double>(sdl_braking) - neutral_braking) > axis_deadzone)
-              {
-                has_meaningful_manual_input = true;
-              }
-            }
-
-            if (prev_input_valid)
-            {
-              if (std::abs(static_cast<double>(sdl_steering - prev_sdl_steering)) > axis_delta_threshold ||
-                  std::abs(static_cast<double>(sdl_throttle - prev_sdl_throttle)) > axis_delta_threshold ||
-                  std::abs(static_cast<double>(sdl_braking - prev_sdl_braking)) > axis_delta_threshold)
-              {
-                has_meaningful_manual_input = true;
-              }
-            }
-          }
-
-          if (has_meaningful_manual_input)
-          {
-            ego_input_count++;
-            if (ego_input_count >= required_input_samples)
+            ego_moving_count++;
+            if (ego_moving_count >= required_moving_samples)
             {
               ego_start_time = time;
-              std::cout << "[RELATIVE TIMING] Ego start detected at time " << time
-                        << "s (manual input sustained for " << ego_input_count << " samples)" << std::endl;
-              std::cout << "[RELATIVE TIMING] Delay injection is now ACTIVE" << std::endl;
+              std::cout << "[RELATIVE TIMING] Ego MOTION detected at time " << time
+                        << "s (vehicle speed " << ego_speed << " m/s) - actors can now start" << std::endl;
             }
           }
           else
           {
-            ego_input_count = 0;
+            ego_moving_count = 0;
           }
-
-          prev_sdl_steering = sdl_steering;
-          prev_sdl_throttle = sdl_throttle;
-          prev_sdl_braking = sdl_braking;
-          prev_input_valid = true;
         }
 
 #ifdef ENABLE_ROS2_BRIDGE
@@ -1730,6 +1810,48 @@ int main(int argc, char *argv[])
     if (is_ego_node && manager)
     {
       manager->Update();
+      
+      // Capture camera frames and display with variable delay
+      if (enable_variable_cam_delay && cam_delay_sim && driver_cam)
+      {
+        // Debug: print once at start
+        static bool debugPrinted = false;
+        if (!debugPrinted) {
+          std::cout << "[DEBUG] use_json_cam_delay_config=" << use_json_cam_delay_config 
+                    << ", start_on_ego_input=" << start_on_ego_input 
+                    << ", delay_start_time=" << delay_start_time << std::endl;
+          debugPrinted = true;
+        }
+        
+        // Update delay distribution based on simulation time
+        if (use_json_cam_delay_config) {
+          if (!start_on_ego_input) {
+            cam_delay_sim->updateDelayForTime(time);
+          } else if (delay_start_time >= 0.0) {
+            cam_delay_sim->updateDelayForTime(time - delay_start_time);
+          }
+        }
+        
+        // Capture frames at camera rate (35Hz = every 29 sim steps at 1ms step)
+        // This prevents adding duplicate frames since GetMostRecentBuffer returns same data between updates
+        if (step_number % 29 == 0) {
+          auto cam_buffer = driver_cam->GetMostRecentBuffer<UserRGBA8BufferPtr>();
+          if (cam_buffer && cam_buffer->Buffer) {
+            cam_delay_sim->addFrame(
+                reinterpret_cast<const unsigned char*>(cam_buffer->Buffer.get()),
+                cam_buffer->Width, cam_buffer->Height);
+          }
+          runtime_cam_delay_ms = cam_delay_sim->getExpectedDelayMs();
+        }
+        
+        // Display decoupled from capture - run at higher rate for smoother playback
+        // Display every 10 steps = 100Hz (vs 35Hz capture rate)
+        if (step_number % 10 == 0) {
+          if (!cam_delay_sim->displayDelayedFrame()) {
+            std::cout << "Delayed camera display window closed." << std::endl;
+          }
+        }
+      }
     }
 
     // Increment frame number
@@ -1778,9 +1900,9 @@ int main(int argc, char *argv[])
       total_spin_time += spin_duration;
       timing_sample_count++;
 
-      if (step_number % 50 == 0)
+      if (step_number % 10 == 0)
       {
-        // Stream out data (ego node only)
+        // Stream out data (ego node only) at 10ms interval
         double current_time = my_vehicle.GetSystem()->GetChTime();
         
         // 1. sim_time
@@ -1871,10 +1993,12 @@ int main(int argc, char *argv[])
         boost_streamer.AddData(lead_vz);
         // 22. lead_speed (mph)
         boost_streamer.AddData(lead_speed);
+        // 23. collision
+        boost_streamer.AddData(collision_warning_active ? 1.0f : 0.0f);
 
         boost_streamer.Synchronize();
 
-        // // temporarily printing all streamed data to console for debugging
+        // temporarily printing all streamed data to console for debugging
         // std::cout << std::fixed << std::setprecision(3);
         // std::cout << "Time: " << current_time << "s, Delay: "
         //           << runtime_delay_ms << "ms, Ego Pos: (" << ego_pos.x() << ", " << ego_pos.y() << ", " << ego_pos.z() << ")"
@@ -1889,6 +2013,7 @@ int main(int argc, char *argv[])
         //           << ", Lead Yaw: " << lead_yaw << " deg"
         //           << ", Lead Vel: (" << lead_vx << ", " << lead_vy << ", " << lead_vz << ") m/s"
         //           << ", Lead Speed: " << lead_speed << " mph"
+        //           << ", Collision: " << (collision_warning_active ? "YES" : "NO")
         //           << std::endl;
       }
 

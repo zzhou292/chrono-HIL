@@ -52,6 +52,14 @@ namespace chrono
                 float delayMean;   // Mean delay in milliseconds
                 float delayStddev; // Standard deviation of delay in milliseconds
             };
+            
+            // Structure for a delayed packet with apply-time semantics
+            struct DelayedPacket {
+                std::chrono::steady_clock::time_point applyTime;  // Wall time when packet should be released
+                std::chrono::steady_clock::time_point sourceTime; // Wall time when packet was sent
+                float sampledDelayMs;  // The delay that was sampled for this packet
+                std::vector<char> data;
+            };
 
             ChDelaySim(std::shared_ptr<DelayDistribution> distribution, float bandwidthLimit);
             ~ChDelaySim();
@@ -70,15 +78,33 @@ namespace chrono
 
             void setLogging(bool enable) { enableLogging = enable; }
 
+            // Set delay quantization step (ms). If > 0, delays are rounded to nearest multiple.
+            // E.g., quantizationStep=10 means delays like 217.8 become 220.
+            void setQuantizationStep(float stepMs) { quantizationStep = stepMs; }
+            float getQuantizationStep() const { return quantizationStep; }
+            
+            // Enable/disable anti-rewind logic (prevents old packets from overwriting newer ones)
+            void setAntiRewind(bool enable) { enableAntiRewind = enable; }
+            bool getAntiRewind() const { return enableAntiRewind; }
+
             int getPacketDropCount();
+            int getAntiRewindDiscardCount();
             std::vector<float> getDelayBuffer();
             float getExpectedDelayMs();
 
         private:
-            std::queue<std::pair<std::chrono::steady_clock::time_point, std::vector<char>>> packetQueue;
+            // Priority queue ordered by apply time (earliest first)
+            // Using vector + make_heap for priority queue with custom comparator
+            std::vector<DelayedPacket> packetQueue;
             std::mutex queueMutex;
-            std::vector<char> latestData; // Store the latest packet data
-            float expectedDelay = 0.0f;   // Expected delay in milliseconds
+            std::vector<char> latestData; // Store the latest released packet data
+            float lastSampledDelayMs = 0.0f;   // Last delay that was sampled (for logging)
+            
+            // Anti-rewind: track the newest source time that has been applied
+            std::chrono::steady_clock::time_point lastAppliedSourceTime;
+            bool hasAppliedAnyPacket = false;
+            bool enableAntiRewind = true;  // Enabled by default
+            float quantizationStep = 0.0f; // Delay quantization step in ms (0 = disabled)
 
             std::default_random_engine generator;
             std::shared_ptr<DelayDistribution> delayDistribution; // Use shared_ptr for flexibility
@@ -94,6 +120,7 @@ namespace chrono
             // logging related variables
             bool enableLogging = false;
             int packetDropCount_buffer = 0; // Count of dropped packets
+            int antiRewindDiscardCount_buffer = 0; // Count of anti-rewind discards
             std::vector<float> delay_buffer;
         };
     }

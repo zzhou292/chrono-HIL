@@ -72,6 +72,15 @@ set(NETWORK_FILES
     network/sim/ChDelaySim.h
     network/sim/ChDelaySim.cpp
     )
+
+# Camera delay simulation requires sensor module (GLFW/OpenGL)
+if(ENABLE_MODULE_SENSOR)
+    set(NETWORK_FILES ${NETWORK_FILES}
+        network/sim/ChCameraDelaySim.h
+        network/sim/ChCameraDelaySim.cpp
+    )
+endif()
+
 source_group("network" FILES ${NETWORK_FILES})
 
 set(CXX_FLAGS ${CH_CXX_FLAGS})
@@ -156,6 +165,23 @@ target_link_libraries(ChronoEngine_hil
         ${SDL2_LIBRARIES}
         ${IRRKLANG_LIBRARY}
 )
+
+# Link GLFW and OpenGL for camera delay simulation when sensor is available
+if(ENABLE_MODULE_SENSOR)
+    find_package(OpenGL REQUIRED)
+    find_package(glfw3 QUIET)
+    find_package(GLEW QUIET)
+    
+    if(OpenGL_FOUND)
+        target_link_libraries(ChronoEngine_hil PRIVATE OpenGL::GL)
+    endif()
+    if(glfw3_FOUND)
+        target_link_libraries(ChronoEngine_hil PRIVATE glfw)
+    endif()
+    if(GLEW_FOUND)
+        target_link_libraries(ChronoEngine_hil PRIVATE GLEW::GLEW)
+    endif()
+endif()
 
 install(TARGETS ChronoEngine_hil
         RUNTIME DESTINATION bin
