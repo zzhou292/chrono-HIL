@@ -64,6 +64,7 @@
 #include "chrono_hil/network/udp/ChBoostOutStreamer.h"
 #include "chrono_hil/network/sim/ChDelaySim.h"
 #include "chrono_hil/network/sim/ChCameraDelaySim.h"
+#include "chrono_hil/network/sim/ChCameraDelaySimThreaded.h"
 
 // SynChrono includes for distributed simulation
 #include "chrono_synchrono/SynChronoManager.h"
@@ -819,7 +820,8 @@ int main(int argc, char *argv[])
   }
 
   // Initialize camera delay simulator (ego node only, when variable delay enabled)
-  std::unique_ptr<ChCameraDelaySim> cam_delay_sim;
+  // Using threaded version to avoid blocking the main simulation loop
+  std::unique_ptr<ChCameraDelaySimThreaded> cam_delay_sim;
   bool use_json_cam_delay_config = false;
   float runtime_cam_delay_ms = 0.0f;
   
@@ -846,7 +848,8 @@ int main(int argc, char *argv[])
       std::cout << "[CameraDelaySim] Buffer size: " << bufferSize << " frames" << std::endl;
     }
     
-    cam_delay_sim = std::make_unique<ChCameraDelaySim>(camDelayDist, bufferSize);
+    // Create threaded camera delay sim - display runs on separate thread at 60Hz
+    cam_delay_sim = std::make_unique<ChCameraDelaySimThreaded>(camDelayDist, bufferSize, 100.0);
     cam_delay_sim->setQuantizationStep(0.0f);  // No quantization for video - smoother playback
     cam_delay_sim->setAntiRewind(false);  // Disable anti-rewind for video - play frames in order
     cam_delay_sim->setLogging(true);  // Enable logging to diagnose delay issues
@@ -1844,12 +1847,12 @@ int main(int argc, char *argv[])
           runtime_cam_delay_ms = cam_delay_sim->getExpectedDelayMs();
         }
         
-        // Display decoupled from capture - run at higher rate for smoother playback
-        // Display every 10 steps = 100Hz (vs 35Hz capture rate)
-        if (step_number % 10 == 0) {
-          if (!cam_delay_sim->displayDelayedFrame()) {
-            std::cout << "Delayed camera display window closed." << std::endl;
-          }
+        // Note: Display is handled automatically by the threaded camera delay sim
+        // No need to call displayDelayedFrame() - the display thread runs at 60Hz
+        
+        // Check if display window was closed
+        if (!cam_delay_sim->isDisplayOpen()) {
+          std::cout << "Delayed camera display window closed." << std::endl;
         }
       }
     }

@@ -78,6 +78,8 @@ if(ENABLE_MODULE_SENSOR)
     set(NETWORK_FILES ${NETWORK_FILES}
         network/sim/ChCameraDelaySim.h
         network/sim/ChCameraDelaySim.cpp
+        network/sim/ChCameraDelaySimThreaded.h
+        network/sim/ChCameraDelaySimThreaded.cpp
     )
 endif()
 
