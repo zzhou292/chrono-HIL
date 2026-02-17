@@ -177,11 +177,16 @@ void ChSDLInterface::GetButtonStatus(std::vector<int> &ref_idx,
 }
 
 int ChSDLInterface::Synchronize() {
-  if (SDL_QuitRequested()) {
-    return 1;
-  } else {
-    return 0;
+  // Drain all pending events to prevent queue buildup
+  // SDL_QuitRequested() calls SDL_PumpEvents() which processes but doesn't
+  // drain the queue, causing linear time growth over simulation duration.
+  SDL_Event event;
+  while (SDL_PollEvent(&event)) {
+    if (event.type == SDL_QUIT) {
+      return 1;
+    }
   }
+  return 0;
 }
 
 } // namespace hil

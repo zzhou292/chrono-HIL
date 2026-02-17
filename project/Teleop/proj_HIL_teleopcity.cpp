@@ -217,6 +217,10 @@ void AddCommandLineOptions(ChCLI &cli)
   // Relative timing options (actors start when ego receives first input)
   cli.AddOption<bool>("Timing", "start_on_ego_input", "Start actors when ego receives first input (relative timing mode)", "false");
   cli.AddOption<double>("Timing", "ego_velocity_threshold", "Velocity threshold (m/s) to detect ego moving (for actor nodes)", std::to_string(ego_velocity_threshold));
+
+  // Debug options for performance testing
+  cli.AddOption<bool>("Debug", "disable_boost_streaming", "Disable boost UDP streaming (for performance testing)", "false");
+  cli.AddOption<bool>("Debug", "disable_collision_detection", "Disable collision detection (for performance testing)", "false");
 }
 // =============================================================================
 void ReadParameterFiles()
@@ -422,6 +426,16 @@ int main(int argc, char *argv[])
   // Parse relative timing options
   start_on_ego_input = cli.GetAsType<bool>("start_on_ego_input");
   ego_velocity_threshold = cli.GetAsType<double>("ego_velocity_threshold");
+  
+  // Parse debug options
+  bool debug_disable_boost_streaming = cli.GetAsType<bool>("disable_boost_streaming");
+  bool debug_disable_collision_detection = cli.GetAsType<bool>("disable_collision_detection");
+  if (debug_disable_boost_streaming || debug_disable_collision_detection) {
+    std::cout << "=== DEBUG MODE ==="  << std::endl;
+    if (debug_disable_boost_streaming) std::cout << "  Boost streaming: DISABLED" << std::endl;
+    if (debug_disable_collision_detection) std::cout << "  Collision detection: DISABLED" << std::endl;
+    std::cout << "==================" << std::endl;
+  }
   
   // Determine if this node is the ego (node_id == 1) or an actor node
   const bool is_ego_node = (node_id == 1);
@@ -849,7 +863,7 @@ int main(int argc, char *argv[])
     }
     
     // Create threaded camera delay sim - display runs on separate thread at 60Hz
-    cam_delay_sim = std::make_unique<ChCameraDelaySimThreaded>(camDelayDist, bufferSize, 100.0);
+    cam_delay_sim = std::make_unique<ChCameraDelaySimThreaded>(camDelayDist, bufferSize, 120.0);
     cam_delay_sim->setQuantizationStep(0.0f);  // No quantization for video - smoother playback
     cam_delay_sim->setAntiRewind(false);  // Disable anti-rewind for video - play frames in order
     cam_delay_sim->setLogging(true);  // Enable logging to diagnose delay issues
@@ -879,10 +893,12 @@ int main(int argc, char *argv[])
     
     // Initialize display window for delayed camera feed
     // Window is 1/3 scale (1920x360) but displays full resolution texture
-    if (!cam_delay_sim->initDisplay("Delayed Camera View", 3440, 1440)) {
+    if (!cam_delay_sim->initDisplay("Delayed Camera View", 5760, 1080)) {
       std::cerr << "WARNING: Failed to initialize delayed camera display window." << std::endl;
     } else {
-      std::cout << "Delayed camera display initialized (3440x1440)." << std::endl;
+      std::cout << "Delayed camera display initialized (5760x1080)." << std::endl;
+      // Start the async capture thread for non-blocking frame capture
+      cam_delay_sim->startCaptureThread();
     }
   }
 
@@ -1161,9 +1177,24 @@ int main(int argc, char *argv[])
   const double warmup_time = 3.0;  // Don't track max lag during warmup (SynChrono sync overhead)
   bool simulation_running = true;
   double step_start_wall = 0.0;
-  double total_physics_time = 0.0;
-  double total_spin_time = 0.0;
+  double total_step_time = 0.0;  // Total wall time per step (should be ~step_size for RT)
   int timing_sample_count = 0;
+  
+  // Detailed component timing accumulators (in seconds)
+  double total_synchro_time = 0.0;      // SynChrono synchronization
+  double total_physics_time = 0.0;      // Vehicle/terrain sync + advance
+  double total_sensor_time = 0.0;       // Sensor manager update
+  double total_camera_time = 0.0;       // Camera delay operations
+  double total_actor_time = 0.0;        // Playback actor updates
+  double total_ros_time = 0.0;          // ROS2 publishing (if enabled)
+  double total_collision_time = 0.0;    // Collision detection
+  double total_boost_time = 0.0;        // Boost UDP streaming
+  double total_sdl_time = 0.0;          // SDL input handling
+  double total_sdl_buttons_time = 0.0;  // SDL GetButtonStatus only
+  double total_sdl_sync_time = 0.0;     // SDL Synchronize (SDL_QuitRequested)
+  double total_pfdriver_time = 0.0;     // PFdriver path following (auto mode)
+  double total_work_time = 0.0;         // All work before Spin (should be < step_size)
+  double total_spin_time = 0.0;         // Time spent in Spin (waiting)
   
   while (simulation_running && (!use_synchrono || syn_manager_ptr->IsOk()))
   {
@@ -1185,18 +1216,57 @@ int main(int argc, char *argv[])
     
     // Periodic timing report for all nodes - shows ACTUAL performance breakdown
     if (time - last_timing_report >= timing_report_interval && timing_sample_count > 0) {
-      double avg_physics_ms = (total_physics_time / timing_sample_count) * 1000.0;
-      double avg_spin_ms = (total_spin_time / timing_sample_count) * 1000.0;
+      double n = static_cast<double>(timing_sample_count);
+      double avg_step_ms = (total_step_time / n) * 1000.0;
       double realtime_factor = time / wall_time;  // >1 = faster than realtime, <1 = slower
       std::cout << "[Node " << node_id << " Timing] SimTime: " << std::fixed << std::setprecision(2) << time 
                 << "s | RT Factor: " << std::setprecision(3) << realtime_factor
-                << " | Avg Step: " << std::setprecision(2) << avg_physics_ms << "ms physics + " 
-                << avg_spin_ms << "ms spin (budget: " << (step_size * 1000.0) << "ms)" << std::endl;
+                << " | Avg Step: " << std::setprecision(2) << avg_step_ms << "ms (budget: " << (step_size * 1000.0) << "ms)" << std::endl;
+      
+      // Work vs Spin breakdown (the key metric!)
+      double avg_work_ms = (total_work_time / n) * 1000.0;
+      double avg_spin_ms = (total_spin_time / n) * 1000.0;
+      std::cout << "  [Work vs Spin] Work: " << std::setprecision(2) << avg_work_ms << "ms"
+                << " | Spin (idle): " << avg_spin_ms << "ms"
+                << " | Sum: " << (avg_work_ms + avg_spin_ms) << "ms" << std::endl;
+      
+      // Detailed component breakdown (microseconds per step)
+      std::cout << "  [Breakdown] SynChrono: " << std::setprecision(1) << (total_synchro_time / n * 1e6) << "us"
+                << " | Physics: " << (total_physics_time / n * 1e6) << "us"
+                << " | Sensors: " << (total_sensor_time / n * 1e6) << "us"
+                << " | Camera: " << (total_camera_time / n * 1e6) << "us"
+                << " | Actors: " << (total_actor_time / n * 1e6) << "us"
+                << " | ROS: " << (total_ros_time / n * 1e6) << "us" << std::endl;
+      // Additional breakdown for previously unmeasured operations
+      double breakdown_sum_us = (total_synchro_time + total_physics_time + total_sensor_time + 
+                                 total_camera_time + total_actor_time + total_ros_time +
+                                 total_collision_time + total_boost_time + total_sdl_time + total_pfdriver_time) / n * 1e6;
+      std::cout << "  [Breakdown2] Collision: " << std::setprecision(1) << (total_collision_time / n * 1e6) << "us"
+                << " | Boost: " << (total_boost_time / n * 1e6) << "us"
+                << " | SDL: " << (total_sdl_time / n * 1e6) << "us"
+                << " | PFdriver: " << (total_pfdriver_time / n * 1e6) << "us"
+                << " | Sum: " << breakdown_sum_us << "us" << std::endl;
+      std::cout << "  [SDL Detail] Buttons: " << std::setprecision(1) << (total_sdl_buttons_time / n * 1e6) << "us"
+                << " | Sync: " << (total_sdl_sync_time / n * 1e6) << "us" << std::endl;
+      
       last_timing_report = time;
       // Reset accumulators
-      total_physics_time = 0.0;
-      total_spin_time = 0.0;
+      total_step_time = 0.0;
       timing_sample_count = 0;
+      total_synchro_time = 0.0;
+      total_physics_time = 0.0;
+      total_sensor_time = 0.0;
+      total_camera_time = 0.0;
+      total_actor_time = 0.0;
+      total_ros_time = 0.0;
+      total_collision_time = 0.0;
+      total_boost_time = 0.0;
+      total_sdl_time = 0.0;
+      total_sdl_buttons_time = 0.0;
+      total_sdl_sync_time = 0.0;
+      total_pfdriver_time = 0.0;
+      total_work_time = 0.0;
+      total_spin_time = 0.0;
     }
 
     // Update delay schedule (ego only).
@@ -1544,16 +1614,23 @@ int main(int argc, char *argv[])
     // =======================
 
     // Update modules (process inputs from other modules)
+    auto t_synchro_start = std::chrono::high_resolution_clock::now();
     if (use_synchrono && syn_manager_ptr)
     {
       syn_manager_ptr->Synchronize(time);  // SynChrono synchronization between nodes
     }
+    auto t_synchro_end = std::chrono::high_resolution_clock::now();
+    total_synchro_time += std::chrono::duration<double>(t_synchro_end - t_synchro_start).count();
+    
+    auto t_physics_start = std::chrono::high_resolution_clock::now();
     terrain.Synchronize(time);
     my_vehicle.Synchronize(time, driver_inputs, terrain);
 
     // Advance simulation for one time for all modules
     terrain.Advance(step_size);
     my_vehicle.Advance(step_size);
+    auto t_physics_end = std::chrono::high_resolution_clock::now();
+    total_physics_time += std::chrono::duration<double>(t_physics_end - t_physics_start).count();;
     
     // Advance path follower driver for actor nodes
     if (!is_ego_node && actor_path_driver)
@@ -1593,6 +1670,7 @@ int main(int argc, char *argv[])
       }
     }
 #endif
+    auto t_actor_start = std::chrono::high_resolution_clock::now();
     if (is_ego_node)
     {
       for (auto &actor : playback_actors)
@@ -1709,12 +1787,15 @@ int main(int argc, char *argv[])
 #endif
       } // end for playback_actors
     } // end if (is_ego_node) for local actors
+    auto t_actor_end = std::chrono::high_resolution_clock::now();
+    total_actor_time += std::chrono::duration<double>(t_actor_end - t_actor_start).count();
 
     // Collision warning detection (ego node):
     //  - Local playback actors: true physics contact via contact reporter.
     //  - Distributed actors (SynChrono zombies): proximity fallback (zombies are non-physical).
+    auto t_collision_start = std::chrono::high_resolution_clock::now();
     bool collision_warning_active = false;
-    if (is_ego_node)
+    if (is_ego_node && !debug_disable_collision_detection)
     {
       static bool local_collision_latched = false;
       static bool distributed_collision_latched = false;
@@ -1778,8 +1859,11 @@ int main(int argc, char *argv[])
         }
       }
     }
+    auto t_collision_end = std::chrono::high_resolution_clock::now();
+    total_collision_time += std::chrono::duration<double>(t_collision_end - t_collision_start).count();
 
 #ifdef ENABLE_ROS2_BRIDGE
+    auto t_ros_start = std::chrono::high_resolution_clock::now();
     if (is_ego_node && ros_bridge)
     {
       ros_bridge->PublishActors(time, ros_actor_states);
@@ -1807,13 +1891,23 @@ int main(int argc, char *argv[])
           indicator_red->SetPos(ChVector3d(0, 0, -100));
       }
     }
+    auto t_ros_end = std::chrono::high_resolution_clock::now();
+    total_ros_time += std::chrono::duration<double>(t_ros_end - t_ros_start).count();
 #endif
 
     // Update sensor manager (ego node only)
+    auto t_sensor_start = std::chrono::high_resolution_clock::now();
     if (is_ego_node && manager)
     {
       manager->Update();
-      
+    }
+    auto t_sensor_end = std::chrono::high_resolution_clock::now();
+    total_sensor_time += std::chrono::duration<double>(t_sensor_end - t_sensor_start).count();
+    
+    // Camera delay operations
+    auto t_camera_start = std::chrono::high_resolution_clock::now();
+    if (is_ego_node && manager)
+    {
       // Capture camera frames and display with variable delay
       if (enable_variable_cam_delay && cam_delay_sim && driver_cam)
       {
@@ -1836,13 +1930,12 @@ int main(int argc, char *argv[])
         }
         
         // Capture frames at camera rate (35Hz = every 29 sim steps at 1ms step)
-        // This prevents adding duplicate frames since GetMostRecentBuffer returns same data between updates
+        // Using async capture - main thread just queues, capture thread does memcpy
         if (step_number % 29 == 0) {
           auto cam_buffer = driver_cam->GetMostRecentBuffer<UserRGBA8BufferPtr>();
           if (cam_buffer && cam_buffer->Buffer) {
-            cam_delay_sim->addFrame(
-                reinterpret_cast<const unsigned char*>(cam_buffer->Buffer.get()),
-                cam_buffer->Width, cam_buffer->Height);
+            // Use async method - returns immediately, capture thread does the heavy copy
+            cam_delay_sim->addFrameAsync(cam_buffer);
           }
           runtime_cam_delay_ms = cam_delay_sim->getExpectedDelayMs();
         }
@@ -1856,13 +1949,11 @@ int main(int argc, char *argv[])
         }
       }
     }
+    auto t_camera_end = std::chrono::high_resolution_clock::now();
+    total_camera_time += std::chrono::duration<double>(t_camera_end - t_camera_start).count();
 
     // Increment frame number
     step_number++;
-    
-    // Measure physics time (everything from start of loop to here)
-    double pre_spin_wall = realtime_timer.GetTimeSeconds();
-    double physics_duration = pre_spin_wall - step_start_wall;
 
     // Visual indicator for simulation running slower than wall time (ego node only)
     // The timing stats are already printed above for all nodes
@@ -1889,21 +1980,11 @@ int main(int argc, char *argv[])
       }
     }
 
-    // Real-time synchronization (ego node spins, actor nodes run as fast as possible but sync via SynChrono)
+    // Ego node: pre-spin work (streaming, SDL, etc.) - must happen BEFORE Spin() to be included in timing budget
     if (is_ego_node)
     {
-      realtime_timer.Spin(time);
-      
-      // Measure spin (wait) time
-      double post_spin_wall = realtime_timer.GetTimeSeconds();
-      double spin_duration = post_spin_wall - pre_spin_wall;
-      
-      // Accumulate for averaging
-      total_physics_time += physics_duration;
-      total_spin_time += spin_duration;
-      timing_sample_count++;
-
-      if (step_number % 10 == 0)
+      auto t_boost_start = std::chrono::high_resolution_clock::now();
+      if (step_number % 10 == 0 && !debug_disable_boost_streaming)
       {
         // Stream out data (ego node only) at 10ms interval
         double current_time = my_vehicle.GetSystem()->GetChTime();
@@ -2000,28 +2081,14 @@ int main(int argc, char *argv[])
         boost_streamer.AddData(collision_warning_active ? 1.0f : 0.0f);
 
         boost_streamer.Synchronize();
-
-        // temporarily printing all streamed data to console for debugging
-        // std::cout << std::fixed << std::setprecision(3);
-        // std::cout << "Time: " << current_time << "s, Delay: "
-        //           << runtime_delay_ms << "ms, Ego Pos: (" << ego_pos.x() << ", " << ego_pos.y() << ", " << ego_pos.z() << ")"
-        //           << ", Ego Yaw: " << ego_euler.z() * RADS_2_DEG << " deg"
-        //           << ", Ego Vel: (" << ego_vel.x() << ", " << ego_vel.y() << ", " << ego_vel.z() << ") m/s"
-        //           << ", Ego Speed: " << my_vehicle.GetSpeed() * MS_TO_MPH << " mph"
-        //           << ", Engine RPM: " << my_vehicle.GetEngine()->GetMotorSpeed() * rads2rpm
-        //           << ", Steering: " << driver_inputs.m_steering
-        //           << ", Throttle: " << driver_inputs.m_throttle
-        //           << ", Brake: " << driver_inputs.m_braking
-        //           << ", Lead Pos: (" << lead_x << ", " << lead_y << ", " << lead_z << ")"
-        //           << ", Lead Yaw: " << lead_yaw << " deg"
-        //           << ", Lead Vel: (" << lead_vx << ", " << lead_vy << ", " << lead_vz << ") m/s"
-        //           << ", Lead Speed: " << lead_speed << " mph"
-        //           << ", Collision: " << (collision_warning_active ? "YES" : "NO")
-        //           << std::endl;
       }
+      auto t_boost_end = std::chrono::high_resolution_clock::now();
+      total_boost_time += std::chrono::duration<double>(t_boost_end - t_boost_start).count();
 
       // SDL button handling (ego node only)
+      auto t_sdl_start = std::chrono::high_resolution_clock::now();
       SDLDriver.GetButtonStatus(check_button_idx, check_button_val);
+      auto t_sdl_buttons = std::chrono::high_resolution_clock::now();
       auto button_now = std::chrono::system_clock::now();
       for (size_t bi = 0; bi < check_button_idx.size(); ++bi)
       {
@@ -2082,16 +2149,44 @@ int main(int argc, char *argv[])
       }
 
       // Advance PF driver for ego auto mode
+      auto t_pfdriver_start = std::chrono::high_resolution_clock::now();
       if (PFdriver)
       {
         PFdriver->Advance(step_size);
         PFdriver->Synchronize(time, step_size);
       }
+      auto t_pfdriver_end = std::chrono::high_resolution_clock::now();
+      total_pfdriver_time += std::chrono::duration<double>(t_pfdriver_end - t_pfdriver_start).count();
 
+      auto t_sdl_sync_start = std::chrono::high_resolution_clock::now();
       if (SDLDriver.Synchronize() == 1)
       {
         break;
       }
+      auto t_sdl_end = std::chrono::high_resolution_clock::now();
+      total_sdl_sync_time += std::chrono::duration<double>(t_sdl_end - t_sdl_sync_start).count();
+      total_sdl_buttons_time += std::chrono::duration<double>(t_sdl_buttons - t_sdl_start).count();
+      total_sdl_time += std::chrono::duration<double>(t_sdl_end - t_sdl_start).count();
+      
+      // Measure work time (all processing BEFORE Spin)
+      double pre_spin_wall = realtime_timer.GetTimeSeconds();
+      double work_duration = pre_spin_wall - step_start_wall;
+      total_work_time += work_duration;
+      
+      // Real-time synchronization - Spin to the NEW sim time (time + step_size)
+      // We captured 'time' at loop start, but Advance() has moved sim forward by step_size
+      // Spinning to old 'time' would return immediately since wall clock already passed it
+      realtime_timer.Spin(time + step_size);
+      
+      // Measure spin (idle) time
+      double step_end_wall = realtime_timer.GetTimeSeconds();
+      double spin_duration = step_end_wall - pre_spin_wall;
+      total_spin_time += spin_duration;
+      
+      // Measure total step time (from loop start through spin completion)
+      double step_duration = step_end_wall - step_start_wall;
+      total_step_time += step_duration;
+      timing_sample_count++;
     } // end if (is_ego_node) block
 
     // if (render == true && step_number % render_step == 0)

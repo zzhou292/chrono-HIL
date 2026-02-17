@@ -35,7 +35,129 @@ namespace chrono
 
         ChCameraDelaySimThreaded::~ChCameraDelaySimThreaded()
         {
+            stopCaptureThread();
             closeDisplay();
+        }
+
+        // =====================================================================
+        // Async Capture Thread Implementation
+        // =====================================================================
+
+        void ChCameraDelaySimThreaded::startCaptureThread()
+        {
+            if (captureThreadRunning.load()) return;
+            
+            captureThreadRunning = true;
+            captureThread = std::thread(&ChCameraDelaySimThreaded::captureThreadFunc, this);
+            
+            if (enableLogging.load()) {
+                std::cout << "[CameraDelaySimThreaded] Capture thread started" << std::endl;
+            }
+        }
+
+        void ChCameraDelaySimThreaded::stopCaptureThread()
+        {
+            if (!captureThreadRunning.load()) return;
+            
+            captureThreadRunning = false;
+            captureQueueCV.notify_all();
+            
+            if (captureThread.joinable()) {
+                captureThread.join();
+            }
+            
+            if (enableLogging.load()) {
+                std::cout << "[CameraDelaySimThreaded] Capture thread stopped" << std::endl;
+            }
+        }
+
+        void ChCameraDelaySimThreaded::captureThreadFunc()
+        {
+            if (enableLogging.load()) {
+                std::ostringstream oss;
+                oss << std::this_thread::get_id();
+                std::cout << "[CameraDelaySimThreaded] Capture thread running, ID: " << oss.str() << std::endl;
+            }
+            
+            // Stats tracking
+            uint64_t totalFrames = 0;
+            double totalCopyTimeMs = 0.0;
+            double lastCopyTimeMs = 0.0;
+            auto lastStatsTime = std::chrono::steady_clock::now();
+            
+            while (captureThreadRunning.load())
+            {
+                PendingCapture capture;
+                bool hasWork = false;
+                
+                {
+                    std::unique_lock<std::mutex> lock(captureQueueMutex);
+                    
+                    // Wait for work or stop signal
+                    captureQueueCV.wait_for(lock, std::chrono::milliseconds(100), [this] {
+                        return !pendingCaptures.empty() || !captureThreadRunning.load();
+                    });
+                    
+                    if (!pendingCaptures.empty()) {
+                        capture = std::move(pendingCaptures.front());
+                        pendingCaptures.erase(pendingCaptures.begin());
+                        hasWork = true;
+                    }
+                }
+                
+                if (hasWork && capture.holder) {
+                    // Time the memcpy
+                    auto copyStart = std::chrono::steady_clock::now();
+                    
+                    // Do the heavy memcpy here on the capture thread
+                    const unsigned char* data = capture.holder->getData();
+                    
+                    {
+                        std::lock_guard<std::mutex> lock(stagingMutex);
+                        
+                        int writeIdx = writeBufferIdx.load();
+                        StagingFrame& staging = stagingBuffers[writeIdx];
+                        
+                        size_t dataSize = capture.width * capture.height * 4;
+                        if (staging.data.size() != dataSize) {
+                            staging.data.resize(dataSize);
+                        }
+                        
+                        std::memcpy(staging.data.data(), data, dataSize);
+                        staging.width = capture.width;
+                        staging.height = capture.height;
+                        staging.captureTime = capture.captureTime;
+                        staging.ready = true;
+                        
+                        // Rotate to next buffer
+                        readBufferIdx.store(writeIdx);
+                        writeBufferIdx.store((writeIdx + 1) % NUM_STAGING_BUFFERS);
+                    }
+                    
+                    frameAvailableCV.notify_one();
+                    
+                    auto copyEnd = std::chrono::steady_clock::now();
+                    lastCopyTimeMs = std::chrono::duration<double, std::milli>(copyEnd - copyStart).count();
+                    totalCopyTimeMs += lastCopyTimeMs;
+                    totalFrames++;
+                    
+                    // Periodic stats logging
+                    auto now = std::chrono::steady_clock::now();
+                    if (enableLogging.load() && 
+                        std::chrono::duration<double>(now - lastStatsTime).count() >= 1.0) {
+                        size_t queueDepth;
+                        {
+                            std::lock_guard<std::mutex> lock(captureQueueMutex);
+                            queueDepth = pendingCaptures.size();
+                        }
+                        std::cout << "[CameraDelaySimThreaded] Async capture stats: count=" << totalFrames
+                                  << ", avg copy time=" << std::fixed << std::setprecision(2) << (totalCopyTimeMs / totalFrames) << "ms"
+                                  << ", last copy=" << lastCopyTimeMs << "ms"
+                                  << ", queue depth=" << queueDepth << std::endl;
+                        lastStatsTime = now;
+                    }
+                }
+            }
         }
 
         void ChCameraDelaySimThreaded::addFrame(const unsigned char* data, unsigned int width, unsigned int height)

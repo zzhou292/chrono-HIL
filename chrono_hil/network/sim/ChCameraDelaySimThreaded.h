@@ -102,6 +102,48 @@ namespace chrono
             }
 
             /**
+             * @brief Add a frame asynchronously using capture thread (non-blocking)
+             * @param buffer UserRGBA8BufferPtr from ChCameraSensor
+             * 
+             * This version queues the buffer pointer for processing on a separate
+             * capture thread, avoiding memcpy on the main simulation thread entirely.
+             */
+            template<typename BufferPtr>
+            void addFrameAsync(BufferPtr buffer) {
+                if (!buffer || !buffer->Buffer) return;
+                
+                // Queue for capture thread - this is lock-free for the common case
+                {
+                    std::lock_guard<std::mutex> lock(captureQueueMutex);
+                    
+                    // Limit queue depth to prevent unbounded growth
+                    if (pendingCaptures.size() >= maxCaptureQueueDepth) {
+                        droppedFrameCount++;
+                        return;  // Drop frame rather than block
+                    }
+                    
+                    PendingCapture capture;
+                    capture.holder = std::make_shared<BufferHolder<BufferPtr>>(buffer);
+                    capture.width = buffer->Width;
+                    capture.height = buffer->Height;
+                    capture.captureTime = std::chrono::steady_clock::now();
+                    pendingCaptures.push_back(std::move(capture));
+                }
+                captureQueueCV.notify_one();
+            }
+
+            /**
+             * @brief Start the async capture thread
+             * Must be called before using addFrameAsync
+             */
+            void startCaptureThread();
+
+            /**
+             * @brief Stop the async capture thread
+             */
+            void stopCaptureThread();
+
+            /**
              * @brief Initialize the display window and start display thread
              * @param windowTitle Title for the display window
              * @param windowWidth Display window width (can differ from frame size)
@@ -151,6 +193,39 @@ namespace chrono
             bool getAntiRewind() const { return enableAntiRewind; }
 
         private:
+            // === Type-erased buffer holder for async capture ===
+            struct BufferHolderBase {
+                virtual ~BufferHolderBase() = default;
+                virtual const unsigned char* getData() const = 0;
+            };
+            
+            template<typename BufferPtr>
+            struct BufferHolder : BufferHolderBase {
+                BufferPtr buffer;
+                BufferHolder(BufferPtr b) : buffer(b) {}
+                const unsigned char* getData() const override {
+                    return reinterpret_cast<const unsigned char*>(buffer->Buffer.get());
+                }
+            };
+            
+            struct PendingCapture {
+                std::shared_ptr<BufferHolderBase> holder;
+                unsigned int width;
+                unsigned int height;
+                std::chrono::steady_clock::time_point captureTime;
+            };
+            
+            // === Capture thread state ===
+            std::thread captureThread;
+            std::atomic<bool> captureThreadRunning{false};
+            std::mutex captureQueueMutex;
+            std::condition_variable captureQueueCV;
+            std::vector<PendingCapture> pendingCaptures;
+            static constexpr size_t maxCaptureQueueDepth = 3;  // Limit queue to prevent latency buildup
+            std::atomic<uint64_t> droppedFrameCount{0};
+            
+            void captureThreadFunc();
+            
             // === Main thread -> Display thread communication ===
             // Double-buffered staging area for minimal main thread blocking
             static constexpr int NUM_STAGING_BUFFERS = 3;  // Triple buffer for smooth handoff
