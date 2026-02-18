@@ -134,7 +134,7 @@ double tire_step_size = 1e-6;
 double t_end = 1000;
 
 // Unity dashboard streaming out
-const std::string UNITY_IP_OUT = "127.0.0.1";
+const std::string UNITY_IP_OUT = "192.168.1.101";
 const int UNITY_PORT_OUT = 1209;
 
 // =============================================================================
@@ -161,7 +161,9 @@ std::string record_output_file = "recorded_path.csv";
 int auto_toggle_button = 6;
 int record_toggle_button = 18;
 int finish_record_button = 19;
+int delay_start_button = 23;
 bool enable_ros_bridge = false;
+std::string csv_log_file = "telemetry_log.csv";
 std::vector<ChVector3d> recorded_positions;
 
 // Actor configuration
@@ -205,6 +207,8 @@ void AddCommandLineOptions(ChCLI &cli)
   cli.AddOption<int>("Recording", "auto_button", "Joystick button index for auto/manual toggle", std::to_string(auto_toggle_button));
   cli.AddOption<int>("Recording", "record_button", "Joystick button index for record toggle", std::to_string(record_toggle_button));
   cli.AddOption<int>("Recording", "finish_button", "Joystick button index to finish recording and exit", std::to_string(finish_record_button));
+  cli.AddOption<int>("Timing", "delay_start_button", "Joystick button index to start delay injection and actor activation", std::to_string(delay_start_button));
+  cli.AddOption<std::string>("Logging", "csv_log", "Output CSV file for telemetry logging (same data as boost stream)", csv_log_file);
   cli.AddOption<std::string>("Playback", "actors_config", "Path to actor playback configuration file", actors_config_file);
   
   // SynChrono / DDS options for distributed simulation
@@ -413,8 +417,10 @@ int main(int argc, char *argv[])
   auto_toggle_button = cli.GetAsType<int>("auto_button");
   record_toggle_button = cli.GetAsType<int>("record_button");
   finish_record_button = cli.GetAsType<int>("finish_button");
+  delay_start_button = cli.GetAsType<int>("delay_start_button");
   actors_config_file = cli.GetAsType<std::string>("actors_config");
   enable_ros_bridge = cli.GetAsType<bool>("ros_bridge");
+  csv_log_file = cli.GetAsType<std::string>("csv_log");
   
   // Parse SynChrono/DDS options
   node_id = cli.GetAsType<int>("node_id");
@@ -447,8 +453,8 @@ int main(int argc, char *argv[])
   std::cout << "Heartbeat: " << heartbeat << "s" << std::endl;
   if (start_on_ego_input)
   {
-    std::cout << "Relative timing: ENABLED (actors start when ego moves)" << std::endl;
-    std::cout << "  Velocity threshold: " << ego_velocity_threshold << " m/s" << std::endl;
+    std::cout << "Relative timing: ENABLED (press button " << delay_start_button << " to start delays and actors)" << std::endl;
+    std::cout << "  Actor node velocity threshold: " << ego_velocity_threshold << " m/s" << std::endl;
   }
   if (!actors_config_file.empty())
   {
@@ -650,19 +656,33 @@ int main(int argc, char *argv[])
 
     // std::string joystick_file =
     //     (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
-    // std::string joystick_file =
-    //     (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G29.json");
+    std::string joystick_file =
+        (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G29.json");
     // std::string joystick_file =
     //     (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/ps4_controller.json");
-    std::string joystick_file =
-        (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
+    // std::string joystick_file =
+    //     (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G27.json");
     SDLDriver.SetJoystickConfigFile(joystick_file);
     SDLDriver.AddCallbackButtons(auto_toggle_button);
+    if (start_on_ego_input)
+    {
+      SDLDriver.AddCallbackButtons(delay_start_button);
+    }
     if (record_mode)
     {
       SDLDriver.AddCallbackButtons(record_toggle_button);
       SDLDriver.AddCallbackButtons(finish_record_button);
     }
+  }
+  else if (start_on_ego_input)
+  {
+    // Actor nodes: init SDL joystick-only to watch for the delay start button press.
+    // All nodes run on the same machine, so they can all read the same joystick.
+    SDLDriver.Initialize();
+    std::string joystick_file =
+        (STRINGIFY(HIL_DATA_DIR)) + std::string("/joystick/controller_G29.json");
+    SDLDriver.SetJoystickConfigFile(joystick_file);
+    SDLDriver.AddCallbackButtons(delay_start_button);
   }
 
 #ifdef ENABLE_ROS2_BRIDGE
@@ -1168,6 +1188,30 @@ int main(int argc, char *argv[])
   bool warning_active = false;
 #endif
 
+  // CSV telemetry log (same data as boost stream)
+  std::ofstream csv_log_stream;
+  if (is_ego_node)
+  {
+    csv_log_stream.open(csv_log_file);
+    if (csv_log_stream.is_open())
+    {
+      csv_log_stream << "sim_time,latency_condition_ms,"
+                     << "ego_x,ego_y,ego_z,ego_yaw_deg,"
+                     << "ego_vx,ego_vy,ego_vz,ego_speed_mph,"
+                     << "engine_rpm,steering_input,throttle_input,brake_input,"
+                     << "lead_x,lead_y,lead_z,lead_yaw_deg,"
+                     << "lead_vx,lead_vy,lead_vz,lead_speed_mph,"
+                     << "collision,cam_delay_ms,"
+                     << "delay_injection_active"
+                     << std::endl;
+      std::cout << "CSV telemetry log: " << csv_log_file << std::endl;
+    }
+    else
+    {
+      std::cerr << "WARNING: Failed to open CSV log file: " << csv_log_file << std::endl;
+    }
+  }
+
   // simulation loop
   // For multi-node: use syn_manager.IsOk() to check for distributed sync status
   // For single-node: run until t_end or user quits
@@ -1206,8 +1250,8 @@ int main(int argc, char *argv[])
                               .count();
     double time = my_vehicle.GetSystem()->GetChTime();
     
-    // Pre-step wall time vs sim time (this is BEFORE spin from previous iteration)
-    double wall_time = realtime_timer.GetTimeSeconds();
+    // Pre-step wall time vs sim time
+    double wall_time = step_start_wall;  // reuse the reading taken at loop start
     double current_lag = wall_time - time;
     // Only track max lag after warmup period to avoid SynChrono init overhead
     if (time > warmup_time && current_lag > max_lag_observed) {
@@ -1215,6 +1259,7 @@ int main(int argc, char *argv[])
     }
     
     // Periodic timing report for all nodes - shows ACTUAL performance breakdown
+    // Ego nodes include Spin (idle) time; actor nodes only report work time (paced by SynChrono barriers)
     if (time - last_timing_report >= timing_report_interval && timing_sample_count > 0) {
       double n = static_cast<double>(timing_sample_count);
       double avg_step_ms = (total_step_time / n) * 1000.0;
@@ -1319,59 +1364,8 @@ int main(int argc, char *argv[])
         // Serialize the vector of floats to a vector of chars
         std::vector<char> serializedData = serializeFloats(floats);
 
-        // Detect first SDL input to start delay injection (raw input based).
-        // This triggers delay pipeline immediately when user provides input,
-        // even before the vehicle physically moves (which happens after the delay).
-        if (start_on_ego_input && !delay_injection_started)
-        {
-          static int delay_neutral_sample_count = 0;
-          static double delay_neutral_steering = 0.0;
-          static double delay_neutral_throttle = 0.0;
-          static double delay_neutral_braking = 0.0;
-          static bool delay_baseline_logged = false;
-          
-          const int delay_neutral_samples_required = 50;  // 1.0s at 50Hz to capture baseline
-          const double axis_deadzone = 0.08;  // Threshold for deviation from baseline
-          
-          // First, capture neutral baseline
-          if (delay_neutral_sample_count < delay_neutral_samples_required)
-          {
-            delay_neutral_steering += sdl_steering;
-            delay_neutral_throttle += sdl_throttle;
-            delay_neutral_braking += sdl_braking;
-            delay_neutral_sample_count++;
-            
-            if (delay_neutral_sample_count == delay_neutral_samples_required)
-            {
-              delay_neutral_steering /= delay_neutral_samples_required;
-              delay_neutral_throttle /= delay_neutral_samples_required;
-              delay_neutral_braking /= delay_neutral_samples_required;
-              if (!delay_baseline_logged)
-              {
-                std::cout << "[RELATIVE TIMING] Captured SDL neutral baseline: steer=" 
-                          << delay_neutral_steering << ", throttle=" << delay_neutral_throttle 
-                          << ", brake=" << delay_neutral_braking << std::endl;
-                delay_baseline_logged = true;
-              }
-            }
-          }
-          else
-          {
-            // Baseline captured - check for deviation from baseline
-            if (std::abs(sdl_steering - delay_neutral_steering) > axis_deadzone ||
-                std::abs(sdl_throttle - delay_neutral_throttle) > axis_deadzone ||
-                std::abs(sdl_braking - delay_neutral_braking) > axis_deadzone)
-            {
-              delay_injection_started = true;
-              delay_start_time = time;
-              std::cout << "[RELATIVE TIMING] First SDL input detected at time " << time
-                        << "s - delay injection STARTED" << std::endl;
-              std::cout << "  (steering delta: " << std::abs(sdl_steering - delay_neutral_steering)
-                        << ", throttle delta: " << std::abs(sdl_throttle - delay_neutral_throttle)
-                        << ", brake delta: " << std::abs(sdl_braking - delay_neutral_braking) << ")" << std::endl;
-            }
-          }
-        }
+        // Delay injection and actor activation are now triggered by button press
+        // (delay_start_button, default 23). See button handler below.
 
         // Delay is active once: (a) not using relative timing, or (b) first SDL input detected
         bool delay_active = !start_on_ego_input || delay_injection_started;
@@ -1414,32 +1408,8 @@ int main(int argc, char *argv[])
           }
         }
 
-        // Detect ego start based on ACTUAL vehicle velocity (not raw SDL input).
-        // This ensures actors don't start until the ego vehicle is physically moving,
-        // which accounts for any uplink delay applied to driver inputs.
-        // NOTE: This is separate from delay_injection_started (SDL-based) which
-        // controls when delay is applied. This controls when actors start.
-        if (start_on_ego_input && ego_start_time < 0.0)
-        {
-          static int ego_moving_count = 0;
-          const int required_moving_samples = 10;  // 0.2s at 50Hz of sustained movement
-
-          double ego_speed = my_vehicle.GetSpeed();
-          if (ego_speed > ego_velocity_threshold && ego_speed < 100.0)  // Sanity check upper bound
-          {
-            ego_moving_count++;
-            if (ego_moving_count >= required_moving_samples)
-            {
-              ego_start_time = time;
-              std::cout << "[RELATIVE TIMING] Ego MOTION detected at time " << time
-                        << "s (vehicle speed " << ego_speed << " m/s) - actors can now start" << std::endl;
-            }
-          }
-          else
-          {
-            ego_moving_count = 0;
-          }
-        }
+        // ego_start_time is now set by the delay start button press (button 23).
+        // See button handler below.
 
 #ifdef ENABLE_ROS2_BRIDGE
         if (ros_bridge)
@@ -1484,53 +1454,22 @@ int main(int argc, char *argv[])
       // ACTOR NODE: Use path follower driver for autonomous driving
       if (actor_path_driver)
       {
-        // Detect ego movement for relative timing mode (actor nodes)
-        if (start_on_ego_input && ego_start_time < 0.0 && use_synchrono && syn_manager_ptr)
+        // Detect delay start button press for relative timing mode (actor nodes).
+        // Actor nodes read the same joystick as the ego node (same machine).
+        if (start_on_ego_input && ego_start_time < 0.0)
         {
-          for (auto& zombie_pair : syn_manager_ptr->GetZombies())
+          std::vector<int> actor_btn_idx;
+          std::vector<int> actor_btn_val;
+          SDLDriver.GetButtonStatus(actor_btn_idx, actor_btn_val);
+          SDLDriver.Synchronize();
+          for (size_t bi = 0; bi < actor_btn_idx.size(); ++bi)
           {
-            if (zombie_pair.first.GetNodeID() != 1)
-              continue;
-
-            if (auto ego_zombie = std::dynamic_pointer_cast<SynWheeledVehicleAgent>(zombie_pair.second))
+            if (actor_btn_idx[bi] == delay_start_button && actor_btn_val[bi] == 1)
             {
-              static ChVector3d window_start_pos;
-              static double window_start_time = -1.0;
-              static int ego_moving_count = 0;
-              const double motion_window_dt = std::max(heartbeat * 0.9, 0.02);
-              const int required_moving_windows = 10;
-
-              ChVector3d ego_pos = ego_zombie->GetZombiePos();
-              if (window_start_time < 0.0)
-              {
-                window_start_pos = ego_pos;
-                window_start_time = time;
-                break;
-              }
-
-              double dt = time - window_start_time;
-              if (dt >= motion_window_dt)
-              {
-                double ego_speed = (ego_pos - window_start_pos).Length() / dt;
-                if (ego_speed > ego_velocity_threshold && ego_speed < 100.0)
-                {
-                  ego_moving_count++;
-                  if (ego_moving_count >= required_moving_windows)
-                  {
-                    ego_start_time = time;
-                    std::cout << "[RELATIVE TIMING] Actor node " << node_id
-                              << " detected sustained ego movement at time " << time
-                              << "s (speed: " << ego_speed << " m/s)" << std::endl;
-                  }
-                }
-                else
-                {
-                  ego_moving_count = 0;
-                }
-
-                window_start_pos = ego_pos;
-                window_start_time = time;
-              }
+              ego_start_time = time;
+              std::cout << "[RELATIVE TIMING] Actor node " << node_id
+                        << " detected button " << delay_start_button
+                        << " press at time " << time << "s - actors can now start" << std::endl;
               break;
             }
           }
@@ -2079,11 +2018,48 @@ int main(int argc, char *argv[])
         boost_streamer.AddData(lead_speed);
         // 23. collision
         boost_streamer.AddData(collision_warning_active ? 1.0f : 0.0f);
+        // 24. camera delay
+        boost_streamer.AddData(runtime_cam_delay_ms);
+        // 25. delay injection active (1 or 0)
+        boost_streamer.AddData((start_on_ego_input && !delay_injection_started) ? 0.0f : 1.0f);
 
         boost_streamer.Synchronize();
+
+        // CSV logging (same fields as boost stream)
+        if (csv_log_stream.is_open())
+        {
+          csv_log_stream << std::setprecision(6)
+                         << current_time << ","
+                         << runtime_delay_ms << ","
+                         << ego_pos.x() << "," << ego_pos.y() << "," << ego_pos.z() << ","
+                         << (ego_euler.z() * RADS_2_DEG) << ","
+                         << ego_vel.x() << "," << ego_vel.y() << "," << ego_vel.z() << ","
+                         << (my_vehicle.GetSpeed() * MS_TO_MPH) << ","
+                         << (my_vehicle.GetEngine()->GetMotorSpeed() * rads2rpm) << ","
+                         << driver_inputs.m_steering << ","
+                         << driver_inputs.m_throttle << ","
+                         << driver_inputs.m_braking << ","
+                         << lead_x << "," << lead_y << "," << lead_z << ","
+                         << lead_yaw << ","
+                         << lead_vx << "," << lead_vy << "," << lead_vz << ","
+                         << lead_speed << ","
+                         << (collision_warning_active ? 1 : 0) << ","
+                         << runtime_cam_delay_ms << ","
+                         << ((start_on_ego_input && !delay_injection_started) ? 0 : 1) << std::endl;
+        }
       }
       auto t_boost_end = std::chrono::high_resolution_clock::now();
       total_boost_time += std::chrono::duration<double>(t_boost_end - t_boost_start).count();
+
+      // Advance PF driver for ego auto mode (measured separately from SDL)
+      auto t_pfdriver_start = std::chrono::high_resolution_clock::now();
+      if (PFdriver)
+      {
+        PFdriver->Advance(step_size);
+        PFdriver->Synchronize(time, step_size);
+      }
+      auto t_pfdriver_end = std::chrono::high_resolution_clock::now();
+      total_pfdriver_time += std::chrono::duration<double>(t_pfdriver_end - t_pfdriver_start).count();
 
       // SDL button handling (ego node only)
       auto t_sdl_start = std::chrono::high_resolution_clock::now();
@@ -2102,6 +2078,14 @@ int main(int argc, char *argv[])
             auto_mode = (auto_mode + 1) % 2;
             last_auto_toggle = button_now;
           }
+        }
+        else if (check_button_idx[bi] == delay_start_button && start_on_ego_input && !delay_injection_started)
+        {
+          delay_injection_started = true;
+          delay_start_time = time;
+          ego_start_time = time;
+          std::cout << "[RELATIVE TIMING] Button " << delay_start_button << " pressed at time " << time
+                    << "s - delay injection STARTED, actors can now start" << std::endl;
         }
         else if (record_mode && check_button_idx[bi] == record_toggle_button)
         {
@@ -2148,16 +2132,6 @@ int main(int argc, char *argv[])
         break;
       }
 
-      // Advance PF driver for ego auto mode
-      auto t_pfdriver_start = std::chrono::high_resolution_clock::now();
-      if (PFdriver)
-      {
-        PFdriver->Advance(step_size);
-        PFdriver->Synchronize(time, step_size);
-      }
-      auto t_pfdriver_end = std::chrono::high_resolution_clock::now();
-      total_pfdriver_time += std::chrono::duration<double>(t_pfdriver_end - t_pfdriver_start).count();
-
       auto t_sdl_sync_start = std::chrono::high_resolution_clock::now();
       if (SDLDriver.Synchronize() == 1)
       {
@@ -2188,6 +2162,16 @@ int main(int argc, char *argv[])
       total_step_time += step_duration;
       timing_sample_count++;
     } // end if (is_ego_node) block
+    else
+    {
+      // Non-ego (actor) nodes: measure work time and count steps for timing report
+      // Actor nodes have no Spin() call (SynChrono barriers handle pacing), so spin=0
+      double step_end_wall = realtime_timer.GetTimeSeconds();
+      double work_duration = step_end_wall - step_start_wall;
+      total_work_time += work_duration;
+      total_step_time += work_duration;
+      timing_sample_count++;
+    }
 
     // if (render == true && step_number % render_step == 0)
     // {
@@ -2197,6 +2181,13 @@ int main(int argc, char *argv[])
     //   vis->Synchronize(time, driver_inputs);
     // }
   } // end simulation loop
+
+  // Close CSV telemetry log
+  if (csv_log_stream.is_open())
+  {
+    csv_log_stream.close();
+    std::cout << "CSV telemetry log saved to: " << csv_log_file << std::endl;
+  }
   
   // Cleanup SynChrono
   if (use_synchrono && syn_manager_ptr)
