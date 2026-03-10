@@ -128,15 +128,14 @@ double random_amplitude = 0.3;
 int random_octaves = 4;
 double random_frequency = 0.05;
 
-// SCM soil parameters (default: soft soil)
-double bekker_kphi = 2e6;
+// SCM soil parameters (default: firm soil for easier control)
+double bekker_kphi = 5e6;
 double bekker_kc = 0;
 double bekker_n = 1.1;
-double mohr_cohesion = 0;
-// double mohr_friction_deg = 30;
-double mohr_friction_deg = 2;
-double janosi_shear = 0.01;
-double elastic_stiffness = 2e8;
+double mohr_cohesion = 20000;
+double mohr_friction_deg = 35;
+double janosi_shear = 0.03;
+double elastic_stiffness = 5e8;
 double damping = 3e4;
 
 // Vehicle configuration
@@ -179,11 +178,13 @@ bool enable_ros_bridge = false;
 // Obstacle configuration
 bool enable_obstacles = true;
 int num_rocks = 20;
-double rock_min_size = 0.3;
-double rock_max_size = 1.5;
+double rock_min_size = 1.0;
+double rock_max_size = 5.0;
 double obstacle_zone_start_x = -15.0;
 double obstacle_zone_end_x = 25.0;
 double obstacle_zone_y_range = 20.0;
+std::string rock_mesh_path = "/home/kyle/Downloads/NSFDemoDataDir/NSFDemoDataDir/Environments/SCMTeleop/Cliff_Rock_Two/Cliff_Rock_Two_OBJ.obj";
+std::string rock_texture_path = "/home/kyle/Downloads/NSFDemoDataDir/NSFDemoDataDir/Environments/SCMTeleop/Cliff_Rock_Two/Cliff_Rock_Two_BaseColor.png";
 
 // =============================================================================
 // Forward declarations
@@ -436,43 +437,83 @@ void AddRockObstacles(ChSystem &sys, std::mt19937 &rng) {
   std::uniform_real_distribution<double> dist_x(obstacle_zone_start_x, obstacle_zone_end_x);
   std::uniform_real_distribution<double> dist_y(-obstacle_zone_y_range / 2, obstacle_zone_y_range / 2);
   std::uniform_real_distribution<double> dist_size(rock_min_size, rock_max_size);
-  std::uniform_real_distribution<double> dist_rot(0, CH_2PI);
+  std::uniform_real_distribution<double> dist_yaw(0, CH_2PI);
 
   auto rock_material = chrono_types::make_shared<ChContactMaterialSMC>();
   rock_material->SetFriction(0.9f);
   rock_material->SetYoungModulus(1e8f);
   rock_material->SetRestitution(0.1f);
 
+  // Load the rock mesh for visualization
+  auto rock_mesh = ChTriangleMeshConnected::CreateFromWavefrontFile(rock_mesh_path, true, true);
+  if (!rock_mesh) {
+    std::cerr << "ERROR: Could not load rock mesh from: " << rock_mesh_path << std::endl;
+    return;
+  }
+
+  // Get mesh bounding box for scaling and centering
+  auto aabb = rock_mesh->GetBoundingBox();
+  ChVector3d mesh_size = aabb.max - aabb.min;
+  ChVector3d mesh_center = aabb.Center();
+  double mesh_base_size = std::max({mesh_size.x(), mesh_size.y(), mesh_size.z()});
+
+  std::cout << "Rock Mesh Info:" << std::endl;
+  std::cout << "  Bounding Box: Min(" << aabb.min.x() << ", " << aabb.min.y() << ", " << aabb.min.z() << ")" << std::endl;
+  std::cout << "  Bounding Box: Max(" << aabb.max.x() << ", " << aabb.max.y() << ", " << aabb.max.z() << ")" << std::endl;
+  std::cout << "  Size: " << mesh_size.x() << " x " << mesh_size.y() << " x " << mesh_size.z() << std::endl;
+  std::cout << "  Base Size: " << mesh_base_size << std::endl;
+
+  if (mesh_base_size < 1e-6) {
+      std::cerr << "WARNING: Rock mesh size is extremely small/zero! Defaulting to 1.0" << std::endl;
+      mesh_base_size = 1.0;
+  }
+
   for (int i = 0; i < num_rocks; ++i) {
     double x = dist_x(rng);
     double y = dist_y(rng);
-    double size = dist_size(rng);
-    double rot_angle = dist_rot(rng);
+    double target_size = dist_size(rng);
+    double yaw_angle = dist_yaw(rng);
 
-    ChVector3d rock_size(size, size * 0.7, size * 0.5);
+    // Calculate scale factor to achieve target size
+    double scale = target_size / mesh_base_size;
+    
+    if (i == 0) {
+        std::cout << "  Example Rock 0: Target=" << target_size << " Scale=" << scale << std::endl;
+    }
 
     // Create rock body
     auto rock = chrono_types::make_shared<ChBody>();
-    rock->SetPos(ChVector3d(x, y, rock_size.z()));
-    rock->SetRot(QuatFromAngleZ(rot_angle));
+    rock->SetPos(ChVector3d(x, y, target_size * 0.3));  // Partially buried
+    rock->SetRot(QuatFromAngleZ(yaw_angle));
     rock->SetFixed(true);
-    rock->SetMass(2500 * (4.0/3.0) * CH_PI * rock_size.x() * rock_size.y() * rock_size.z());
+    rock->SetMass(2500 * target_size * target_size * target_size);
 
-    // Add collision shape
+    // Add collision shape (use ellipsoid approximation for performance)
+    ChVector3d collision_size(target_size * 0.5, target_size * 0.5, target_size * 0.4);
     auto coll_shape = chrono_types::make_shared<ChCollisionShapeEllipsoid>(
-        rock_material, rock_size);
+        rock_material, collision_size);
     rock->AddCollisionShape(coll_shape);
     rock->EnableCollision(true);
 
-    // Create a box visual shape using ChVisualShapeBox (works with sensor raytracing)
-    auto box_shape = chrono_types::make_shared<ChVisualShapeBox>(rock_size.x() * 2, rock_size.y() * 2, rock_size.z() * 2);
-    box_shape->SetColor(ChColor(0.5f, 0.45f, 0.4f));  // Gray-brown rock color
-    rock->AddVisualShape(box_shape);
+    // Create a scaled copy of the mesh for this rock (Irrlicht doesn't respect SetScale)
+    auto scaled_mesh = chrono_types::make_shared<ChTriangleMeshConnected>(*rock_mesh);
+    scaled_mesh->Transform(-mesh_center, ChMatrix33<>(1));  // Center at origin first
+    scaled_mesh->Transform(ChVector3d(0, 0, 0), ChMatrix33<>(scale));  // Then scale
+
+    // Create visual shape from the pre-scaled mesh
+    auto rock_vis = chrono_types::make_shared<ChVisualShapeTriangleMesh>();
+    rock_vis->SetMesh(scaled_mesh);
+    rock_vis->SetMutable(false);
+    
+    // Apply texture (SetTexture takes filename directly)
+    rock_vis->SetTexture(rock_texture_path);
+
+    rock->AddVisualShape(rock_vis);
 
     sys.Add(rock);
   }
 
-  std::cout << "Added " << num_rocks << " rock obstacles to the scene." << std::endl;
+  std::cout << "Added " << num_rocks << " rock obstacles (mesh: " << rock_mesh_path << ")" << std::endl;
 }
 
 // =============================================================================
@@ -689,7 +730,7 @@ int main(int argc, char *argv[]) {
   ChSDLInterface SDLDriver;
   SDLDriver.Initialize();
 
-  std::string joystick_file = std::string(STRINGIFY(HIL_DATA_DIR)) + "/joystick/ps4_controller.json";
+  std::string joystick_file = std::string(STRINGIFY(HIL_DATA_DIR)) + "/joystick/controller_G29.json";
   SDLDriver.SetJoystickConfigFile(joystick_file);
 
   int auto_toggle_button = 6;

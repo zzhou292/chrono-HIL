@@ -93,7 +93,7 @@ void Ros2Bridge::PublishDriverInput(double time, int auto_mode, const DriverInpu
   driver_pub_->publish(msg);
 }
 
-void Ros2Bridge::PublishEgoState(double time, const WheeledVehicle &vehicle, double steering, double beta_estimate)
+void Ros2Bridge::PublishEgoState(double time, const ChWheeledVehicle &vehicle, double steering, double beta_estimate)
 {
   if (!ego_pub_)
     return;

@@ -47,8 +47,8 @@ foreach(PROGRAM ${DEMOS})
 
   message(STATUS "...add ${PROGRAM}")
 
-  add_executable(${PROGRAM} "${PROGRAM}.cpp")
-  source_group("" FILES "${PROGRAM}.cpp")
+  add_executable(${PROGRAM} "cpp_hil/${PROGRAM}.cpp")
+  source_group("" FILES "cpp_hil/${PROGRAM}.cpp")
 
   target_compile_definitions(${PROGRAM}
       PUBLIC
@@ -73,7 +73,7 @@ foreach(PROGRAM ${DEMOS})
 
   if(PROGRAM STREQUAL "proj_HIL_scm_teleop")
     if(HAVE_ROS2_BRIDGE)
-      target_sources(${PROGRAM} PRIVATE Ros2Bridge.cpp)
+      target_sources(${PROGRAM} PRIVATE cpp_hil/Ros2Bridge.cpp)
       target_compile_definitions(${PROGRAM} PRIVATE ENABLE_ROS2_BRIDGE)
       target_link_libraries(${PROGRAM}
         PRIVATE
@@ -87,3 +87,90 @@ foreach(PROGRAM ${DEMOS})
   endif()
 
 endforeach(PROGRAM)
+
+#--------------------------------------------------------------
+# SCM Data Collection Tool (C++ with ChTireTestRig)
+#--------------------------------------------------------------
+
+message(STATUS "...add collect_scm_data (C++ data collection tool)")
+
+add_executable(collect_scm_data "cpp_collect/collect_scm_data.cpp")
+source_group("" FILES "cpp_collect/collect_scm_data.cpp")
+
+target_compile_definitions(collect_scm_data
+    PUBLIC
+        "CHRONO_DATA_DIR=\"${CHRONO_DATA_DIR}\""
+)
+target_compile_options(collect_scm_data PUBLIC ${CHRONO_CXX_FLAGS})
+target_link_options(collect_scm_data PUBLIC ${CH_LINKERFLAG_SHARED})
+
+target_link_libraries(collect_scm_data
+    PRIVATE
+        Chrono::Chrono_vehicle
+        Chrono::ChronoModels_vehicle
+        Chrono::Chrono_irrlicht
+)
+
+#--------------------------------------------------------------
+# Fast SCM Data Collection Tool (with OpenMP parallelization)
+#--------------------------------------------------------------
+
+message(STATUS "...add collect_scm_data_fast (optimized C++ data collection)")
+
+find_package(OpenMP QUIET)
+
+add_executable(collect_scm_data_fast "cpp_collect/collect_scm_data_fast.cpp")
+source_group("" FILES "cpp_collect/collect_scm_data_fast.cpp")
+
+target_compile_definitions(collect_scm_data_fast
+    PUBLIC
+        "CHRONO_DATA_DIR=\"${CHRONO_DATA_DIR}\""
+)
+target_compile_options(collect_scm_data_fast PUBLIC ${CHRONO_CXX_FLAGS})
+target_link_options(collect_scm_data_fast PUBLIC ${CH_LINKERFLAG_SHARED})
+
+target_link_libraries(collect_scm_data_fast
+    PRIVATE
+        Chrono::Chrono_vehicle
+        Chrono::ChronoModels_vehicle
+)
+
+# Add OpenMP if available
+if(OpenMP_CXX_FOUND)
+    target_compile_definitions(collect_scm_data_fast PRIVATE CHRONO_OPENMP)
+    target_link_libraries(collect_scm_data_fast PRIVATE OpenMP::OpenMP_CXX)
+    message(STATUS "    OpenMP enabled for parallel data collection")
+else()
+    message(STATUS "    OpenMP not found - single-threaded only")
+endif()
+
+#--------------------------------------------------------------
+# Full Vehicle SCM Data Collection (using HMMWV_Full)
+#--------------------------------------------------------------
+
+message(STATUS "...add collect_vehicle_data (full vehicle data collection)")
+
+add_executable(collect_vehicle_data "cpp_collect/collect_vehicle_data.cpp")
+source_group("" FILES "cpp_collect/collect_vehicle_data.cpp")
+
+target_compile_definitions(collect_vehicle_data
+    PUBLIC
+        "CHRONO_DATA_DIR=\"${CHRONO_DATA_DIR}\""
+)
+target_compile_options(collect_vehicle_data PUBLIC ${CHRONO_CXX_FLAGS})
+target_link_options(collect_vehicle_data PUBLIC ${CH_LINKERFLAG_SHARED})
+
+target_link_libraries(collect_vehicle_data
+    PRIVATE
+        Chrono::Chrono_vehicle
+        Chrono::ChronoModels_vehicle
+)
+
+# Add OpenMP if available
+if(OpenMP_CXX_FOUND)
+    target_compile_definitions(collect_vehicle_data PRIVATE CHRONO_OPENMP)
+    target_link_libraries(collect_vehicle_data PRIVATE OpenMP::OpenMP_CXX)
+    message(STATUS "    OpenMP enabled for vehicle data collection")
+else()
+    message(STATUS "    OpenMP not found - single-threaded only")
+endif()

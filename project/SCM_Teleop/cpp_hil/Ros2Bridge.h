@@ -8,7 +8,7 @@
 #include "chrono/core/ChFrameMoving.h"
 #include "chrono_vehicle/ChVehicleModelData.h"
 #include "chrono_vehicle/ChDriver.h"
-#include "chrono_vehicle/wheeled_vehicle/vehicle/WheeledVehicle.h"
+#include "chrono_vehicle/wheeled_vehicle/ChWheeledVehicle.h"
 
 struct Ros2BridgeConfig
 {
@@ -51,7 +51,7 @@ public:
 
   void PublishDriverInput(double time, int auto_mode, const chrono::vehicle::DriverInputs &raw_inputs,
                           const chrono::vehicle::DriverInputs &applied_inputs);
-  void PublishEgoState(double time, const chrono::vehicle::WheeledVehicle &vehicle, double steering,
+  void PublishEgoState(double time, const chrono::vehicle::ChWheeledVehicle &vehicle, double steering,
                        double beta_estimate = 0.0);
   void PublishActors(double time, const std::vector<TrackedVehicleState> &actors);
 
