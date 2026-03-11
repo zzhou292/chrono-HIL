@@ -17,6 +17,8 @@ import time
 import sys
 import multiprocessing as mp
 from functools import partial
+from pathlib import Path
+from datetime import datetime
 
 # Import run_simulation from the main demo script
 from dallas_chrono_demo import (run_simulation, TERRAIN_PRESETS, 
@@ -700,11 +702,19 @@ def main():
     # Print summary table
     print_summary_table(stats, improvements)
     
+    # Create timestamped output directory
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    noise_tag = "noise" if measurement_noise else "nonoise"
+    run_dir = Path("benchmark_runs") / f"{ts}_{noise_tag}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\nOutput directory: {run_dir}/")
+    
     # Create plots
-    plot_error_bars(results, stats, improvements, args.output)
+    plot_path = str(run_dir / args.output)
+    plot_error_bars(results, stats, improvements, plot_path)
     
     # Save raw data
-    save_raw_data(results)
+    save_raw_data(results, output_path=str(run_dir / 'benchmark_raw_data.npz'))
     
     print("\nBenchmark complete!")
 

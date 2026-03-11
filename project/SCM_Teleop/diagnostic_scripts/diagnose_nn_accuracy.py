@@ -21,6 +21,7 @@ import pychrono.vehicle as veh
 
 from dallas_chrono_demo import setup_chrono_vehicle, setup_scm_terrain
 from train_terrain_nn import TerrainNN
+from param_consistency import HMMWV_VEHICLE_PARAMS
 
 
 def load_nn_model(model_dir='v3'):
@@ -107,8 +108,8 @@ def run_diagnostic(terrain_preset='sand', sim_time=10.0, use_sinusoidal=True):
     print(f"  Terrain preset: {terrain_preset}")
     
     # Vehicle params
-    Lf = 1.4  # Front axle to CG
-    Lr = 1.5  # Rear axle to CG
+    Lf = HMMWV_VEHICLE_PARAMS['Lf']
+    Lr = HMMWV_VEHICLE_PARAMS['Lr']
     
     # Get wheel bodies for force extraction
     # HMMWV_Full wraps ChWheeledVehicle, use GetVehicle() to access wheel methods
@@ -418,7 +419,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--terrain', type=str, default='sand',
-                       choices=['sand', 'clay', 'dirt', 'asphalt'],
+                       choices=['sand', 'clay', 'dirt'],
                        help='Terrain preset')
     parser.add_argument('--time', type=float, default=10.0)
     args = parser.parse_args()

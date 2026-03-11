@@ -13,7 +13,9 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "simulation"))
 from nn_training.train_terrain_nn import TerrainNN
+from param_consistency import HMMWV_VEHICLE_PARAMS
 
 
 def load_nn_model(model_dir: str):
@@ -105,9 +107,9 @@ def run_single_cornering_test():
     scm_terrain.Initialize(100.0, 30.0, 0.08)
     
     # Vehicle params
-    m = 2000  # kg (approximate HMMWV mass)
-    Lf = 1.689
-    Lr = 1.689
+    m = HMMWV_VEHICLE_PARAMS['M']
+    Lf = HMMWV_VEHICLE_PARAMS['Lf']
+    Lr = HMMWV_VEHICLE_PARAMS['Lr']
     
     # Simulation
     results = []

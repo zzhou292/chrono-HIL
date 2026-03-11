@@ -192,7 +192,79 @@ class NNCasADi:
         
         n_params = sum(W.shape[0]*W.shape[1] for k, W in self.weights.items() if 'weight' in k)
         print(f"✓ Built CasADi symbolic NN ({len(layer_indices)} layers, {n_params} weight params)")
+
+        # Build batched version for efficient MPC dynamics (6 or 8 tire evals at once)
+        self._build_batched_function(layer_indices)
     
+    def _build_batched_function(self, layer_indices):
+        """Build a CasADi function that evaluates the NN for B samples at once.
+
+        Instead of calling predict() B times (each creating an independent
+        symbolic sub-graph), we stack B input vectors into a [11×B] matrix
+        and push them through the same weight matrices with a single set of
+        ca.mtimes calls.  CasADi's AD then differentiates through one graph
+        instead of B, which dramatically cuts Jacobian computation.
+        """
+        B = ca.SX.sym('B_size')  # not used; batch size is implicit
+        # Symbolic inputs: each column of alphas/Fzs/... is one sample
+        MAX_BATCH = 8  # upper bound (6 lateral + 2 traction)
+        alphas = ca.SX.sym('alphas', MAX_BATCH)
+        Fzs    = ca.SX.sym('Fzs',    MAX_BATCH)
+        us     = ca.SX.sym('us',     MAX_BATCH)
+        kappas = ca.SX.sym('kappas', MAX_BATCH)
+        n_ts   = ca.SX.sym('n_ts',   MAX_BATCH)
+        srs    = ca.SX.sym('srs',    MAX_BATCH)
+
+        terrain = self.terrain_params
+        if self.model_format == 'v6':
+            phi_rad = np.radians(terrain['phi'])
+            rows = [kappas.T, alphas.T, us.T, Fzs.T, srs.T]
+            for val in [terrain['Kphi'], terrain['Kc']]:
+                rows.append(ca.repmat(ca.DM(val), 1, MAX_BATCH))
+            rows.append(n_ts.T)
+            for val in [terrain['c'], phi_rad, terrain['k']]:
+                rows.append(ca.repmat(ca.DM(val), 1, MAX_BATCH))
+        else:
+            rows = [Fzs.T, alphas.T, kappas.T,
+                    ca.repmat(ca.DM(0.0), 1, MAX_BATCH), us.T]
+            for val in [terrain['Kphi'], terrain['Kc']]:
+                rows.append(ca.repmat(ca.DM(val), 1, MAX_BATCH))
+            rows.append(n_ts.T)
+            for val in [terrain['c'], terrain['phi'], terrain['k']]:
+                rows.append(ca.repmat(ca.DM(val), 1, MAX_BATCH))
+
+        X_batch = ca.vertcat(*rows)  # [11 x MAX_BATCH]
+
+        # Normalise
+        X_mean = ca.DM(self.X_mean.reshape(-1, 1))
+        X_scale = ca.DM(self.X_scale.reshape(-1, 1))
+        H = (X_batch - ca.repmat(X_mean, 1, MAX_BATCH)) / ca.repmat(X_scale, 1, MAX_BATCH)
+
+        for i in layer_indices:
+            W = ca.DM(self.weights[f'layers.{i}.weight'])
+            b = ca.DM(self.weights[f'layers.{i}.bias']).reshape((-1, 1))
+            H = ca.mtimes(W, H) + ca.repmat(b, 1, MAX_BATCH)
+            if i < layer_indices[-1]:
+                H = ca.tanh(H)
+
+        y_mean  = ca.DM(self.y_mean.reshape(-1, 1))
+        y_scale = ca.DM(self.y_scale.reshape(-1, 1))
+        Y = H * ca.repmat(y_scale, 1, MAX_BATCH) + ca.repmat(y_mean, 1, MAX_BATCH)  # [2 x B]
+
+        Fxs_out = Y[0, :].T  # [MAX_BATCH x 1]
+        Fys_out = Y[1, :].T
+
+        self._BATCH = MAX_BATCH
+        self.predict_batch = ca.Function(
+            'nn_tire_batch',
+            [alphas, Fzs, us, kappas, n_ts, srs],
+            [Fxs_out, Fys_out],
+            ['alphas', 'Fzs', 'us', 'kappas', 'n_ts', 'srs'],
+            ['Fxs', 'Fys']
+        )
+        print(f"  + Batched NN function built (max {MAX_BATCH} simultaneous evaluations)")
+
+    # Convenience: scalar predict unchanged
     def predict(self, alpha, Fz, u, kappa=0.0, n_terrain=None, steering_rate=0.0):
         """
         Predict tire forces using the CasADi function.
@@ -347,20 +419,25 @@ class DallasMPC:
         # Control constraints 
         self.delta_dot_min = -0.5  # Min steering rate (rad/s)
         self.delta_dot_max = 0.7   # Max steering rate (rad/s)
-        self.Jx_min = -5.0         # Min jerk (m/s^3)
-        self.Jx_max = 5.0          # Max jerk (m/s^3)
+        self.Jx_min = -3.0         # Min jerk (m/s^3)
+        self.Jx_max = 3.0          # Max jerk (m/s^3)
         
         # Cost weights (from Dallas paper Eq. 11)
         self.w_t = 0.0       # Time weight (disabled for fixed horizon)
         self.w_psi = 10.0    # Heading alignment weight
-        self.w_delta_dot = 1.0    # Steering rate penalty
-        self.w_Jx = 1.0      # Jerk penalty
+        self.w_delta_dot = 50.0   # Steering rate penalty
+        self.w_Jx = 20.0      # Jerk penalty
         self.w_terminal = 50.0    # Terminal distance weight
         
         # Additional state tracking weights
         self.w_lateral = 100.0   # Lateral error weight (prevent right-swing)
         self.w_heading = 20.0     # Heading error weight
-        self.w_speed = 30.0       # Speed tracking weight (high to overcome unmodeled SCM drag)
+        self.w_speed = 20.0       # Speed tracking weight (high to overcome unmodeled SCM drag)
+        self.w_continuity = 100.0 # Inter-solve continuity (penalise U[:,0] jump from last solve)
+        
+        # Last applied control (for continuity penalty)
+        self.last_u0 = np.zeros(self.nu)
+        self.have_last_u0 = False
         
         self._setup_solver()
         
@@ -441,31 +518,54 @@ class DallasMPC:
             kappa = 0.0
         
         if self.use_nn and self.nn_casadi is not None:
-            # For NN predictions in dynamics, use sr_meas_sym (measured steering rate).
-            # This is a PARAMETER (like n_terrain), NOT the control delta_dot.
-            # Dallas paper: steering rate affects tire forces, but it should be measured,
-            # not derived from control. Passing delta_dot causes optimization instability
-            # due to high sensitivity (~1000N per rad/s).
+            # ---- Batched NN evaluation ----
+            # Pack all tire queries into a single batched call (6 lateral + 2 traction = 8).
+            # This creates one symbolic sub-graph instead of 8 separate ones,
+            # massively reducing the CasADi NLP size and Jacobian cost.
+            B = self.nn_casadi._BATCH  # 8
+
             if self.lateral_load_transfer:
-                # 4 NN calls: evaluate inner + outer wheels per axle
-                Fxf_o, Fyf_o = self.nn_casadi.predict(alpha_f, Fz_f_outer, u_safe, kappa, n_terrain_sym, sr_meas_sym)
-                Fxf_i, Fyf_i = self.nn_casadi.predict(alpha_f, Fz_f_inner, u_safe, kappa, n_terrain_sym, sr_meas_sym)
-                Fxr_o, Fyr_o = self.nn_casadi.predict(alpha_r, Fz_r_outer, u_safe, kappa, n_terrain_sym, sr_meas_sym)
-                Fxr_i, Fyr_i = self.nn_casadi.predict(alpha_r, Fz_r_inner, u_safe, kappa, n_terrain_sym, sr_meas_sym)
-                Fyf = -self.nn_scale * (Fyf_o + Fyf_i)
-                Fyr = -self.nn_scale * (Fyr_o + Fyr_i)
+                # Slots 0-3: lateral forces (outer/inner x front/rear)
+                # Slots 4-5: traction constraint (front/rear at kappa=0.08, alpha=0)
+                # Slots 6-7: unused padding (repeat slot 4/5 values)
+                kappa_ref = 0.08
+                a_vec = ca.vertcat(alpha_f, alpha_f, alpha_r, alpha_r,
+                                   0.0, 0.0, 0.0, 0.0)
+                fz_vec = ca.vertcat(Fz_f_outer, Fz_f_inner, Fz_r_outer, Fz_r_inner,
+                                    Fz_f_mean, Fz_r_mean, Fz_f_mean, Fz_r_mean)
+                u_vec = ca.repmat(u_safe, B, 1)
+                k_vec = ca.vertcat(kappa, kappa, kappa, kappa,
+                                   kappa_ref, kappa_ref, kappa_ref, kappa_ref)
+                n_vec = ca.repmat(n_terrain_sym, B, 1)
+                sr_vec = ca.vertcat(sr_meas_sym, sr_meas_sym, sr_meas_sym, sr_meas_sym,
+                                    0.0, 0.0, 0.0, 0.0)
+
+                Fxs_all, Fys_all = self.nn_casadi.predict_batch(
+                    a_vec, fz_vec, u_vec, k_vec, n_vec, sr_vec)
+
+                Fyf = -self.nn_scale * (Fys_all[0] + Fys_all[1])  # outer+inner front
+                Fyr = -self.nn_scale * (Fys_all[2] + Fys_all[3])  # outer+inner rear
+                Fx_traction = 2.0 * (Fxs_all[4] + Fxs_all[5])    # front+rear traction
             else:
-                # 2 NN calls: use mean Fz per axle (faster, no lateral load transfer)
-                Fxf_w, Fyf_w = self.nn_casadi.predict(alpha_f, Fz_f_mean, u_safe, kappa, n_terrain_sym, sr_meas_sym)
-                Fxr_w, Fyr_w = self.nn_casadi.predict(alpha_r, Fz_r_mean, u_safe, kappa, n_terrain_sym, sr_meas_sym)
-                Fyf = -self.nn_scale * 2.0 * Fyf_w
-                Fyr = -self.nn_scale * 2.0 * Fyr_w
-            
-            # Traction constraint: use mean Fz (lateral transfer doesn't affect total)
-            kappa_ref = 0.08
-            Fxf_traction, _ = self.nn_casadi.predict(0.0, Fz_f_mean, u_safe, kappa_ref, n_terrain_sym, 0.0)
-            Fxr_traction, _ = self.nn_casadi.predict(0.0, Fz_r_mean, u_safe, kappa_ref, n_terrain_sym, 0.0)
-            Fx_traction = 2.0 * (Fxf_traction + Fxr_traction)
+                # 2 lateral + 2 traction = 4 real, padded to 8
+                kappa_ref = 0.08
+                a_vec = ca.vertcat(alpha_f, alpha_r, 0.0, 0.0,
+                                   0.0, 0.0, 0.0, 0.0)
+                fz_vec = ca.vertcat(Fz_f_mean, Fz_r_mean, Fz_f_mean, Fz_r_mean,
+                                    Fz_f_mean, Fz_r_mean, Fz_f_mean, Fz_r_mean)
+                u_vec = ca.repmat(u_safe, B, 1)
+                k_vec = ca.vertcat(kappa, kappa, kappa_ref, kappa_ref,
+                                   0.0, 0.0, 0.0, 0.0)
+                n_vec = ca.repmat(n_terrain_sym, B, 1)
+                sr_vec = ca.vertcat(sr_meas_sym, sr_meas_sym, 0.0, 0.0,
+                                    0.0, 0.0, 0.0, 0.0)
+
+                Fxs_all, Fys_all = self.nn_casadi.predict_batch(
+                    a_vec, fz_vec, u_vec, k_vec, n_vec, sr_vec)
+
+                Fyf = -self.nn_scale * 2.0 * Fys_all[0]
+                Fyr = -self.nn_scale * 2.0 * Fys_all[1]
+                Fx_traction = 2.0 * (Fxs_all[2] + Fxs_all[3])
         else:
             # Pacejka Magic Formula tire model (simplified)
             # Fy = D * sin(C * atan(B*α - E*(B*α - atan(B*α))))
@@ -509,12 +609,10 @@ class DallasMPC:
             Jx
         )
         
-        self.f = ca.Function('f', [z, zeta, n_terrain_sym, sr_meas_sym], [zdot])
-        
-        # Create function to compute available traction force for constraints
-        # This lets us constrain ax ≤ Fx_traction / M at each time step
-        self.f_Fx = ca.Function('f_Fx', [z, n_terrain_sym, sr_meas_sym], [Fx_traction],
-                                ['z', 'n_terrain', 'sr_meas'], ['Fx_traction'])
+        self.f = ca.Function('f', [z, zeta, n_terrain_sym, sr_meas_sym],
+                             [zdot, Fx_traction],
+                             ['z', 'zeta', 'n_terrain', 'sr_meas'],
+                             ['zdot', 'Fx_traction'])
         
         # =====================================================================
         # Optimal Control Problem Setup
@@ -525,9 +623,11 @@ class DallasMPC:
         U = ca.SX.sym('U', nu, N)
         
         # Parameters: [z0(8), x_goal, y_goal, psi_goal, v_target, n_terrain, sr_meas,
+        #              last_u0(2), w_cont(1),
         #              x_ref(N+1), y_ref(N+1), psi_ref(N+1), v_ref(N+1)]
         n_ref = 4 * (N + 1)  # Reference trajectory
-        P = ca.SX.sym('P', nx + 6 + n_ref)
+        n_cont = nu + 1       # last_u0(2) + w_cont(1)
+        P = ca.SX.sym('P', nx + 6 + n_cont + n_ref)
         
         # Extract parameters
         z0 = P[:nx]
@@ -537,8 +637,10 @@ class DallasMPC:
         v_target = P[nx + 3]
         n_terrain_param = P[nx + 4]
         sr_meas_param = P[nx + 5]  # Measured steering rate (constant for horizon)
+        last_u0 = P[nx + 6 : nx + 6 + nu]  # Last applied control
+        w_cont = P[nx + 6 + nu]             # Continuity weight (0 on first solve)
         
-        ref_start = nx + 6
+        ref_start = nx + 6 + n_cont
         
         # =====================================================================
         # Cost Function - Dallas Eq. (11)
@@ -594,28 +696,35 @@ class DallasMPC:
             # -----------------------------------------------------------------
             if k > 0:
                 du = U[:, k] - U[:, k-1]
-                cost += 10.0 * ca.dot(du, du)
+                cost += 200.0 * ca.dot(du, du)
             
             # -----------------------------------------------------------------
-            # Dynamics constraint (RK4 integration)
+            # Dynamics constraint.
+            # f() returns (zdot, Fx_traction); Fx_traction from the first
+            # evaluation is used for the traction constraint below.
+            # NN (smooth tanh) works well with Euler; Pacejka's sharper
+            # sin(C*atan(..)) nonlinearities need RK4 at dt=0.1s.
             # -----------------------------------------------------------------
-            k1 = self.f(zk, uk, n_terrain_param, sr_meas_param)
-            k2 = self.f(zk + dt/2 * k1, uk, n_terrain_param, sr_meas_param)
-            k3 = self.f(zk + dt/2 * k2, uk, n_terrain_param, sr_meas_param)
-            k4 = self.f(zk + dt * k3, uk, n_terrain_param, sr_meas_param)
-            z_next = zk + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+            if self.use_nn:
+                # Euler integration (1 f-eval per step)
+                zdot, Fx_avail = self.f(zk, uk, n_terrain_param, sr_meas_param)
+                z_next = zk + dt * zdot
+            else:
+                # RK4 integration (4 f-evals per step)
+                k1, Fx_avail = self.f(zk, uk, n_terrain_param, sr_meas_param)
+                k2, _ = self.f(zk + dt / 2 * k1, uk, n_terrain_param, sr_meas_param)
+                k3, _ = self.f(zk + dt / 2 * k2, uk, n_terrain_param, sr_meas_param)
+                k4, _ = self.f(zk + dt * k3, uk, n_terrain_param, sr_meas_param)
+                z_next = zk + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
             
             g_eq.append(Z[:, k+1] - z_next)
             
             # -----------------------------------------------------------------
             # Traction constraint: commanded force M*ax must not exceed
             # available tire force Fx_total from NN prediction.
-            # For acceleration: M*ax ≤ Fx_total  →  M*ax - Fx_total ≤ 0
-            # For braking: M*ax ≥ -Fx_braking  →  -M*ax - Fx_braking ≤ 0
-            # We use Fx_total for both (symmetric for simplicity)
+            # Fx_avail is from the k1 evaluation above (same batch call).
             # -----------------------------------------------------------------
             ax_k = zk[7]
-            Fx_avail = self.f_Fx(zk, n_terrain_param, sr_meas_param)
             
             # Acceleration traction limit: M*ax - Fx_avail ≤ 0
             g_ineq.append(M * ax_k - Fx_avail)
@@ -626,6 +735,13 @@ class DallasMPC:
         
         # Combine constraints: equality first, then inequality
         g = g_eq + g_ineq
+        
+        # =====================================================================
+        # Inter-solve continuity: penalise U[:,0] jumping from last applied control.
+        # Prevents the first control of each new solve from being wildly different
+        # from what was applied on the previous solve, reducing throttle/brake toggling.
+        # =====================================================================
+        cost += w_cont * ca.dot(U[:, 0] - last_u0, U[:, 0] - last_u0)
         
         # =====================================================================
         # Terminal Cost: cross-track + heading only (no x-distance).
@@ -730,9 +846,17 @@ class DallasMPC:
         if n_terrain is None:
             n_terrain = self.nn_casadi.n_nominal if self.nn_casadi is not None else 1.1
         
-        # Build parameter vector: [z0, x_goal, y_goal, psi_goal, v_target, n_terrain, sr_meas, refs...]
+        # Build parameter vector:
+        # [z0, x_goal, y_goal, psi_goal, v_target, n_terrain, sr_meas,
+        #  last_u0(2), w_cont(1), refs...]
         p = list(z0)
         p += [x_goal, y_goal, psi_goal, v_ref[0], n_terrain, sr_meas]
+        
+        # Inter-solve continuity
+        if self.have_last_u0:
+            p += list(self.last_u0) + [self.w_continuity]
+        else:
+            p += [0.0, 0.0, 0.0]  # No penalty on first solve
         
         for k in range(N + 1):
             p += [x_ref[k], y_ref[k], psi_ref[k], v_ref[k]]
@@ -761,15 +885,20 @@ class DallasMPC:
             Z_opt = sol_x[:nx * (N + 1)].reshape((nx, N + 1), order='F')
             U_opt = sol_x[nx * (N + 1):].reshape((nu, N), order='F')
             
-            # Save for warm start
-            self.X_warm = Z_opt
-            self.U_warm = U_opt
-            
             # Store diagnostics (accessible after solve)
             self.last_cost = float(sol['f'])
             stats = self.solver.stats()
             self.last_solver_status = stats.get('return_status', 'unknown')
             self.last_iter_count = stats.get('iter_count', -1)
+
+            # Save warm start only from converged solves
+            if self.last_solver_status in ('Solve_Succeeded', 'Solved_To_Acceptable_Level'):
+                self.X_warm = Z_opt
+                self.U_warm = U_opt
+
+            # Update last applied control for continuity penalty
+            self.last_u0 = U_opt[:, 0].copy()
+            self.have_last_u0 = True
 
             # Return first control: steering rate and jerk
             return U_opt[0, 0], U_opt[1, 0], Z_opt, U_opt

@@ -59,6 +59,8 @@ class TerrainEstimator:
         self.Izz = vehicle_params['Izz']
         self.Lf = vehicle_params['Lf']
         self.Lr = vehicle_params['Lr']
+        self.h_cg = vehicle_params.get('h_cg', 0.65)  # CG height for load transfer
+        self.T = vehicle_params.get('T', 1.8194)  # Track width for lateral load transfer
 
         # NN model and scalers
         self.nn_model = nn_model
@@ -179,9 +181,10 @@ class TerrainEstimator:
 
         return sigma_pts
 
-    def _nn_forces(self, u, v, omega, delta, n_val):
+    def _nn_forces(self, u, v, omega, delta, n_val, ax=0.0):
         """
-        Evaluate NN lateral forces for a single set of inputs.
+        Evaluate NN lateral forces for inner + outer wheels per axle.
+        Accounts for both longitudinal and lateral load transfer.
         Returns (Fyf, Fyr) - total front and rear axle lateral forces.
         """
         terrain = self.base_terrain
@@ -191,33 +194,44 @@ class TerrainEstimator:
         alpha_f = delta - np.arctan2(v + self.Lf * omega, u_safe)
         alpha_r = -np.arctan2(v - self.Lr * omega, u_safe)
 
-        # Static vertical loads (per wheel)
+        # Vertical loads with longitudinal load transfer (per wheel mean)
         L = self.Lf + self.Lr
-        Fz_f = self.M * 9.81 * self.Lr / L / 2.0
-        Fz_r = self.M * 9.81 * self.Lf / L / 2.0
+        h_cg = getattr(self, 'h_cg', 0.65)
+        T = getattr(self, 'T', 1.8194)
+        Fz_f_mean = (self.M * 9.81 * self.Lr - self.M * ax * h_cg) / L / 2.0
+        Fz_r_mean = (self.M * 9.81 * self.Lf + self.M * ax * h_cg) / L / 2.0
+
+        # Lateral load transfer: ΔFz = M * ay * h_cg / T / 2 (per wheel)
+        ay = u * omega  # centripetal acceleration
+        dFz = self.M * ay * h_cg / T / 2.0
+
+        # Per-wheel Fz with limits
+        Fz_f_outer = min(Fz_f_mean + dFz, Fz_f_mean * 1.9)
+        Fz_f_inner = max(Fz_f_mean - dFz, Fz_f_mean * 0.1)
+        Fz_r_outer = min(Fz_r_mean + dFz, Fz_r_mean * 1.9)
+        Fz_r_inner = max(Fz_r_mean - dFz, Fz_r_mean * 0.1)
 
         results = []
-        for alpha, Fz in [(alpha_f, Fz_f), (alpha_r, Fz_r)]:
-            if self.is_v6:
-                # v6 Dallas format: slip_ratio, slip_angle, velocity, Fz, steering_rate,
-                #   Kphi, Kc, n, c, phi(radians), k
-                phi_rad = np.radians(terrain['phi'])
-                x_raw = np.array([[0.0, alpha, u_safe, Fz, self._steering_rate,
-                                   terrain['Kphi'], terrain['Kc'], n_val,
-                                   terrain['c'], phi_rad, terrain['k']]])
-            else:
-                # v3 legacy format: Fz, slip_angle, slip_ratio, camber, velocity,
-                #   Kphi, Kc, n, c, phi(degrees), k
-                x_raw = np.array([[Fz, alpha, 0.0, 0.0, u_safe,
-                                   terrain['Kphi'], terrain['Kc'], n_val,
-                                   terrain['c'], terrain['phi'], terrain['k']]])
-            x_scaled = self.scaler_X.transform(x_raw)
-            with torch.no_grad():
-                y_scaled = self.nn_model(
-                    torch.tensor(x_scaled, dtype=torch.float32)).numpy()
-            y_out = self.scaler_y.inverse_transform(y_scaled)
-            # NN outputs per-wheel force; multiply by 2 for axle total
-            results.append(-2.0 * y_out[0, 1])  # Index 1 is Fy
+        for alpha, Fz_o, Fz_i in [(alpha_f, Fz_f_outer, Fz_f_inner),
+                                    (alpha_r, Fz_r_outer, Fz_r_inner)]:
+            Fy_total = 0.0
+            for Fz in [Fz_o, Fz_i]:
+                if self.is_v6:
+                    phi_rad = np.radians(terrain['phi'])
+                    x_raw = np.array([[0.0, alpha, u_safe, Fz, self._steering_rate,
+                                       terrain['Kphi'], terrain['Kc'], n_val,
+                                       terrain['c'], phi_rad, terrain['k']]])
+                else:
+                    x_raw = np.array([[Fz, alpha, 0.0, 0.0, u_safe,
+                                       terrain['Kphi'], terrain['Kc'], n_val,
+                                       terrain['c'], terrain['phi'], terrain['k']]])
+                x_scaled = self.scaler_X.transform(x_raw)
+                with torch.no_grad():
+                    y_scaled = self.nn_model(
+                        torch.tensor(x_scaled, dtype=torch.float32)).numpy()
+                y_out = self.scaler_y.inverse_transform(y_scaled)
+                Fy_total += -y_out[0, 1]  # accumulate per-wheel Fy (with sign flip)
+            results.append(Fy_total)
 
         Fyf, Fyr = results
         return Fyf, Fyr
@@ -244,7 +258,7 @@ class TerrainEstimator:
             n_val = np.clip(n_val, self.n_min, self.n_max)
 
             # Get NN lateral forces
-            Fyf, Fyr = self._nn_forces(u, v, omega, delta, n_val)
+            Fyf, Fyr = self._nn_forces(u, v, omega, delta, n_val, ax)
 
             # Bicycle model dynamics
             cos_psi = np.cos(psi)

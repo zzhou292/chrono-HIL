@@ -27,6 +27,7 @@ import csv
 import math
 import sys
 import time as wall_time
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -223,7 +224,9 @@ class ControlIntegrator:
         # Steering → normalised
         steering = np.clip(self.steering_angle * self.steering_gain, -1.0, 1.0)
 
-        # Throttle / brake with PI speed feedback
+        # Throttle / brake with dead-band to prevent oscillation near ax ≈ 0.
+        # When ax is in [-dead_band, +dead_band], coast with only PI speed boost.
+        dead_band = 0.1  # m/s² — small accelerations → coast
         speed_err = self.v_target - u
         if speed_err > 0:
             self.speed_err_integral += speed_err * dt
@@ -233,13 +236,17 @@ class ControlIntegrator:
             self.speed_err_integral = max(self.speed_err_integral - 0.5 * dt, 0.0)
             speed_boost = 0.0
 
-        if self.acceleration >= 0:
-            base = self.acceleration / self.mpc.ax_max * self.throttle_gain + 0.3
+        if self.acceleration > dead_band:
+            base = self.acceleration / self.mpc.ax_max * self.throttle_gain
             throttle = min(base + speed_boost, 1.0)
             braking = 0.0
-        else:
+        elif self.acceleration < -dead_band:
             throttle = 0.0
             braking = min(-self.acceleration / abs(self.mpc.ax_min) * self.brake_gain, 1.0)
+        else:
+            # Dead-band: coast with only PI speed feedback
+            throttle = min(speed_boost, 1.0)
+            braking = 0.0
 
         return steering, throttle, braking
 
@@ -466,9 +473,10 @@ class TrackingAnalytics:
             print("  Not enough data for plots.")
             return
 
+        model_tag = "nn" if "NN" in model_label else "pacejka"
         out = Path(plot_dir)
         out.mkdir(parents=True, exist_ok=True)
-        tag = f"{terrain_name}_{self.path_type}"
+        tag = f"{terrain_name}_{self.path_type}_{model_tag}"
 
         ts = np.array(self.times)
         xs = np.array(self.xs)
@@ -730,13 +738,20 @@ def run_controller_node(args):
     n_terrain_est = terrain_params.get("n", 1.1)
 
     # ------------------------------------------------------------------
+    # Timestamped run directory (shared by CSV + plots)
+    # ------------------------------------------------------------------
+    model_tag = "nn" if model_label == "NN" else "pacejka"
+    run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = Path(args.plot_dir) / f"{run_ts}_{terrain_name}_{path_type}_{model_tag}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
     # Diagnostic CSV logger
     # ------------------------------------------------------------------
     csv_file = None
     csv_writer = None
     if not args.no_csv:
-        csv_path = Path(args.plot_dir) / f"diag_{terrain_name}_{path_type}.csv"
-        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        csv_path = run_dir / f"diag_{terrain_name}_{path_type}_{model_tag}.csv"
         csv_file = open(csv_path, "w", newline="")
         csv_header = [
             # timing
@@ -1027,7 +1042,7 @@ def run_controller_node(args):
 
     if not args.no_plot:
         analytics.plot_results(
-            plot_dir=args.plot_dir,
+            plot_dir=str(run_dir),
             terrain_name=terrain_name,
             model_label=model_label,
         )

@@ -2,6 +2,10 @@
 
 MPC-based vehicle control on SCM (Soil Contact Model) deformable terrain using PyChrono, with neural network tire force prediction and online terrain estimation.
 
+TERRAIN PARAMS:
+https://fada.birzeit.edu/bitstream/20.500.11889/7935/1/An%20equivalent%20soil%20mechanics%20formulation%20for%20rigid%20wheels%20in%20deformable%20terrain%2C%20with%20application%20to%20planetary%20exploration%20rovers.pdf
+
+
 ## Quick Start
 
 ```bash
@@ -129,7 +133,6 @@ python validate_terrain_nn.py --model ../nn_models/new/best_terrain_nn.pt
 ### Path Types
 - `lane_change`: Single lane change maneuver
 - `double_lane_change`: ISO lane change test
-- `slalom`: Slalom course
 - `sinusoidal`: Continuous sinusoidal path
 
 ## Dependencies

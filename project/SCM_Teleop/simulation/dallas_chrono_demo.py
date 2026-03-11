@@ -2856,14 +2856,17 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
                 axes[1].set_xlabel('Time (s)')
 
                 terrain_name = terrain_preset if terrain_preset else 'custom'
+                model_tag = 'nn' if controller_type == 'nn' else 'pacejka'
                 lt_label = 'lat-xfer' if lateral_load_transfer else 'no-lat-xfer'
                 fig.suptitle(f'Lateral Force: Chrono vs NN ({lt_label}) — {terrain_name} / {path_type}',
                              fontsize=13, y=1.01)
                 plt.tight_layout()
 
-                plot_dir = Path(__file__).parent.parent / "diagnostic_scripts" / "plots"
+                from datetime import datetime as _dt
+                _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+                plot_dir = Path(__file__).parent.parent / "diagnostic_scripts" / "plots" / f"{_ts}_{terrain_name}_{path_type}_{model_tag}"
                 plot_dir.mkdir(parents=True, exist_ok=True)
-                plot_path = plot_dir / f"Fy_actual_vs_nn_{terrain_name}_{path_type}.png"
+                plot_path = plot_dir / f"Fy_actual_vs_nn_{terrain_name}_{path_type}_{model_tag}.png"
                 plt.savefig(plot_path, dpi=150, bbox_inches='tight')
                 plt.close()
                 print(f"  Force comparison plot saved: {plot_path}")
