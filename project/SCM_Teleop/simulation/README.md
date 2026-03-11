@@ -35,7 +35,7 @@ python dallas_chrono_demo.py --nn --ukf
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--path <type>` | lane_change | Path type: `lane_change`, `double_lane_change`, `slalom`, `sinusoidal` |
+| `--path <type>` | lane_change | Path type: `lane_change`, `double_lane_change`, `sinusoidal` |
 | `--sine-amplitude <m>` | 2.0 | Sinusoidal path amplitude |
 | `--sine-wavelength <m>` | 30.0 | Sinusoidal path wavelength (lower = tighter turns) |
 | `--no-path-reindex` | - | Disable closest-point path re-indexing |

@@ -33,77 +33,17 @@ sys.path.append(str(Path(__file__).parent))
 import pychrono as chrono
 import pychrono.vehicle as veh
 
-# Import Dallas MPC and parameter consistency (vehicle params, training range)
+# Import Dallas MPC and parameter consistency (vehicle params, training range, terrain presets)
 from dallas_mpc import DallasMPC, NNCasADi
 from param_consistency import (
     get_vehicle_params_for_demo,
     check_terrain_in_training_range,
     get_static_fz_per_wheel,
+    TERRAIN_PRESETS,
+    EXCITATION_DEFAULTS,
+    HMMWV_VEHICLE_PARAMS,
+    TRAINING_RANGES_V6,
 )
-
-
-# =============================================================================
-# Terrain Presets
-# =============================================================================
-
-# SCM soil parameters for different terrain types
-# Keys: Kphi (N/m^(n+2)), Kc (N/m^(n+1)), n (sinkage exponent), 
-#       cohesion (Pa), friction_angle (deg), janosi_shear (m)
-TERRAIN_PRESETS = {
-    'sand': {
-        # Dry sand - low cohesion, high friction, deep sinkage
-        'Kphi': 2.1e6,
-        'Kc': 500,
-        'n': 1.38,
-        'cohesion': 300,
-        'friction_angle': 30,
-        'janosi_shear': 0.048,
-        'elastic_stiffness': 2e8,
-        'damping': 3e4,
-        'description': 'Dry sand (soft, low cohesion)',
-    },
-    'clay': {
-        # Clay - high cohesion, low friction, moderate sinkage
-        # Parameters from user: kc=13200, kphi=692200, n=0.5, c=4140 Pa, phi=13° (0.2269 rad)
-        'Kphi': 692200,
-        'Kc': 13200,
-        'n': 0.5,
-        'cohesion': 4140,
-        'friction_angle': 13.0,  # 0.2269 rad = ~13°
-        'janosi_shear': 0.01,
-        'elastic_stiffness': 2e8,
-        'damping': 3e4,
-        'description': 'Wet clay (high cohesion, sticky)',
-    },
-    'dirt': {
-        # Packed dirt/gravel - moderate cohesion and friction
-        'Kphi': 3.5e6,
-        'Kc': 2000,
-        'n': 1.1,
-        'cohesion': 800,
-        'friction_angle': 32,
-        'janosi_shear': 0.02,
-        'elastic_stiffness': 2e8,
-        'damping': 3e4,
-        'description': 'Packed dirt/gravel (moderate)',
-    },
-    'asphalt': {
-        # Hard asphalt - very high stiffness, minimal sinkage
-        'Kphi': 5.0e6,
-        'Kc': 3000,
-        'n': 1.1,
-        'cohesion': 1000,
-        'friction_angle': 35,
-        'janosi_shear': 0.01,
-        'elastic_stiffness': 2e8,
-        'damping': 3e4,
-        'description': 'Asphalt/hard surface',
-    },
-}
-
-# Aliases for backward compatibility
-TERRAIN_PRESETS['soft'] = TERRAIN_PRESETS['sand']
-TERRAIN_PRESETS['hard'] = TERRAIN_PRESETS['asphalt']
 
 
 # =============================================================================
@@ -872,6 +812,7 @@ def _mpc_worker_process(request_queue: mp.Queue, result_queue: mp.Queue,
         nn_scale=mpc_config.get('nn_scale', 1.0),
         nn_sign=mpc_config.get('nn_sign', 1),
         kappa_mode=mpc_config.get('kappa_mode', 'approx'),
+        lateral_load_transfer=mpc_config.get('lateral_load_transfer', True),
     )
     
     # Warmup solve to trigger Ipopt JIT compilation (first solve is slow)
@@ -1112,7 +1053,8 @@ class DallasMPCDriver(veh.ChDriver):
     
     def __init__(self, vehicle, mpc, dt_mpc=0.1, path_func=None, debug=False, ukf=None,
                  async_mpc=False, multiprocess_mpc=False, mpc_config=None,
-                 measurement_noise=None, steer_excite_amp=0.0, steer_excite_freq=0.5):
+                 measurement_noise=None, steer_excite_amp=0.0, steer_excite_freq=0.15,
+                 steer_excite_ramp=3.0, step_size=3e-3):
         """
         Args:
             vehicle: PyChrono WheeledVehicle
@@ -1126,17 +1068,24 @@ class DallasMPCDriver(veh.ChDriver):
             mpc_config: Dict of MPC config for multiprocess mode
             measurement_noise: Dict with noise std devs for state measurements, or True for defaults
             steer_excite_amp: Sinusoidal steering excitation amplitude (rad) for UKF observability
-            steer_excite_freq: Steering excitation frequency (Hz)
+            steer_excite_freq: Steering excitation frequency (Hz). Default 0.15 Hz (6.7s period)
+            steer_excite_ramp: Ramp-up time (seconds) for smooth excitation onset
         """
         super().__init__(vehicle.GetVehicle())
         
         self.vehicle = vehicle
         self.mpc = mpc
         self.dt_mpc = dt_mpc
+        self.step_size = step_size  # Physics timestep for rate integration
         self.path_func = path_func
         self.debug = debug
         self.debug_counter = 0
         self.ukf = ukf
+        
+        # UKF update rate — Dallas paper: sensors updated every 24ms
+        self.dt_ukf = 0.024
+        self.last_ukf_time = -self.dt_ukf
+        self.n_terrain_est = None  # Latest UKF estimate (shared between UKF and MPC)
         
         # Async MPC mode (threading)
         self.async_mpc = async_mpc and not multiprocess_mpc
@@ -1188,6 +1137,7 @@ class DallasMPCDriver(veh.ChDriver):
         # Steering excitation for terrain observability (Dallas paper uses sinusoidal steering)
         self.steer_excite_amp = steer_excite_amp
         self.steer_excite_freq = steer_excite_freq
+        self.steer_excite_ramp = steer_excite_ramp  # smooth half-cosine ramp-up duration
         
         # State tracking
         self.state_history = []
@@ -1227,6 +1177,38 @@ class DallasMPCDriver(veh.ChDriver):
         
         print(f" done! ({warmup_times[0]:.0f}ms -> {warmup_times[-1]:.0f}ms)")
     
+    def _compute_excitation(self, time):
+        """Compute smooth ramped sinusoidal steering excitation.
+        
+        Returns (delta, delta_dot) or (None, None) if excitation is disabled.
+        Uses a half-cosine ramp-up envelope so the maneuver starts smoothly
+        instead of jerking the wheel from 0 to full amplitude.
+        """
+        if self.steer_excite_amp <= 0:
+            return None, None
+        
+        A = self.steer_excite_amp
+        f = self.steer_excite_freq
+        T_ramp = self.steer_excite_ramp
+        w = 2.0 * np.pi * f
+        
+        # Smooth half-cosine envelope: 0 -> 1 over T_ramp seconds
+        if T_ramp > 0 and time < T_ramp:
+            env = 0.5 * (1.0 - np.cos(np.pi * time / T_ramp))
+            env_dot = 0.5 * np.pi / T_ramp * np.sin(np.pi * time / T_ramp)
+        else:
+            env = 1.0
+            env_dot = 0.0
+        
+        # delta(t) = env(t) * A * sin(w*t)
+        sin_wt = np.sin(w * time)
+        cos_wt = np.cos(w * time)
+        delta = env * A * sin_wt
+        # Product rule: d/dt [env * A * sin(wt)] = env_dot * A * sin(wt) + env * A * w * cos(wt)
+        delta_dot = env_dot * A * sin_wt + env * A * w * cos_wt
+        
+        return delta, delta_dot
+    
     def shutdown(self):
         """Clean up async/multiprocess worker if running"""
         if self.mpc_worker is not None:
@@ -1244,6 +1226,11 @@ class DallasMPCDriver(veh.ChDriver):
     
     def Synchronize(self, time):
         """Called by Chrono to update driver inputs"""
+        # UKF runs at its own rate (24ms), independent of MPC rate
+        if self.ukf is not None and time - self.last_ukf_time >= self.dt_ukf:
+            self._run_ukf_update(time)
+            self.last_ukf_time = time
+        
         if self.multiprocess_mpc:
             # Multiprocess mode: same as async but uses separate process
             self._sync_async_mpc(time, use_multiprocess=True)
@@ -1256,38 +1243,13 @@ class DallasMPCDriver(veh.ChDriver):
                 self._run_mpc_sync(time)
                 self.last_mpc_time = time
     
-    def _sync_async_mpc(self, time, use_multiprocess=False):
-        """Handle async MPC: check results, submit requests, update controls"""
-        # Get the appropriate worker
-        worker = self.mp_worker if use_multiprocess else self.mpc_worker
+    def _read_vehicle_state(self):
+        """Read current vehicle state from Chrono, with optional noise injection.
         
-        # Check for new MPC result
-        result = worker.get_latest_result()
-        if result is not None and result.time > self.last_mpc_result_time:
-            # Got a new result - update rate commands
-            self.delta_dot = result.delta_dot
-            self.Jx = result.Jx
-            self.last_mpc_result_time = result.time
-        
-        # Submit new request at MPC rate
-        if time - self.last_mpc_time >= self.dt_mpc:
-            self._submit_mpc_request(time, use_multiprocess=use_multiprocess)
-            self.last_mpc_time = time
-        
-        # Always update controls by integrating rate commands
-        # This runs at physics rate, not MPC rate
-        dt_actual = 0.004  # Assume 4ms physics step
-        self._update_controls_from_rates(dt_actual, time)
-    
-    def _submit_mpc_request(self, time, use_multiprocess=False):
-        """Build and submit MPC request to async/multiprocess worker"""
-        # Get the appropriate worker
-        worker = self.mp_worker if use_multiprocess else self.mpc_worker
-        
-        if worker is None:
-            return
-            
-        # Get current vehicle state
+        Returns:
+            (x, y, psi, u, v, omega) — front-axle position and body-frame velocities.
+            All values include measurement noise if enabled.
+        """
         chassis = self.vehicle.GetChassisBody()
         pos = chassis.GetPos()
         vel = chassis.GetPosDt()
@@ -1314,6 +1276,65 @@ class DallasMPCDriver(veh.ChDriver):
             v += np.random.normal(0, noise.get('v', 0))
             omega += np.random.normal(0, noise.get('omega', 0))
         
+        return x, y, psi, u, v, omega
+    
+    def _run_ukf_update(self, time):
+        """Run UKF terrain estimation at sensor rate (24ms), independent of MPC."""
+        x, y, psi, u, v, omega = self._read_vehicle_state()
+        
+        exc_delta, exc_delta_dot = self._compute_excitation(time)
+        if exc_delta is not None:
+            actual_delta = exc_delta
+            actual_delta_dot = exc_delta_dot
+        else:
+            actual_delta = self.steering_angle
+            actual_delta_dot = self.delta_dot
+        
+        self.n_terrain_est = self.ukf.step(
+            x_meas=x, y_meas=y, psi_meas=psi,
+            u=max(u, 0.1), v=v, omega=omega,
+            delta=actual_delta, ax=self.acceleration,
+            time=time,
+            steering_rate=actual_delta_dot,
+        )
+        
+        if self.debug and int(time * 10) % 20 == 0:
+            P_str = f" P_n={self.ukf.P[6,6]:.2e}" if hasattr(self.ukf, 'P') else ""
+            print(f"    EST n_est={self.n_terrain_est:.4f}{P_str}")
+    
+    def _sync_async_mpc(self, time, use_multiprocess=False):
+        """Handle async MPC: check results, submit requests, update controls"""
+        # Get the appropriate worker
+        worker = self.mp_worker if use_multiprocess else self.mpc_worker
+        
+        # Submit new request at MPC rate FIRST (minimize latency)
+        if time - self.last_mpc_time >= self.dt_mpc:
+            self._submit_mpc_request(time, use_multiprocess=use_multiprocess)
+            self.last_mpc_time = time
+        
+        # Check for new MPC result (may arrive from previous or current request)
+        result = worker.get_latest_result()
+        if result is not None and result.time > self.last_mpc_result_time:
+            # Got a new result - update rate commands
+            self.delta_dot = result.delta_dot
+            self.Jx = result.Jx
+            self.last_mpc_result_time = result.time
+        
+        # Always update controls by integrating rate commands
+        # This runs at physics rate, not MPC rate
+        self._update_controls_from_rates(self.step_size, time)
+    
+    def _submit_mpc_request(self, time, use_multiprocess=False):
+        """Build and submit MPC request to async/multiprocess worker"""
+        # Get the appropriate worker
+        worker = self.mp_worker if use_multiprocess else self.mpc_worker
+        
+        if worker is None:
+            return
+            
+        # Get current vehicle state (with noise if enabled)
+        x, y, psi, u, v, omega = self._read_vehicle_state()
+        
         z0 = np.array([x, y, psi, max(u, 0.5), v, omega, 
                        self.steering_angle, self.acceleration])
         
@@ -1329,30 +1350,14 @@ class DallasMPCDriver(veh.ChDriver):
             v_ref = 5.0 * np.ones(N+1)
             x_goal, y_goal, psi_goal = x_ref[-1], y_ref[-1], 0.0
         
-        # UKF terrain estimation (V2 with position measurements)
-        n_terrain = None
-        if self.ukf is not None:
-            # Use actual steering command (sinusoidal when excitation active)
-            if self.steer_excite_amp > 0:
-                actual_delta = self.steer_excite_amp * np.sin(2 * np.pi * self.steer_excite_freq * time)
-                actual_delta_dot = self.steer_excite_amp * 2 * np.pi * self.steer_excite_freq * np.cos(2 * np.pi * self.steer_excite_freq * time)
-            else:
-                actual_delta = self.steering_angle
-                actual_delta_dot = self.delta_dot
-            n_terrain = self.ukf.step(
-                x_meas=x, y_meas=y, psi_meas=psi,
-                u=max(u, 0.1), v=v, omega=omega,
-                delta=actual_delta, ax=self.acceleration,
-                time=time,
-                steering_rate=actual_delta_dot,
-            )
-        
         request = MPCRequest(
             time=time, z0=z0,
             x_ref=x_ref, y_ref=y_ref, psi_ref=psi_ref, v_ref=v_ref,
             x_goal=x_goal, y_goal=y_goal, psi_goal=psi_goal,
-            n_terrain=n_terrain,
-            sr_meas=self.delta_dot  # Pass current steering rate as measurement
+            n_terrain=self.n_terrain_est,  # From UKF running at 24ms
+            sr_meas=0.0  # Always zero: v6 NN has ~4800 N/rad/s Fy sensitivity to sr;
+                        # holding last delta_dot constant over the 2.5s horizon creates
+                        # massive phantom lateral forces and a self-amplifying feedback loop.
         )
         worker.submit_request(request)
         
@@ -1374,11 +1379,22 @@ class DallasMPCDriver(veh.ChDriver):
         self.acceleration = np.clip(self.acceleration, self.mpc.ax_min, self.mpc.ax_max)
         
         # Convert to vehicle inputs - with optional steering excitation
-        if self.steer_excite_amp > 0:
-            # Dallas paper: pure sinusoidal steering + constant throttle (open-loop excitation)
-            steer_total = self.steer_excite_amp * np.sin(2 * np.pi * self.steer_excite_freq * time)
-            self.m_steering = np.clip(steer_total * self.steering_gain, -1.0, 1.0)
-            self.m_throttle = 0.5  # Moderate constant throttle
+        exc_delta, _ = self._compute_excitation(time)
+        if exc_delta is not None:
+            # Smooth sinusoidal steering + PI speed control
+            self.m_steering = np.clip(exc_delta * self.steering_gain, -1.0, 1.0)
+
+            # PI speed control instead of constant throttle
+            u = 5.0
+            if self.state_history:
+                u = self.state_history[-1].get('u', 5.0)
+            speed_err = (self.v_target or 5.0) - u
+            if speed_err > 0:
+                self.speed_err_integral += speed_err * dt
+                self.speed_err_integral = min(self.speed_err_integral, 3.0)
+            else:
+                self.speed_err_integral = max(self.speed_err_integral - 0.5 * dt, 0.0)
+            self.m_throttle = np.clip(0.3 + 0.15 * speed_err + 0.05 * self.speed_err_integral, 0.0, 1.0)
             self.m_braking = 0.0
         else:
             steer_total = self.steering_angle
@@ -1505,27 +1521,7 @@ class DallasMPCDriver(veh.ChDriver):
             print(f"  psi_ref[0..5]: {np.degrees(psi_ref[:6])}")
             print(f"  goal: ({x_goal:.2f}, {y_goal:.2f}), psi={np.degrees(psi_goal):.1f}°")
         
-        # UKF terrain estimation (if enabled) - V2 with position measurements
-        n_terrain_est = None
-        if self.ukf is not None:
-            # Use actual steering command (sinusoidal when excitation active)
-            if self.steer_excite_amp > 0:
-                actual_delta = self.steer_excite_amp * np.sin(2 * np.pi * self.steer_excite_freq * time)
-                actual_delta_dot = self.steer_excite_amp * 2 * np.pi * self.steer_excite_freq * np.cos(2 * np.pi * self.steer_excite_freq * time)
-            else:
-                actual_delta = self.steering_angle
-                actual_delta_dot = self.delta_dot
-            n_terrain_est = self.ukf.step(
-                x_meas=x, y_meas=y, psi_meas=psi,
-                u=max(u, 0.1), v=v, omega=omega,
-                delta=actual_delta, ax=self.acceleration,
-                time=time,
-                steering_rate=actual_delta_dot,
-            )
-            
-            if self.debug and int(time * 10) % 20 == 0:
-                P_str = f" P_n={self.ukf.P[6,6]:.2e}" if hasattr(self.ukf, 'P') else ""
-                print(f"    EST n_est={n_terrain_est:.4f}{P_str}")
+        # UKF terrain estimate (updated at 24ms rate in _run_ukf_update)
         
         # Solve MPC (with timing)
         import time as time_module
@@ -1533,8 +1529,8 @@ class DallasMPCDriver(veh.ChDriver):
         
         delta_dot, Jx, Z_opt, U_opt = self.mpc.solve(
             z0, x_ref, y_ref, psi_ref, v_ref,
-            x_goal, y_goal, psi_goal, n_terrain=n_terrain_est,
-            sr_meas=self.delta_dot  # Pass measured steering rate
+            x_goal, y_goal, psi_goal, n_terrain=self.n_terrain_est,
+            sr_meas=0.0  # Zero: see comment in _submit_mpc_request re: v6 Fy sensitivity
         )
         
         t_solve_end = time_module.perf_counter()
@@ -1574,11 +1570,19 @@ class DallasMPCDriver(veh.ChDriver):
         self.acceleration = np.clip(self.acceleration, self.mpc.ax_min, self.mpc.ax_max)
         
         # Convert to vehicle inputs - with optional steering excitation
-        if self.steer_excite_amp > 0:
-            # Dallas paper: pure sinusoidal steering + constant throttle (open-loop excitation)
-            steer_total = self.steer_excite_amp * np.sin(2 * np.pi * self.steer_excite_freq * time)
-            self.m_steering = np.clip(steer_total * self.steering_gain, -1.0, 1.0)
-            self.m_throttle = 0.5
+        exc_delta, _ = self._compute_excitation(time)
+        if exc_delta is not None:
+            # Smooth sinusoidal steering + PI speed control
+            self.m_steering = np.clip(exc_delta * self.steering_gain, -1.0, 1.0)
+
+            # PI speed control instead of constant throttle
+            speed_err = (self.v_target or 5.0) - u
+            if speed_err > 0:
+                self.speed_err_integral += speed_err * self.dt_mpc
+                self.speed_err_integral = min(self.speed_err_integral, 3.0)
+            else:
+                self.speed_err_integral = max(self.speed_err_integral - 0.5 * self.dt_mpc, 0.0)
+            self.m_throttle = np.clip(0.3 + 0.15 * speed_err + 0.05 * self.speed_err_integral, 0.0, 1.0)
             self.m_braking = 0.0
         else:
             steer_total = self.steering_angle
@@ -1737,7 +1741,7 @@ def make_path_function(path_type='lane_change', lane_offset=3.0, v_target=8.0,
     All paths use FIXED x-positions (deterministic, velocity-independent).
     
     Args:
-        path_type: 'lane_change', 'double_lane_change', 'slalom', or 'sinusoidal'
+        path_type: 'lane_change', 'double_lane_change', or 'sinusoidal'
         lane_offset: Lateral offset for lane change maneuvers (m)
         v_target: Target longitudinal velocity (m/s)
         sine_amplitude: Amplitude for sinusoidal path (m)
@@ -1926,48 +1930,12 @@ def make_path_function(path_type='lane_change', lane_offset=3.0, v_target=8.0,
         
         return x_ref, y_ref, psi_ref, v_ref, x_ref[-1], y_ref[-1], psi_ref[-1]
     
-    def slalom_path(time, z0, N, dt):
-        """
-        Tight slalom - rapid successive turns like cone weaving.
-        Much more demanding on lateral dynamics.
-        """
-        x, y, psi, u = z0[0], z0[1], z0[2], z0[3]
-        
-        t_ref = time + np.arange(N + 1) * dt
-        u_proj = max(u, 1.0)
-        x_ref = x + u_proj * (t_ref - time)
-        
-        # Tight slalom parameters
-        amp = 2.5          # Lateral amplitude (m)
-        wavelength = 15.0  # Short wavelength = tight turns
-        start_x = 5.0      # Start slalom after initial acceleration
-        
-        y_ref = np.zeros(N + 1)
-        psi_ref = np.zeros(N + 1)
-        
-        for i, x_i in enumerate(x_ref):
-            if x_i < start_x:
-                y_ref[i] = 0.0
-                psi_ref[i] = 0.0
-            else:
-                x_slalom = x_i - start_x
-                y_ref[i] = amp * np.sin(2 * np.pi * x_slalom / wavelength)
-                # Heading tangent to path
-                dy_dx = amp * 2 * np.pi / wavelength * np.cos(2 * np.pi * x_slalom / wavelength)
-                psi_ref[i] = np.arctan(dy_dx)
-        
-        v_ref = v_target * np.ones(N + 1)
-        
-        return x_ref, y_ref, psi_ref, v_ref, x_ref[-1], y_ref[-1], psi_ref[-1]
-    
     if path_type == 'lane_change':
         return lane_change_path
     elif path_type == 'sinusoidal':
         return sinusoidal_path
     elif path_type == 'double_lane_change':
         return double_lane_change_path
-    elif path_type == 'slalom':
-        return slalom_path
     else:
         return lane_change_path
 
@@ -2055,7 +2023,7 @@ def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand
         system: Chrono system
         vehicle: Chrono vehicle (for moving patch optimization)
         visualize: Enable visualization
-        terrain_preset: Preset name ('sand', 'clay', 'dirt', 'asphalt') 
+        terrain_preset: Preset name ('sand', 'clay', 'dirt') 
                        Ignored if terrain_config provided.
         terrain_config: Dict with terrain params from config file (overrides preset)
         mesh_resolution: Override mesh spacing (m). Default: 0.08 for headless, 0.05 for vis.
@@ -2163,7 +2131,7 @@ def add_trajectory_markers(system, path_type='lane_change', sim_time=10.0,
     
     Args:
         system: Chrono system
-        path_type: 'lane_change', 'sinusoidal', 'double_lane_change', or 'slalom'
+        path_type: 'lane_change', 'double_lane_change', or 'sinusoidal'
         sim_time: Duration to generate markers for
         v_target: Target velocity (used only for estimating marker count)
         lane_offset: Lane change offset (m)
@@ -2189,11 +2157,6 @@ def add_trajectory_markers(system, path_type='lane_change', sim_time=10.0,
     # Double lane change zones (fixed)
     dlc_z1_start, dlc_z1_end = 8.0, 18.0
     dlc_z2_start, dlc_z2_end = 28.0, 38.0
-    
-    # Slalom parameters (fixed)
-    slalom_amp = 2.5
-    slalom_wavelength = 15.0
-    slalom_start = 5.0
     
     for i in range(n_markers):
         x = i * marker_spacing
@@ -2232,15 +2195,6 @@ def add_trajectory_markers(system, path_type='lane_change', sim_time=10.0,
                 y = 0.0
                 zone = 'end'
                 
-        elif path_type == 'slalom':
-            if x < slalom_start:
-                y = 0.0
-                zone = 'start'
-            else:
-                x_slalom = x - slalom_start
-                y = slalom_amp * np.sin(2 * np.pi * x_slalom / slalom_wavelength)
-                zone = 'slalom'
-                
         elif path_type == 'sinusoidal':
             # Use parameters passed to function
             y = sine_amplitude * np.sin(2 * np.pi * x / sine_wavelength)
@@ -2265,10 +2219,6 @@ def add_trajectory_markers(system, path_type='lane_change', sim_time=10.0,
             color = chrono.ChColor(0.8, 0.4, 0.1)  # Orange
         elif zone == 'transition2':
             color = chrono.ChColor(0.9, 0.5, 0.9)  # Pink
-        elif zone == 'slalom':
-            # Rainbow based on sine phase
-            phase = (y / slalom_amp + 1) / 2  # 0 to 1
-            color = chrono.ChColor(0.8 * phase, 0.3, 0.8 * (1-phase))
         elif zone == 'sine':
             # Rainbow based on sine phase (using actual amplitude)
             phase = (y / sine_amplitude + 1) / 2  # 0 to 1
@@ -2293,9 +2243,10 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
                    multiprocess_mpc=False, nn_model_dir=None,
                    bump_amplitude=0.0, bump_wavelength=20.0, bump_octaves=4, 
                    bump_seed=12345, bump_max_slope=0.3, manual_control=False,
-                   sine_amplitude=2.0, sine_wavelength=30.0, measurement_noise=None,
+                   sine_amplitude=2.0, sine_wavelength=30.0, measurement_noise=True,
                    use_closest_point=True, rms_time_start=None, rms_time_end=None,
-                   steer_excite_amp=0.0, steer_excite_freq=0.5):
+                   steer_excite_amp=0.0, steer_excite_freq=0.15, steer_excite_ramp=3.0,
+                   lateral_load_transfer=True):
     """
     Run simulation with Dallas MPC controller or manual G29 control.
     
@@ -2303,8 +2254,8 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
         controller_type: 'linear' or 'nn'
         visualize: Enable Irrlicht visualization
         sim_time: Simulation duration (s)
-        path_type: 'lane_change', 'double_lane_change', 'slalom', or 'sinusoidal'
-        terrain_preset: 'sand' (soft), 'clay', 'dirt', or 'asphalt' (hard)
+        path_type: 'lane_change', 'double_lane_change', or 'sinusoidal'
+        terrain_preset: 'sand' (dry sand), 'clay' (clayey soil), or 'dirt' (sandy loam)
         debug: Print tire force debug info
         use_ukf: Enable UKF terrain estimation (only with NN controller)
         measurement_noise: Dict with noise std devs or True for defaults. Keys:
@@ -2371,6 +2322,10 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
             add_trajectory_markers(system, path_type, sim_time, v_target=v_target, marker_z=marker_z,
                                    sine_amplitude=sine_amplitude, sine_wavelength=sine_wavelength)
     
+    # Simulation step size: RigidTire + SCM is stable up to ~8ms
+    # Use larger steps for speed, smaller only if accuracy needed
+    step_size = 3e-3  # 3ms - balance speed and accuracy
+
     # MPC-based control (skip this entire block when manual_control=True)
     if not manual_control:
         # Warn if terrain is outside NN training range (NN predictions can be poor)
@@ -2380,7 +2335,7 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
                 print("  ⚠ Terrain parameters are OUTSIDE NN training range:")
                 for m in msgs:
                     print(f"     {m}")
-                print("  Consider using --terrain-config ../terrain_configs/training_mean.yaml for better NN behavior.")
+                print("  NN predictions may be less accurate for out-of-range terrain parameters.")
     
         # Vehicle params: use HMMWV-aligned values so MPC Fz matches Chrono vehicle
         vehicle_params = get_vehicle_params_for_demo()
@@ -2432,9 +2387,11 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
             nn_scale=nn_scale,
             nn_sign=nn_sign,
             kappa_mode=kappa_mode,
+            lateral_load_transfer=lateral_load_transfer,
         )
         t_mpc = time.time() - t0_mpc
-        print(f"  [TIMING] MPC setup: {t_mpc:.2f}s")
+        nn_calls = 4 if lateral_load_transfer else 2
+        print(f"  [TIMING] MPC setup: {t_mpc:.2f}s (NN calls/step: {nn_calls})")
         
         # Create path function
         path_func = make_path_function(path_type, v_target=v_target,
@@ -2461,12 +2418,13 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
             ukf_scaler_path = ukf_model_path.parent / "scalers.pkl"
             
             n_init = ukf_n_init if ukf_n_init is not None else 0.7
+            dt_ukf = 0.024  # Dallas paper: sensor measurements updated every 24ms
             ukf = load_ukf(
                 model_path=str(ukf_model_path),
                 scaler_path=str(ukf_scaler_path),
                 vehicle_params=vehicle_params,
                 base_terrain_params=terrain_params,
-                dt=dt_mpc,
+                dt=dt_ukf,
                 n_init=n_init,
                 debug=debug,
             )
@@ -2487,6 +2445,7 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
                 'nn_scale': nn_scale,
                 'nn_sign': nn_sign,
                 'kappa_mode': kappa_mode,
+                'lateral_load_transfer': lateral_load_transfer,
                 'nn_model_path': str(mp_model_path) if controller_type == 'nn' else None,
                 'scaler_path': str(mp_scaler_path) if controller_type == 'nn' else None,
             }
@@ -2496,11 +2455,13 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
                                  multiprocess_mpc=multiprocess_mpc, mpc_config=mpc_config,
                                  measurement_noise=measurement_noise,
                                  steer_excite_amp=steer_excite_amp,
-                                 steer_excite_freq=steer_excite_freq)
+                                 steer_excite_freq=steer_excite_freq,
+                                 steer_excite_ramp=steer_excite_ramp,
+                                 step_size=step_size)
         driver.v_target = v_target
         
         if steer_excite_amp > 0:
-            print(f"  Steering excitation: amp={np.degrees(steer_excite_amp):.1f}°, freq={steer_excite_freq}Hz")
+            print(f"  Steering excitation: amp={np.degrees(steer_excite_amp):.1f}°, freq={steer_excite_freq}Hz, ramp={steer_excite_ramp}s")
         
         if multiprocess_mpc:
             print(f"  MPC worker PROCESS started (bypasses GIL)")
@@ -2530,9 +2491,6 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
             print(f"⚠ Visualization failed: {e}")
             vis = None
     
-    # Simulation step size: RigidTire + SCM is stable up to ~8ms
-    # Use larger steps for speed, smaller only if accuracy needed
-    step_size = 3e-3  # 3ms - balance speed and accuracy
     print(f"  Physics step: {step_size*1000:.0f}ms")
     
     # Total setup time
@@ -2559,9 +2517,14 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
     }
     last_timing_report = 0.0
     
-    # Frame skipping for visualization: render at ~30 FPS, not every physics step
-    # At 4ms step = 250 Hz physics, render every 8 steps = ~31 FPS
-    render_interval = 1.0 / 45.0  # Target 45 FPS (max for real-time at 3440x1440)
+    # Tire force logging (for Task 5: actual vs NN force comparison)
+    tire_force_history = []
+    force_log_interval = 10  # Log every N-th physics step to avoid overhead
+    force_log_counter = 0
+    
+    # Frame skipping for visualization: render at ~35 FPS, not every physics step
+    # At 3ms step = 333 Hz physics, render every ~10 steps = ~35 FPS
+    render_interval = 1.0 / 35.0  # Target 35 FPS
     last_render_time = -render_interval
     
     while True:
@@ -2619,6 +2582,24 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
         t0 = time.time()
         vehicle.Advance(step_size)
         timing_stats['vehicle_advance'] += time.time() - t0
+        
+        # Tire force logging (every N-th step)
+        force_log_counter += 1
+        if force_log_counter >= force_log_interval:
+            force_log_counter = 0
+            veh_obj = vehicle.GetVehicle()
+            record = {'time': time_chrono}
+            for axle_idx, axle_name in enumerate(['front', 'rear']):
+                for side_idx, side_name in [(veh.LEFT, 'left'), (veh.RIGHT, 'right')]:
+                    tire = veh_obj.GetTire(axle_idx, side_idx)
+                    tf = tire.ReportTireForce(terrain)
+                    key = f'{axle_name}_{side_name}'
+                    record[f'{key}_Fx'] = tf.force.x
+                    record[f'{key}_Fy'] = tf.force.y
+                    record[f'{key}_Fz'] = tf.force.z
+                    record[f'{key}_slip_angle'] = tire.GetSlipAngle()
+                    record[f'{key}_long_slip'] = tire.GetLongitudinalSlip()
+            tire_force_history.append(record)
         
         if vis is not None:
             t0 = time.time()
@@ -2749,6 +2730,8 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
                     y_ref = lane_offset * (1 - t * t * (3 - 2 * t))
                 else:
                     y_ref = 0.0
+            elif path_type == 'sinusoidal':
+                y_ref = sine_amplitude * np.sin(2 * np.pi * x / sine_wavelength)
             else:
                 y_ref = 0.0
             errors.append((y - y_ref)**2)
@@ -2781,6 +2764,111 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
     
     if vis is not None:
         vis.GetDevice().closeDevice()
+    
+    # Save tire force history if any data was collected
+    if tire_force_history:
+        import json
+        force_log_path = Path(__file__).parent.parent / "diagnostic_scripts" / "tire_force_log.json"
+        force_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(force_log_path, 'w') as f:
+            json.dump(tire_force_history, f)
+        print(f"  Tire force log saved: {force_log_path} ({len(tire_force_history)} records)")
+        
+        # Also save state history for comparison
+        if hasattr(driver, 'state_history') and driver.state_history:
+            state_log_path = force_log_path.with_name("state_history_log.json")
+            with open(state_log_path, 'w') as f:
+                json.dump(driver.state_history, f)
+            print(f"  State history saved: {state_log_path} ({len(driver.state_history)} records)")
+
+        # Generate Chrono-actual vs NN-predicted lateral force plot
+        if nn_casadi is not None and hasattr(driver, 'state_history') and driver.state_history:
+            try:
+                import matplotlib
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
+
+                forces = tire_force_history
+                states = driver.state_history
+
+                times_f = np.array([r['time'] for r in forces])
+                actual_Fy_front = np.array([r['front_left_Fy'] + r['front_right_Fy'] for r in forces])
+                actual_Fy_rear = np.array([r['rear_left_Fy'] + r['rear_right_Fy'] for r in forces])
+
+                # Interpolate state onto force time grid
+                times_s = np.array([s['time'] for s in states])
+                u_interp = np.interp(times_f, times_s, [s['u'] for s in states])
+                v_interp = np.interp(times_f, times_s, [s['v'] for s in states])
+                omega_interp = np.interp(times_f, times_s, [s['omega'] for s in states])
+                delta_interp = np.interp(times_f, times_s, [s['delta'] for s in states])
+                ax_interp = np.interp(times_f, times_s, [s.get('ax', 0.0) for s in states])
+
+                vp = vehicle_params
+                L = vp["Lf"] + vp["Lr"]
+                h_cg = vp.get("h_cg", 0.65)
+                T = vp.get("T", 1.8194)
+                M = vp["M"]
+
+                # Dynamic Fz with longitudinal + lateral load transfer
+                Fz_f_dyn = (M * 9.81 * vp["Lr"] - M * ax_interp * h_cg) / L / 2.0
+                Fz_r_dyn = (M * 9.81 * vp["Lf"] + M * ax_interp * h_cg) / L / 2.0
+                ay = u_interp * omega_interp
+                dFz = M * ay * h_cg / T / 2.0
+                Fz_f_outer = np.minimum(Fz_f_dyn + dFz, Fz_f_dyn * 1.9)
+                Fz_f_inner = np.maximum(Fz_f_dyn - dFz, Fz_f_dyn * 0.1)
+                Fz_r_outer = np.minimum(Fz_r_dyn + dFz, Fz_r_dyn * 1.9)
+                Fz_r_inner = np.maximum(Fz_r_dyn - dFz, Fz_r_dyn * 0.1)
+
+                # Bicycle-model slip angles
+                u_safe = np.maximum(np.abs(u_interp), 0.5)
+                alpha_f = delta_interp - np.arctan2(v_interp + vp["Lf"] * omega_interp, u_safe)
+                alpha_r = -np.arctan2(v_interp - vp["Lr"] * omega_interp, u_safe)
+
+                # NN predictions — match MPC mode (lateral load transfer or not)
+                nn_Fy_front = np.zeros(len(times_f))
+                nn_Fy_rear = np.zeros(len(times_f))
+                if lateral_load_transfer:
+                    for i in range(len(times_f)):
+                        _, Fy_fo = nn_casadi.predict_numeric(alpha_f[i], Fz_f_outer[i], u_safe[i])
+                        _, Fy_fi = nn_casadi.predict_numeric(alpha_f[i], Fz_f_inner[i], u_safe[i])
+                        _, Fy_ro = nn_casadi.predict_numeric(alpha_r[i], Fz_r_outer[i], u_safe[i])
+                        _, Fy_ri = nn_casadi.predict_numeric(alpha_r[i], Fz_r_inner[i], u_safe[i])
+                        nn_Fy_front[i] = -(Fy_fo + Fy_fi)
+                        nn_Fy_rear[i] = -(Fy_ro + Fy_ri)
+                else:
+                    for i in range(len(times_f)):
+                        _, Fy_fw = nn_casadi.predict_numeric(alpha_f[i], Fz_f_dyn[i], u_safe[i])
+                        _, Fy_rw = nn_casadi.predict_numeric(alpha_r[i], Fz_r_dyn[i], u_safe[i])
+                        nn_Fy_front[i] = -2.0 * Fy_fw
+                        nn_Fy_rear[i] = -2.0 * Fy_rw
+
+                fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+                for ax, name, actual, nn_pred in [
+                    (axes[0], 'Front Axle', actual_Fy_front, nn_Fy_front),
+                    (axes[1], 'Rear Axle', actual_Fy_rear, nn_Fy_rear),
+                ]:
+                    ax.plot(times_f, actual, 'b-', alpha=0.6, linewidth=0.8, label='Chrono actual')
+                    ax.plot(times_f, nn_pred, 'r-', alpha=0.8, linewidth=1.2, label='NN predicted')
+                    ax.set_ylabel('Fy (N)')
+                    ax.set_title(f'{name} Lateral Force')
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
+                axes[1].set_xlabel('Time (s)')
+
+                terrain_name = terrain_preset if terrain_preset else 'custom'
+                lt_label = 'lat-xfer' if lateral_load_transfer else 'no-lat-xfer'
+                fig.suptitle(f'Lateral Force: Chrono vs NN ({lt_label}) — {terrain_name} / {path_type}',
+                             fontsize=13, y=1.01)
+                plt.tight_layout()
+
+                plot_dir = Path(__file__).parent.parent / "diagnostic_scripts" / "plots"
+                plot_dir.mkdir(parents=True, exist_ok=True)
+                plot_path = plot_dir / f"Fy_actual_vs_nn_{terrain_name}_{path_type}.png"
+                plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+                plt.close()
+                print(f"  Force comparison plot saved: {plot_path}")
+            except Exception as e:
+                print(f"  Warning: Could not generate force comparison plot: {e}")
     
     return rms_error
 
@@ -2856,8 +2944,8 @@ if __name__ == "__main__":
     parser.add_argument('--no-vis', action='store_true', help='Disable visualization')
     parser.add_argument('--time', type=float, default=15.0, help='Simulation time (s)')
     parser.add_argument('--path', type=str, default='lane_change',
-                        choices=['lane_change', 'double_lane_change', 'slalom', 'sinusoidal'],
-                        help='Path type: lane_change (easy), double_lane_change (medium), slalom (hard)')
+                        choices=['lane_change', 'double_lane_change', 'sinusoidal'],
+                        help='Path type: lane_change (easy), double_lane_change (medium), sinusoidal')
     parser.add_argument('--mpc-only', action='store_true', help='Test MPC without Chrono')
     parser.add_argument('--debug', action='store_true', help='Print tire force debug info')
     parser.add_argument('--nn-scale', type=float, default=1.0, help='Scale factor for NN forces (default: 1.0; use 0.5 if NN overpredicts)')
@@ -2868,8 +2956,8 @@ if __name__ == "__main__":
     parser.add_argument('--terrain-config', type=str, default=None, 
                         help='Path to YAML terrain config file (overrides --terrain)')
     parser.add_argument('--terrain', type=str, default='sand',
-                        choices=['sand', 'clay', 'dirt', 'asphalt'],
-                        help='Terrain preset: sand (soft), clay, dirt, asphalt (hard)')
+                        choices=['sand', 'clay', 'dirt'],
+                        help='Terrain preset: sand (dry sand), clay (clayey soil), dirt (sandy loam)')
     parser.add_argument('--random-terrain', action='store_true', help='Random soil params within NN training range')
     parser.add_argument('--terrain-n', type=float, default=None, help='Override terrain sinkage exponent n (e.g. 1.0-1.4)')
     parser.add_argument('--ukf', action='store_true', help='Enable UKF terrain estimation (with --nn)')
@@ -2877,14 +2965,18 @@ if __name__ == "__main__":
     parser.add_argument('--ukf-version', type=str, default='v3', choices=['v2', 'v3'],
                         help='Estimator version: v2=actual UKF (7-state), v3=trajectory-matching grid search (default: v3)')
     parser.add_argument('--steer-excite', type=float, default=0.0,
-                        help='Sinusoidal steering excitation amplitude in radians (Dallas paper: ~0.5). Overlays on MPC control for better terrain observability.')
-    parser.add_argument('--steer-excite-freq', type=float, default=0.5,
-                        help='Steering excitation frequency in Hz (default: 0.5, i.e. 2 second period)')
+                        help='Sinusoidal steering excitation amplitude in radians (recommended: 0.35 ~20deg). Overlays on MPC control for better terrain observability.')
+    parser.add_argument('--steer-excite-freq', type=float, default=0.15,
+                        help='Steering excitation frequency in Hz (default: 0.15, i.e. 6.7s period — smooth transitions)')
+    parser.add_argument('--steer-excite-ramp', type=float, default=3.0,
+                        help='Ramp-up time for excitation envelope in seconds (default: 3.0)')
     parser.add_argument('--speed', type=float, default=5.0, help='Target speed (m/s)')
     parser.add_argument('--async', dest='async_mpc', action='store_true', 
                         help='Run MPC in a separate thread (non-blocking)')
     parser.add_argument('--multiprocess', action='store_true',
                         help='Run MPC in separate PROCESS (bypasses GIL, true parallelism)')
+    parser.add_argument('--no-lat-transfer', action='store_true',
+                        help='Disable lateral load transfer (2 NN calls/step instead of 4, faster)')
     parser.add_argument('--nn-model', type=str, default='v3',
                         help='NN model version directory (default: v3, fast and accurate)')
     
@@ -2918,27 +3010,22 @@ if __name__ == "__main__":
     
     terrain_config = None
     if args.terrain_n is not None:
-        # Use specified n with hard-terrain base params (works best with estimator)
-        # Note: Kphi=5e6 is outside NN training range [2e6-4e6] but produces
-        # dynamics that the estimator can track for n ≈ 1.0-1.1
-        terrain_config = {
-            'Kphi': 5.0e6,     # Hard terrain preset
-            'Kc': 3000,
-            'n': args.terrain_n,
-            'cohesion': 1000,
-            'friction_angle': 35.0,
-            'janosi_shear': 0.01,
-        }
-        print(f"Custom terrain: n={args.terrain_n:.2f} (hard-terrain base params)")
+        # Use specified n with sand base params from centralized presets
+        from param_consistency import get_terrain_preset
+        terrain_config = get_terrain_preset('sand')
+        terrain_config['n'] = args.terrain_n
+        print(f"Custom terrain: n={args.terrain_n:.2f} (sand base params)")
     elif args.random_terrain:
         import random
-        from param_consistency import TRAINING_RANGES as TR
+        from param_consistency import TRAINING_RANGES_V6 as TR
+        import math
         terrain_config = {
             'Kphi': random.uniform(*TR['bekker_Kphi']),
             'Kc': random.uniform(*TR['bekker_Kc']),
             'n': random.uniform(*TR['bekker_n']),
             'cohesion': random.uniform(*TR['mohr_cohesion']),
-            'friction_angle': random.uniform(*TR['mohr_friction']),
+            # mohr_friction in v6 ranges is radians; convert to degrees for terrain config
+            'friction_angle': math.degrees(random.uniform(*TR['mohr_friction'])),
             'janosi_shear': random.uniform(*TR['janosi_shear']),
         }
         print(f"Random terrain: Kphi={terrain_config['Kphi']:.2e}, Kc={terrain_config['Kc']:.0f}, "
@@ -3005,7 +3092,9 @@ if __name__ == "__main__":
                       manual_control=args.manual,
                       use_closest_point=not args.no_path_reindex,
                       steer_excite_amp=args.steer_excite,
-                      steer_excite_freq=args.steer_excite_freq)
+                      steer_excite_freq=args.steer_excite_freq,
+                      steer_excite_ramp=args.steer_excite_ramp,
+                      lateral_load_transfer=not args.no_lat_transfer)
     else:
         run_simulation('linear', visualize=visualize, sim_time=args.time, path_type=args.path, 
                       debug=args.debug, terrain_config=terrain_config, terrain_preset=terrain_preset,
@@ -3018,4 +3107,6 @@ if __name__ == "__main__":
                       manual_control=args.manual,
                       use_closest_point=not args.no_path_reindex,
                       steer_excite_amp=args.steer_excite,
-                      steer_excite_freq=args.steer_excite_freq)
+                      steer_excite_freq=args.steer_excite_freq,
+                      steer_excite_ramp=args.steer_excite_ramp,
+                      lateral_load_transfer=not args.no_lat_transfer)

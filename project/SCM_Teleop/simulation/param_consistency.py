@@ -2,51 +2,80 @@
 """
 Parameter consistency for SCM_Teleop: NN training, data collection, and MPC/demo.
 ================================================================================
-Single source of truth for:
-- NN training data ranges (must match collect_scm_data*.cpp LHS ranges)
+**THE** single source of truth for:
+- NN training data ranges (must match cpp_collect/collect_scm_data_fast.cpp ParameterRanges)
 - Vehicle parameters (must match MPC and Chrono HMMWV usage)
+- Terrain presets (all hardcoded terrain configs live here)
 - Terrain config validation (ensure demo soil is within training range)
+- Steering excitation defaults for terrain estimation
 
-Use this module to avoid mismatches that cause poor NN-MPC performance.
+Import from here instead of hardcoding values in individual files.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Dict, Any, List, Tuple
 
 # =============================================================================
-# NN training data ranges (must match cpp_collect/collect_scm_data.cpp and
-# collect_scm_data_fast.cpp ScaleSample / ParameterRanges)
-# EXPANDED to cover clay/sand/dirt terrains for UKF terrain estimation
+# NN training data ranges — v6 format (Dallas et al.)
+# Must match cpp_collect/collect_scm_data_fast.cpp ParameterRanges struct EXACTLY.
+# These are the ranges used during Latin Hypercube sampling for data collection.
 # =============================================================================
-TRAINING_RANGES = {
-    "vertical_load": (2500.0, 7500.0),       # N (per wheel)
-    "slip_angle": (-0.6, 0.6),               # rad (~ -34° to 34°, Dallas et al.)
-    "longitudinal_slip": (-0.12, 0.12),      # slip ratio
-    "camber_angle": (-0.087, 0.087),         # rad (~ -5° to 5°)
-    "velocity": (0.5, 10.5),                 # m/s
-    "bekker_Kphi": (0.5e6, 4.0e6),           # Pa - expanded for clay (692k)
-    "bekker_Kc": (0.0, 20000.0),             # Pa - expanded for clay (13.2k)
-    "bekker_n": (0.3, 1.5),                  # expanded for sand (1.38)
-    "mohr_cohesion": (0.0, 10000.0),         # Pa - expanded for clay (4140)
-    "mohr_friction": (10.0, 45.0),           # degrees - expanded for clay (13°)
-    "janosi_shear": (0.005, 0.06),           # m - slightly expanded
+TRAINING_RANGES_V6 = {
+    # Operating conditions — Dallas et al. Table I
+    "slip_ratio":     (-1.0, 1.0),            # dimensionless
+    "slip_angle":     (-0.6, 0.6),            # rad (~-34.4° to 34.4°)
+    "velocity":       (2.0, 10.0),            # m/s
+    "vertical_load":  (1500.0, 7500.0),       # N per wheel (HMMWV-adjusted from Dallas 500-5500)
+    "steering_rate":  (-0.56, 0.56),          # rad/s — critical transient input
+
+    # Bekker pressure-sinkage
+    "bekker_Kphi":    (0.5e6, 4.0e6),         # Pa — covers clay (692k) through stiff soils
+    "bekker_Kc":      (0.0, 20000.0),         # Pa — covers clay (13.2k)
+    "bekker_n":       (0.3, 1.3),             # dimensionless — Dallas et al. Table I
+
+    # Mohr-Coulomb
+    "mohr_cohesion":  (650.0, 20700.0),       # Pa — Dallas et al. Table I
+    "mohr_friction":  (0.105, 0.66),          # RADIANS in v6 CSV (6° to 37.8°)
+
+    # Janosi
+    "janosi_shear":   (0.01, 0.024),          # m — Dallas et al. Table I
 }
 
-# NN input column order (training and NNCasADi must match)
-NN_INPUT_ORDER = [
-    "Fz_or_vertical_load",
-    "slip_angle",
-    "longitudinal_slip",
-    "camber_angle",
-    "velocity",
-    "bekker_Kphi",
-    "bekker_Kc",
-    "bekker_n",
-    "mohr_cohesion",
-    "mohr_friction",
-    "janosi_shear",
+# Legacy v3 ranges (kept for backward compatibility with older models)
+TRAINING_RANGES_V3 = {
+    "vertical_load":      (2500.0, 7500.0),   # N
+    "slip_angle":         (-0.6, 0.6),        # rad
+    "longitudinal_slip":  (-0.12, 0.12),      # slip ratio (narrower in v3)
+    "camber_angle":       (-0.087, 0.087),    # rad (~-5° to 5°)
+    "velocity":           (0.5, 10.5),        # m/s
+    "bekker_Kphi":        (2.0e6, 4.0e6),     # Pa (narrower in v3)
+    "bekker_Kc":          (0.0, 10000.0),     # Pa
+    "bekker_n":           (1.0, 1.4),         # dimensionless (narrower in v3)
+    "mohr_cohesion":      (0.0, 5000.0),      # Pa
+    "mohr_friction":      (25.0, 45.0),       # DEGREES in v3 CSV
+    "janosi_shear":       (0.01, 0.05),       # m
+}
+
+# Default to v6 — all new code should use v6 format
+TRAINING_RANGES = TRAINING_RANGES_V6
+
+# NN input column order per format (training CSV and NNCasADi must match)
+NN_INPUT_ORDER_V6 = [
+    "slip_ratio", "slip_angle", "velocity", "vertical_load", "steering_rate",
+    "bekker_Kphi", "bekker_Kc", "bekker_n",
+    "mohr_cohesion", "mohr_friction", "janosi_shear",
 ]
+
+NN_INPUT_ORDER_V3 = [
+    "vertical_load", "slip_angle", "longitudinal_slip", "camber_angle", "velocity",
+    "bekker_Kphi", "bekker_Kc", "bekker_n",
+    "mohr_cohesion", "mohr_friction", "janosi_shear",
+]
+
+# Default to v6
+NN_INPUT_ORDER = NN_INPUT_ORDER_V6
 
 # Terrain keys as used in YAML/config vs internal (Kphi, Kc, n, c, phi, k)
 # setup_scm_terrain returns c, phi; YAML uses cohesion, friction_angle
@@ -64,17 +93,84 @@ TERRAIN_CONFIG_TO_NN = {
 
 # =============================================================================
 # Vehicle parameters: match Chrono HMMWV_Full and MPC bicycle model
-# HMMWV curb weight ~2700 kg; Lf/Lr from typical HMMWV wheelbase ~2.95 m
+# Queried from HMMWV_Full::GetVehicle() at runtime:
+#   Mass:  GetVehicle().GetMass() = 2573 kg
+#   Izz:   GetChassisBody().GetInertiaXX().z = 3570 kg*m^2
+#   Lf:    front spindle x (1.6486) - CG x (0.056) = 1.593 m
+#   Lr:    CG x (0.056) - rear spindle x (-1.6534) = 1.709 m
 # =============================================================================
 HMMWV_VEHICLE_PARAMS = {
-    "M": 2573.0,       # kg — GetVehicle().GetMass()
-    "Izz": 3570.0,     # kg*m^2 — GetChassisBody().GetInertiaXX().z
-    "Lf": 1.593,       # m — front spindle x (1.6486) minus CG x (0.056)
-    "Lr": 1.709,       # m — CG x (0.056) minus rear spindle x (-1.6534)
-    "L": 3.302,        # Lf + Lr
+    "M": 2573.0,       # kg
+    "Izz": 3570.0,     # kg*m^2
+    "Lf": 1.593,       # m — front axle to CG
+    "Lr": 1.709,       # m — CG to rear axle
+    "L": 3.302,        # m — Lf + Lr (wheelbase)
+    "h_cg": 0.65,      # m — CG height above ground (for longitudinal load transfer)
+    "T": 1.8194,        # m — track width (spindle-to-spindle, from Chrono HMMWV_Full)
 }
 
-# Per-wheel static load range check: 2700 * 9.81 / 4 ≈ 6622 N (within 2500–7500)
+# Tire radius (used in C++ collector for slip ratio computation)
+HMMWV_TIRE_RADIUS_M = 0.47
+
+# Max steering angle (from GetVehicle().GetMaxSteeringAngle())
+HMMWV_MAX_STEER_ANGLE_RAD = 0.528  # ~30.25°
+
+# =============================================================================
+# Terrain presets — THE canonical definitions.
+# All friction_angle values are in DEGREES (matches SCM SetSoilParameters API).
+# Literature values from Wong/Bekker terramechanics references.
+# =============================================================================
+TERRAIN_PRESETS = {
+    "clay": {
+        "Kphi": 692200,           # Pa/m^n — 692.2 kPa/m^n
+        "Kc": 13200,              # Pa/m^(n-1) — 13.2 kPa/m^(n-1)
+        "n": 0.5,
+        "cohesion": 4140,         # Pa — 4.14 kPa
+        "friction_angle": 13.0,   # deg
+        "janosi_shear": 0.01,     # m
+        "elastic_stiffness": 2e8,
+        "damping": 3e4,
+        "description": "Clayey soil (literature)",
+    },
+    "sand": {
+        "Kphi": 1523400,          # Pa/m^n — 1523.4 kPa/m^n
+        "Kc": 900,                # Pa/m^(n-1) — 0.9 kPa/m^(n-1)
+        "n": 1.1,
+        "cohesion": 1000,         # Pa — 1.0 kPa
+        "friction_angle": 30.0,
+        "janosi_shear": 0.025,    # m
+        "elastic_stiffness": 2e8,
+        "damping": 3e4,
+        "description": "Dry sand (literature)",
+    },
+    "dirt": {
+        "Kphi": 1515000,          # Pa/m^n — 1515.0 kPa/m^n
+        "Kc": 5300,               # Pa/m^(n-1) — 5.3 kPa/m^(n-1)
+        "n": 0.7,
+        "cohesion": 1700,         # Pa — 1.7 kPa
+        "friction_angle": 29.0,
+        "janosi_shear": 0.025,    # m
+        "elastic_stiffness": 2e8,
+        "damping": 3e4,
+        "description": "Sandy loam (literature)",
+    },
+}
+
+# =============================================================================
+# Steering excitation defaults for terrain estimation (Dallas Sec. V.A)
+# Dallas paper: "sinusoidal steering commands, steering fully in both directions"
+# =============================================================================
+EXCITATION_DEFAULTS = {
+    "steer_amp_rad": 0.35,       # ~20° — aggressive but won't spin out
+    "steer_freq_hz": 0.15,       # slow sinusoid (6.7s period) — smooth transitions
+    "steer_ramp_s": 3.0,         # half-cosine ramp-up over 3 seconds
+    "throttle": 0.5,             # base throttle (PI controller adjusts around this)
+}
+
+# =============================================================================
+# Helper functions
+# =============================================================================
+
 def get_static_fz_per_wheel(vehicle_params: Dict[str, float] | None = None) -> Tuple[float, float]:
     """Return (Fz_front_per_wheel, Fz_rear_per_wheel) in N for static weight distribution."""
     p = vehicle_params or HMMWV_VEHICLE_PARAMS
@@ -90,51 +186,87 @@ def get_vehicle_params_for_demo() -> Dict[str, float]:
     return dict(HMMWV_VEHICLE_PARAMS)
 
 
+def get_terrain_preset(name: str) -> Dict[str, Any]:
+    """Get a terrain preset dict by name. Raises KeyError if not found."""
+    if name not in TERRAIN_PRESETS:
+        raise KeyError(f"Unknown terrain preset '{name}'. "
+                       f"Available: {list(TERRAIN_PRESETS.keys())}")
+    return dict(TERRAIN_PRESETS[name])
+
+
+def terrain_preset_to_internal(preset: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert preset keys (cohesion, friction_angle, janosi_shear) to internal keys (c, phi, k).
+
+    The returned dict uses the short keys expected by NNCasADi and terrain estimators:
+    Kphi, Kc, n, c, phi (degrees), k.
+    """
+    return {
+        "Kphi": preset["Kphi"],
+        "Kc": preset["Kc"],
+        "n": preset["n"],
+        "c": preset["cohesion"],
+        "phi": preset["friction_angle"],        # degrees
+        "k": preset["janosi_shear"],
+    }
+
+
 # =============================================================================
 # Terrain validation: is a config within NN training range?
 # =============================================================================
 def check_terrain_in_training_range(
     terrain: Dict[str, Any],
     *,
+    model_format: str = "v6",
     keys: Dict[str, str] | None = None,
 ) -> Tuple[bool, List[str]]:
     """
     Check whether terrain parameters lie within the NN training data ranges.
-    
+
     Args:
-        terrain: Dict with keys Kphi, Kc, n, cohesion, friction_angle, janosi_shear
-                 (or bekker_Kphi, mohr_cohesion, mohr_friction, etc.)
-        keys: Optional mapping from terrain key to TRAINING_RANGES key.
-              Default uses TERRAIN_CONFIG_TO_NN.
-    
+        terrain: Dict with terrain keys (Kphi/Kc/n + cohesion/friction_angle/janosi_shear
+                 OR c/phi/k).
+        model_format: 'v6' (default) or 'v3'. Selects which TRAINING_RANGES to use.
+        keys: Optional mapping override.
+
     Returns:
         (all_ok, list of warning/error messages)
     """
+    ranges = TRAINING_RANGES_V6 if model_format == "v6" else TRAINING_RANGES_V3
     key_map = keys or TERRAIN_CONFIG_TO_NN
     msgs: List[str] = []
     all_ok = True
-    
+
     for config_key, range_key in key_map.items():
         if config_key not in terrain:
             continue
         val = float(terrain[config_key])
-        if range_key not in TRAINING_RANGES:
+        if range_key not in ranges:
             continue
-        lo, hi = TRAINING_RANGES[range_key]
+
+        # v6 stores mohr_friction in radians; terrain configs use degrees.
+        # Convert for comparison when checking v6 ranges.
+        if model_format == "v6" and range_key == "mohr_friction":
+            val = math.radians(val)
+
+        lo, hi = ranges[range_key]
         if val < lo or val > hi:
             all_ok = False
-            msgs.append(
-                f"{config_key}={val} is outside training range [{lo}, {hi}]"
-            )
-    
-    if all_ok and msgs:
-        msgs.clear()
+            if model_format == "v6" and range_key == "mohr_friction":
+                msgs.append(
+                    f"{config_key}={math.degrees(val):.1f}° ({val:.4f} rad) "
+                    f"is outside training range [{math.degrees(lo):.1f}°, {math.degrees(hi):.1f}°]"
+                )
+            else:
+                msgs.append(
+                    f"{config_key}={terrain[config_key]} is outside training range [{lo}, {hi}]"
+                )
+
     return all_ok, msgs
 
 
-def assert_terrain_in_training_range(terrain: Dict[str, Any]) -> None:
+def assert_terrain_in_training_range(terrain: Dict[str, Any], model_format: str = "v6") -> None:
     """Raise ValueError if any terrain parameter is outside training range."""
-    ok, msgs = check_terrain_in_training_range(terrain)
+    ok, msgs = check_terrain_in_training_range(terrain, model_format=model_format)
     if not ok:
         raise ValueError(
             "Terrain config outside NN training range:\n  " + "\n  ".join(msgs)
@@ -142,32 +274,29 @@ def assert_terrain_in_training_range(terrain: Dict[str, Any]) -> None:
 
 
 # =============================================================================
-# Tire / data collection constants (for reference)
+# Self-test
 # =============================================================================
-# HMMWV tire radius used in C++ collectors for slip ratio: omega = v/r * (1 + slip)
-HMMWV_TIRE_RADIUS_M = 0.47
-
-# Data collection CSV: slip_angle and camber_angle in RADIANS; mohr_friction in DEGREES
-# NNCasADi and MPC must pass phi (friction angle) in DEGREES to match training.
-
-
 if __name__ == "__main__":
-    # Quick validation of presets
-    soft = {"Kphi": 2.1e6, "Kc": 500, "n": 1.38, "cohesion": 300,
-            "friction_angle": 26, "janosi_shear": 0.048}
-    hard = {"Kphi": 5.0e6, "Kc": 3000, "n": 1.1, "cohesion": 1000,
-            "friction_angle": 35, "janosi_shear": 0.01}
-    mean = {"Kphi": 3.0e6, "Kc": 5000, "n": 1.2, "cohesion": 2500,
-            "friction_angle": 35, "janosi_shear": 0.03}
-    
-    for name, t in [("soft_soil", soft), ("hard_soil", hard), ("training_mean", mean)]:
-        ok, msgs = check_terrain_in_training_range(t)
-        print(f"{name}: {'OK' if ok else 'OUT OF RANGE'}")
+    print("=" * 60)
+    print("Parameter Consistency Validation")
+    print("=" * 60)
+
+    # Check all presets against v6 training ranges
+    for name, preset in TERRAIN_PRESETS.items():
+        ok, msgs = check_terrain_in_training_range(preset, model_format="v6")
+        status = "OK" if ok else "OUT OF RANGE"
+        print(f"\n  {name}: {status}")
         for m in msgs:
-            print(f"  - {m}")
-    
+            print(f"    - {m}")
+
+    # Vehicle static load check
     Fz_f, Fz_r = get_static_fz_per_wheel()
-    print(f"\nStatic Fz per wheel (HMMWV): front={Fz_f:.0f} N, rear={Fz_r:.0f} N")
-    print(f"Training load range: {TRAINING_RANGES['vertical_load']} N")
-    in_range = TRAINING_RANGES["vertical_load"][0] <= Fz_f <= TRAINING_RANGES["vertical_load"][1]
-    print(f"Within training range: {in_range}")
+    print(f"\nHMMWV static Fz per wheel: front={Fz_f:.0f} N, rear={Fz_r:.0f} N")
+    lo, hi = TRAINING_RANGES_V6["vertical_load"]
+    print(f"v6 training load range: [{lo:.0f}, {hi:.0f}] N")
+    in_range = lo <= Fz_f <= hi and lo <= Fz_r <= hi
+    print(f"Both within range: {in_range}")
+
+    # Quick NN input order check
+    print(f"\nv6 NN inputs ({len(NN_INPUT_ORDER_V6)}): {NN_INPUT_ORDER_V6}")
+    print(f"v3 NN inputs ({len(NN_INPUT_ORDER_V3)}): {NN_INPUT_ORDER_V3}")

@@ -35,7 +35,7 @@ PATH_CONFIGS = [
 ]
 
 # Base terrain types (excludes soft/hard aliases)
-TERRAIN_TYPES = ['sand', 'clay', 'dirt', 'asphalt']
+TERRAIN_TYPES = ['sand', 'clay', 'dirt']
 
 
 def validate_path_configs():
@@ -632,8 +632,8 @@ def main():
                         help='Run sequentially instead of parallel (slower but allows --vis)')
     parser.add_argument('--vis', action='store_true',
                         help='Enable visualization (requires --sequential)')
-    parser.add_argument('--noise', action='store_true',
-                        help='Enable measurement noise (x,y:1.2m, psi,omega:0.0175rad, u,v:0.25m/s)')
+    parser.add_argument('--no-noise', action='store_true',
+                        help='Disable measurement noise (on by default: x,y:1.2m, psi,omega:0.0175rad, u,v:0.25m/s)')
     parser.add_argument('--no-reindex', action='store_true',
                         help='Disable closest-point path re-indexing (test old x-projection method)')
     parser.add_argument('--output', type=str, default='benchmark_results.png',
@@ -660,8 +660,8 @@ def main():
         print("Warning: --vis requires --sequential. Enabling sequential mode.")
         args.sequential = True
     
-    # Measurement noise (True enables default noise levels)
-    measurement_noise = True if args.noise else None
+    # Measurement noise ON by default (use --no-noise to disable)
+    measurement_noise = None if args.no_noise else True
     
     # Path re-indexing (default ON, --no-reindex disables)
     use_closest_point = not args.no_reindex

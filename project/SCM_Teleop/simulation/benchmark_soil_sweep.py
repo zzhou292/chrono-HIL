@@ -13,17 +13,19 @@ from datetime import datetime
 
 sys.path.append(str(Path(__file__).parent))
 
-from param_consistency import TRAINING_RANGES
+from param_consistency import TRAINING_RANGES_V6 as TRAINING_RANGES
 
 
 def sample_terrain(rng):
     """Sample terrain parameters uniformly from the NN training range."""
+    import math
     return {
         'Kphi':  rng.uniform(*TRAINING_RANGES['bekker_Kphi']),
         'Kc':    rng.uniform(*TRAINING_RANGES['bekker_Kc']),
         'n':     rng.uniform(*TRAINING_RANGES['bekker_n']),
         'cohesion':       rng.uniform(*TRAINING_RANGES['mohr_cohesion']),
-        'friction_angle': rng.uniform(*TRAINING_RANGES['mohr_friction']),
+        # v6 mohr_friction is in radians; convert to degrees for terrain config
+        'friction_angle': math.degrees(rng.uniform(*TRAINING_RANGES['mohr_friction'])),
         'janosi_shear':   rng.uniform(*TRAINING_RANGES['janosi_shear']),
     }
 
@@ -74,7 +76,7 @@ def main():
     parser = argparse.ArgumentParser(description='Soil parameter sweep benchmark')
     parser.add_argument('--n-soils', type=int, default=8, help='Number of random soils')
     parser.add_argument('--path', type=str, default='lane_change',
-                        choices=['lane_change', 'double_lane_change', 'slalom'])
+                        choices=['lane_change', 'double_lane_change', 'sinusoidal'])
     parser.add_argument('--time', type=float, default=12.0, help='Sim time per run (s)')
     parser.add_argument('--speed', type=float, default=5.0, help='Target speed (m/s)')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')

@@ -1,6 +1,7 @@
 # Terrain Configurations
 
 YAML configuration files for SCM deformable terrain parameters.
+NOTE: elastic_stiffness and damping are not part of original Bekker-Wong/Janosi parameters. These are Chrono specific and are held constant.
 
 ## Available Presets
 
@@ -9,7 +10,6 @@ YAML configuration files for SCM deformable terrain parameters.
 | `sand.yaml` | Dry sand - low cohesion, high friction, deep sinkage |
 | `clay.yaml` | Wet clay - high cohesion, low friction, sticky |
 | `dirt.yaml` | Packed dirt/gravel - moderate parameters |
-| `asphalt.yaml` | Hard paved surface - minimal sinkage |
 | `training_mean.yaml` | Mean of NN training range - best for NN accuracy |
 
 ## Usage

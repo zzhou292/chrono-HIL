@@ -280,7 +280,8 @@ class DallasMPC:
     """
     
     def __init__(self, nn_casadi=None, params=None, dt=0.1, N=20,
-                 nn_scale=1.0, nn_sign=1, kappa_mode='zero'):
+                 nn_scale=1.0, nn_sign=1, kappa_mode='zero',
+                 lateral_load_transfer=True):
         """
         Initialize Dallas MPC.
         
@@ -293,15 +294,22 @@ class DallasMPC:
             nn_sign: Deprecated, kept for backward compat (sign verified empirically as -1)
             kappa_mode: 'zero' = assume pure lateral slip (no combined slip),
                         'approx' = approximate kappa from ax/(mu*g)
+            lateral_load_transfer: If True, use 4 NN calls per step (outer+inner per axle).
+                                   If False, use 2 NN calls with mean Fz per axle (faster).
         """
         self.kappa_mode = kappa_mode
         self.nn_scale = nn_scale
-        # Vehicle parameters — queried from Chrono HMMWV_Full() at init
-        self.M = 2573.0      # kg — GetVehicle().GetMass()
-        self.Izz = 3570.0    # kg*m^2 — GetChassisBody().GetInertiaXX().z
-        self.Lf = 1.593      # m — front axle x (1.6486) minus CG x (0.056)
-        self.Lr = 1.709      # m — CG x (0.056) minus rear axle x (-1.6534)
-        self.L = self.Lf + self.Lr  # 3.302 m
+        self.lateral_load_transfer = lateral_load_transfer
+        # Vehicle parameters — defaults from param_consistency.HMMWV_VEHICLE_PARAMS
+        # Overridden by `params` dict if provided.
+        from param_consistency import HMMWV_VEHICLE_PARAMS as _defaults
+        self.M = _defaults["M"]
+        self.Izz = _defaults["Izz"]
+        self.Lf = _defaults["Lf"]
+        self.Lr = _defaults["Lr"]
+        self.L = _defaults["L"]
+        self.h_cg = _defaults.get("h_cg", 0.65)  # CG height for load transfer
+        self.T = _defaults.get("T", 1.8194)  # Track width for lateral load transfer
         
         # Tire parameters (used if no NN) - legacy, kept for compatibility
         self.Cf = 80000.0    # Front cornering stiffness (N/rad)
@@ -333,8 +341,8 @@ class DallasMPC:
         self.u_max = 20.0     # Max longitudinal speed (m/s)
         self.delta_min = -0.528 # Min steering angle (rad) — GetVehicle().GetMaxSteeringAngle()
         self.delta_max = 0.528  # Max steering angle (rad)
-        self.ax_min = -3.5    # Min acceleration (m/s^2)
-        self.ax_max = 3.5     # Max acceleration (m/s^2) - increased for deformable terrain headroom
+        self.ax_min = -2.6    # Min acceleration (m/s^2) — Dallas paper value
+        self.ax_max = 1.9     # Max acceleration (m/s^2) — Dallas paper value
         
         # Control constraints 
         self.delta_dot_min = -0.5  # Min steering rate (rad/s)
@@ -398,16 +406,28 @@ class DallasMPC:
         alpha_f = delta - ca.atan2(v + Lf * omega, u_safe)
         alpha_r = -ca.atan2(v - Lr * omega, u_safe)
         
-        # Normal forces: static weight distribution (no load transfer).
-        # Training data used MEASURED Fz from the rig; here we use predicted Fz for the whole horizon.
-        # Optional: pass measured Fz at initial step when available from the vehicle (see NMPC_AND_DATA_VERIFICATION.md).
-        Fz_f_axle = M * 9.81 * Lr / (Lf + Lr)
-        Fz_r_axle = M * 9.81 * Lf / (Lf + Lr)
+        # Normal forces with longitudinal load transfer (Dallas paper Sec. V results
+        # reference load shift during braking/acceleration).
+        # Fz_f = (M*g*Lr - M*ax*h_cg) / L,  Fz_r = (M*g*Lf + M*ax*h_cg) / L
+        h_cg = self.h_cg
+        Fz_f_axle = (M * 9.81 * Lr - M * ax * h_cg) / (Lf + Lr)
+        Fz_r_axle = (M * 9.81 * Lf + M * ax * h_cg) / (Lf + Lr)
         
-        # Per-wheel loads (2 wheels per axle) — same as data collection (single wheel, then ×2 for axle)
-        Fz_f_wheel = Fz_f_axle / 2.0
-        Fz_r_wheel = Fz_r_axle / 2.0
-        
+        # Per-wheel mean loads
+        Fz_f_mean = Fz_f_axle / 2.0
+        Fz_r_mean = Fz_r_axle / 2.0
+
+        # Lateral load transfer: ΔFz = M * ay * h_cg / T, where ay ≈ u * omega
+        T = self.T
+        ay = u * omega  # centripetal acceleration (good approx for steady-state cornering)
+        dFz_f = M * ay * h_cg / T / 2.0  # per-wheel delta (divide by 2: half to each axle)
+        dFz_r = M * ay * h_cg / T / 2.0
+        # Clamp to avoid negative Fz (wheel lift) — keep at least 10% of mean
+        Fz_f_outer = ca.fmin(Fz_f_mean + dFz_f, Fz_f_mean * 1.9)
+        Fz_f_inner = ca.fmax(Fz_f_mean - dFz_f, Fz_f_mean * 0.1)
+        Fz_r_outer = ca.fmin(Fz_r_mean + dFz_r, Fz_r_mean * 1.9)
+        Fz_r_inner = ca.fmax(Fz_r_mean - dFz_r, Fz_r_mean * 0.1)
+
         # Longitudinal slip ratio (kappa).
         # The NN was trained with true kinematic kappa from the tire rig, but the
         # bicycle model has no wheel speed state. Two options:
@@ -426,21 +446,25 @@ class DallasMPC:
             # Dallas paper: steering rate affects tire forces, but it should be measured,
             # not derived from control. Passing delta_dot causes optimization instability
             # due to high sensitivity (~1000N per rad/s).
-            Fxf_wheel, Fyf_wheel = self.nn_casadi.predict(alpha_f, Fz_f_wheel, u_safe, kappa, n_terrain_sym, sr_meas_sym)
-            Fxr_wheel, Fyr_wheel = self.nn_casadi.predict(alpha_r, Fz_r_wheel, u_safe, kappa, n_terrain_sym, sr_meas_sym)
-            # -2.0: verified empirically — NN outputs tire-frame Fy (positive alpha →
-            # negative Fy), body-frame needs opposite sign, and ×2 sums both wheels.
-            Fyf = -2.0 * self.nn_scale * Fyf_wheel
-            Fyr = -2.0 * self.nn_scale * Fyr_wheel
+            if self.lateral_load_transfer:
+                # 4 NN calls: evaluate inner + outer wheels per axle
+                Fxf_o, Fyf_o = self.nn_casadi.predict(alpha_f, Fz_f_outer, u_safe, kappa, n_terrain_sym, sr_meas_sym)
+                Fxf_i, Fyf_i = self.nn_casadi.predict(alpha_f, Fz_f_inner, u_safe, kappa, n_terrain_sym, sr_meas_sym)
+                Fxr_o, Fyr_o = self.nn_casadi.predict(alpha_r, Fz_r_outer, u_safe, kappa, n_terrain_sym, sr_meas_sym)
+                Fxr_i, Fyr_i = self.nn_casadi.predict(alpha_r, Fz_r_inner, u_safe, kappa, n_terrain_sym, sr_meas_sym)
+                Fyf = -self.nn_scale * (Fyf_o + Fyf_i)
+                Fyr = -self.nn_scale * (Fyr_o + Fyr_i)
+            else:
+                # 2 NN calls: use mean Fz per axle (faster, no lateral load transfer)
+                Fxf_w, Fyf_w = self.nn_casadi.predict(alpha_f, Fz_f_mean, u_safe, kappa, n_terrain_sym, sr_meas_sym)
+                Fxr_w, Fyr_w = self.nn_casadi.predict(alpha_r, Fz_r_mean, u_safe, kappa, n_terrain_sym, sr_meas_sym)
+                Fyf = -self.nn_scale * 2.0 * Fyf_w
+                Fyr = -self.nn_scale * 2.0 * Fyr_w
             
-            # For traction constraint: query Fx at REFERENCE slip ratio (not kappa=0).
-            # At kappa=0, NN predicts rolling resistance (negative Fx), not traction capacity.
-            # Use kappa=0.08 (near peak traction) to get available driving force.
-            # Use steering_rate=0.0 for traction (doesn't depend on steering dynamics).
+            # Traction constraint: use mean Fz (lateral transfer doesn't affect total)
             kappa_ref = 0.08
-            Fxf_traction, _ = self.nn_casadi.predict(0.0, Fz_f_wheel, u_safe, kappa_ref, n_terrain_sym, 0.0)
-            Fxr_traction, _ = self.nn_casadi.predict(0.0, Fz_r_wheel, u_safe, kappa_ref, n_terrain_sym, 0.0)
-            # Total available traction force (×2 for both wheels per axle)
+            Fxf_traction, _ = self.nn_casadi.predict(0.0, Fz_f_mean, u_safe, kappa_ref, n_terrain_sym, 0.0)
+            Fxr_traction, _ = self.nn_casadi.predict(0.0, Fz_r_mean, u_safe, kappa_ref, n_terrain_sym, 0.0)
             Fx_traction = 2.0 * (Fxf_traction + Fxr_traction)
         else:
             # Pacejka Magic Formula tire model (simplified)
@@ -741,14 +765,23 @@ class DallasMPC:
             self.X_warm = Z_opt
             self.U_warm = U_opt
             
+            # Store diagnostics (accessible after solve)
+            self.last_cost = float(sol['f'])
+            stats = self.solver.stats()
+            self.last_solver_status = stats.get('return_status', 'unknown')
+            self.last_iter_count = stats.get('iter_count', -1)
+
             # Return first control: steering rate and jerk
             return U_opt[0, 0], U_opt[1, 0], Z_opt, U_opt
-            
+
         except Exception as e:
             print(f"MPC solve failed: {e}")
+            self.last_cost = float('nan')
+            self.last_solver_status = f'EXCEPTION: {e}'
+            self.last_iter_count = -1
             return 0.0, 0.0, None, None
-    
-    def get_steering_and_throttle(self, delta_dot, Jx, current_delta, current_ax, dt):
+
+    def integrate_controls(self, delta_dot, Jx, current_delta, current_ax, dt):
         """
         Convert rate/jerk controls to actual steering and throttle commands.
         

@@ -1,15 +1,15 @@
-# SCM Terrain Configuration: Clay
-# ================================
-# Wet clay - high cohesion, low friction, sticky behavior
+# SCM Terrain Configuration: Clayey Soil
+# ========================================
+# Literature values for clayey soil (Wong, Bekker)
 
 # Bekker pressure-sinkage parameters
-Kphi: 692200          # Friction modulus (Pa/m^n)
-Kc: 13200             # Cohesion modulus (Pa/m^(n-1))
-n: 0.5                # Sinkage exponent (lower = less exponential sinkage)
+Kphi: 692200          # Friction modulus (Pa/m^n) — 692.2 kPa/m^n
+Kc: 13200             # Cohesion modulus (Pa/m^(n-1)) — 13.2 kPa/m^(n-1)
+n: 0.5                # Sinkage exponent
 
 # Mohr-Coulomb shear strength parameters
-cohesion: 4140        # Soil cohesion (Pa) - high for clay
-friction_angle: 13    # Internal friction angle (degrees) - low for wet clay
+cohesion: 4140        # Soil cohesion (Pa) — 4.14 kPa
+friction_angle: 13    # Internal friction angle (degrees)
 
 # Janosi shear displacement parameter
 janosi_shear: 0.01    # Shear displacement coefficient (m)
