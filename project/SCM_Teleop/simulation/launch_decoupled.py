@@ -8,13 +8,25 @@ Starts two processes:
   2. mpc_controller_node.py — MPC controller (receives state, publishes commands)
 
 Usage:
-    # Default (NN model, sand terrain, lane change)
+    # Default (NN model, sand terrain, lane change, irrlicht visualization)
     python launch_decoupled.py
 
     # Sinusoidal path on clay, headless, 30s
     python launch_decoupled.py --path sinusoidal --terrain clay --no-vis --time 30
 
-    # Pacejka model, no delay compensation
+    # Sensor-only visualization (driver POV camera)
+    python launch_decoupled.py --vis-mode sensor
+
+    # Both irrlicht chase cam and sensor driver POV camera
+    python launch_decoupled.py --vis-mode both
+
+    # TMeasy MPC tire model
+    python launch_decoupled.py --model tmeasy
+
+    # Pacejka MPC tire model with sensor visualization
+    python launch_decoupled.py --model pacejka --vis-mode sensor
+
+    # Simple linear tire model, no delay compensation
     python launch_decoupled.py --model linear --no-delay-comp
 
     # Remote controller (sim on this machine, controller elsewhere)
@@ -38,6 +50,10 @@ def main():
 Examples:
   %(prog)s --path sinusoidal --terrain clay --time 20
   %(prog)s --model linear --no-vis
+  %(prog)s --model pacejka                   # Pacejka Magic Formula MPC
+  %(prog)s --model tmeasy                    # TMeasy MPC tire model
+  %(prog)s --vis-mode sensor                 # Driver POV via Chrono Sensor
+  %(prog)s --vis-mode both                   # Irrlicht + Sensor simultaneously
   %(prog)s --sim-only          # Only start the sim node (controller started separately)
   %(prog)s --ctrl-only         # Only start the controller node
 """,
@@ -45,19 +61,28 @@ Examples:
 
     # Shared args
     p.add_argument("--time", type=float, default=15.0, help="Simulation time (s)")
-    p.add_argument("--speed", type=float, default=5.0, help="Target speed (m/s)")
+    p.add_argument("--speed", type=float, default=8.0, help="Target speed (m/s)")
     p.add_argument("--terrain", default="sand", choices=["sand", "clay", "dirt"])
     p.add_argument("--terrain-config", type=str, default=None)
     p.add_argument("--path", default="lane_change",
                    choices=["lane_change", "double_lane_change", "sinusoidal"])
     p.add_argument("--sine-amplitude", type=float, default=2.0)
     p.add_argument("--sine-wavelength", type=float, default=30.0)
-    p.add_argument("--no-vis", action="store_true", help="Headless simulation")
+    p.add_argument("--lead-in", type=float, default=0.0,
+                   help="Straight lead-in distance (m) before path starts")
+    p.add_argument("--no-vis", action="store_true", help="Headless simulation (alias for --vis-mode none)")
+    p.add_argument("--vis-mode", default=None,
+                   choices=["irrlicht", "sensor", "both", "none"],
+                   help="Visualization mode: irrlicht, sensor (driver POV), both, or none")
+    p.add_argument("--no-rt",  action="store_true",
+                   help="Disable real-time pacing (fast-forward; breaks MPC sync)")
     p.add_argument("--no-noise", action="store_true",
                    help="Disable sensor noise (noise ON by default)")
 
     # Controller-specific
-    p.add_argument("--model", default="nn", choices=["nn", "linear"])
+    p.add_argument("--model", default="nn",
+                   choices=["nn", "pacejka", "tmeasy", "linear"],
+                   help="MPC tire model: nn, pacejka (Magic Formula), tmeasy, or linear")
     p.add_argument("--nn-model", default="v6")
     p.add_argument("--kappa", default="zero", choices=["zero", "approx"])
     p.add_argument("--no-lat-transfer", action="store_true")
@@ -95,6 +120,11 @@ Examples:
 
     script_dir = Path(__file__).parent
 
+    # Resolve vis mode: --no-vis is shorthand for --vis-mode none
+    vis_mode = args.vis_mode
+    if vis_mode is None:
+        vis_mode = 'none' if args.no_vis else 'irrlicht'
+
     # ---- Build command lines ----
     sim_cmd = [
         sys.executable, str(script_dir / "chrono_sim_node.py"),
@@ -104,6 +134,7 @@ Examples:
         "--path", args.path,
         "--sine-amplitude", str(args.sine_amplitude),
         "--sine-wavelength", str(args.sine_wavelength),
+        "--lead-in", str(args.lead_in),
         "--sim-port", str(args.sim_port),
         "--ctrl-host", args.ctrl_host,
         "--ctrl-port", str(args.ctrl_port),
@@ -112,9 +143,10 @@ Examples:
         "--bump-octaves", str(args.bump_octaves),
         "--bump-seed", str(args.bump_seed),
         "--bump-max-slope", str(args.bump_max_slope),
+        "--vis-mode", vis_mode,
     ]
-    if args.no_vis:
-        sim_cmd.append("--no-vis")
+    if args.no_rt:
+        sim_cmd.append("--no-rt")
     if args.no_noise:
         sim_cmd.append("--no-noise")
     if args.terrain_config:
@@ -131,6 +163,7 @@ Examples:
         "--time", str(args.time),
         "--sine-amplitude", str(args.sine_amplitude),
         "--sine-wavelength", str(args.sine_wavelength),
+        "--lead-in", str(args.lead_in),
         "--sim-host", "localhost",
         "--sim-port", str(args.sim_port),
         "--ctrl-port", str(args.ctrl_port),

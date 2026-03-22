@@ -87,7 +87,20 @@ class NNCasADi:
             layer_ids = sorted(set(int(k.split('.')[1]) for k in state_dict if k.startswith('layers.')))
             hidden_sizes = [state_dict[f'layers.{i}.weight'].shape[0] for i in layer_ids[:-1]]
         
-        self.pytorch_model = TerrainNN(input_size=11, output_size=2, hidden_sizes=hidden_sizes)
+        # Detect temporal model
+        self.temporal_K = 1
+        if isinstance(checkpoint, dict) and 'temporal_K' in checkpoint:
+            self.temporal_K = checkpoint['temporal_K']
+        
+        input_size = self.temporal_K * 5 + 6 if self.temporal_K > 1 else 11
+        
+        if self.temporal_K > 1:
+            from train_temporal_nn import TerrainTemporalNN
+            self.pytorch_model = TerrainTemporalNN(
+                input_size=input_size, output_size=2,
+                hidden_sizes=hidden_sizes, temporal_K=self.temporal_K)
+        else:
+            self.pytorch_model = TerrainNN(input_size=input_size, output_size=2, hidden_sizes=hidden_sizes)
         self.pytorch_model.load_state_dict(state_dict)
         self.pytorch_model.eval()
         
@@ -108,7 +121,10 @@ class NNCasADi:
         self.y_mean = self.scaler_y.mean_
         self.y_scale = self.scaler_y.scale_
         
-        print(f"✓ Loaded NN model: {len(self.weights)} parameter tensors")
+        if self.temporal_K > 1:
+            print(f"✓ Loaded TEMPORAL NN model: K={self.temporal_K}, input_dim={input_size}, {len(self.weights)} param tensors")
+        else:
+            print(f"✓ Loaded NN model: {len(self.weights)} parameter tensors")
     
     def _build_casadi_function(self):
         """Build CasADi function replicating the NN forward pass (variable depth).
@@ -120,6 +136,11 @@ class NNCasADi:
         - v6 (Dallas format): slip_ratio, slip_angle, velocity, Fz, steering_rate, Kphi, Kc, n, c, phi(rad), k
         - v3 (legacy format): Fz, slip_angle, slip_ratio, camber, velocity, Kphi, Kc, n, c, phi(deg), k
         """
+        # Dispatch to temporal builder if temporal model
+        if self.temporal_K > 1:
+            self._build_temporal_casadi_functions()
+            return
+        
         alpha = ca.SX.sym('alpha')
         Fz = ca.SX.sym('Fz')
         u = ca.SX.sym('u')
@@ -264,6 +285,86 @@ class NNCasADi:
         )
         print(f"  + Batched NN function built (max {MAX_BATCH} simultaneous evaluations)")
 
+    def _build_temporal_casadi_functions(self):
+        """Build CasADi functions for temporal NN (K > 1).
+
+        The temporal model input is [current_ops(5), history((K-1)*5), terrain(6)].
+        History is a frozen vector of per-tire operating conditions from recent
+        observations, passed as an NLP parameter.
+        """
+        K = self.temporal_K
+        terrain = self.terrain_params
+        phi_rad = np.radians(terrain['phi'])
+        self.model_format = 'v6_temporal'
+        self.n_nominal = terrain['n']
+
+        layer_indices = sorted(set(
+            int(k.split('.')[1]) for k in self.weights if k.startswith('layers.')
+        ))
+        n_params = sum(W.shape[0]*W.shape[1] for k, W in self.weights.items() if 'weight' in k)
+
+        # --- Scalar function (for debug / single eval) ---
+        alpha = ca.SX.sym('alpha')
+        Fz_sym = ca.SX.sym('Fz')
+        u_sym = ca.SX.sym('u')
+        kap = ca.SX.sym('kappa')
+        n_t = ca.SX.sym('n_terrain')
+        sr = ca.SX.sym('sr')
+        hist = ca.SX.sym('hist', (K - 1) * 5)
+
+        current_ops = ca.vertcat(kap, alpha, u_sym, Fz_sym, sr)
+        terrain_vec = ca.vertcat(
+            terrain['Kphi'], terrain['Kc'], n_t,
+            terrain['c'], phi_rad, terrain['k'])
+        x_in = ca.vertcat(current_ops, hist, terrain_vec)
+
+        x_s = (x_in - self.X_mean.reshape(-1, 1)) / self.X_scale.reshape(-1, 1)
+        h = x_s
+        for i in layer_indices:
+            W = self.weights[f'layers.{i}.weight']
+            b = self.weights[f'layers.{i}.bias']
+            h = ca.mtimes(W, h) + b.reshape(-1, 1)
+            if i < layer_indices[-1]:
+                h = ca.tanh(h)
+        y_out = h * self.y_scale.reshape(-1, 1) + self.y_mean.reshape(-1, 1)
+
+        self.predict_tire_force = ca.Function(
+            'nn_tire_temporal',
+            [alpha, Fz_sym, u_sym, kap, n_t, sr, hist],
+            [y_out[0], y_out[1]],
+            ['alpha', 'Fz', 'u', 'kappa', 'n_terrain', 'steering_rate', 'history'],
+            ['Fx', 'Fy'])
+
+        # --- Batched function: accepts pre-built [input_dim x 8] matrix ---
+        MAX_BATCH = 8
+        input_dim = K * 5 + 6
+        X_batch = ca.SX.sym('X_batch', input_dim, MAX_BATCH)
+
+        X_mean = ca.DM(self.X_mean.reshape(-1, 1))
+        X_scale = ca.DM(self.X_scale.reshape(-1, 1))
+        H = (X_batch - ca.repmat(X_mean, 1, MAX_BATCH)) / ca.repmat(X_scale, 1, MAX_BATCH)
+        for i in layer_indices:
+            W = ca.DM(self.weights[f'layers.{i}.weight'])
+            b = ca.DM(self.weights[f'layers.{i}.bias']).reshape((-1, 1))
+            H = ca.mtimes(W, H) + ca.repmat(b, 1, MAX_BATCH)
+            if i < layer_indices[-1]:
+                H = ca.tanh(H)
+        y_mean = ca.DM(self.y_mean.reshape(-1, 1))
+        y_scale = ca.DM(self.y_scale.reshape(-1, 1))
+        Y = H * ca.repmat(y_scale, 1, MAX_BATCH) + ca.repmat(y_mean, 1, MAX_BATCH)
+
+        self._BATCH = MAX_BATCH
+        self.predict_batch_temporal = ca.Function(
+            'nn_tire_batch_temporal',
+            [X_batch], [Y[0, :].T, Y[1, :].T],
+            ['X_batch'], ['Fxs', 'Fys'])
+
+        # Keep predict_batch as alias for non-temporal code that checks _BATCH
+        self.predict_batch = None  # not valid for temporal; use predict_batch_temporal
+
+        print(f"✓ Built temporal CasADi NN (K={K}, {len(layer_indices)} layers, {n_params} weight params)")
+        print(f"  + Batched temporal function: [{input_dim}×{MAX_BATCH}] input matrix")
+
     # Convenience: scalar predict unchanged
     def predict(self, alpha, Fz, u, kappa=0.0, n_terrain=None, steering_rate=0.0):
         """
@@ -280,14 +381,24 @@ class NNCasADi:
         """
         if n_terrain is None:
             n_terrain = self.n_nominal
-        Fx, Fy = self.predict_tire_force(alpha, Fz, u, kappa, n_terrain, steering_rate)
+        if self.temporal_K > 1:
+            import numpy as np
+            hist = np.zeros((self.temporal_K - 1) * 5)
+            Fx, Fy = self.predict_tire_force(alpha, Fz, u, kappa, n_terrain, steering_rate, hist)
+        else:
+            Fx, Fy = self.predict_tire_force(alpha, Fz, u, kappa, n_terrain, steering_rate)
         return Fx, Fy
     
     def predict_numeric(self, alpha, Fz, u, kappa=0.0, n_terrain=None, steering_rate=0.0):
         """Evaluate numerically and return float values (for debugging)."""
         if n_terrain is None:
             n_terrain = self.n_nominal
-        Fx, Fy = self.predict_tire_force(alpha, Fz, u, kappa, n_terrain, steering_rate)
+        if self.temporal_K > 1:
+            import numpy as np
+            hist = np.zeros((self.temporal_K - 1) * 5)
+            Fx, Fy = self.predict_tire_force(alpha, Fz, u, kappa, n_terrain, steering_rate, hist)
+        else:
+            Fx, Fy = self.predict_tire_force(alpha, Fz, u, kappa, n_terrain, steering_rate)
         return float(Fx), float(Fy)
     
     def debug_compare(self, alpha_deg, Fz, u, kappa=0.0, Cf=80000, Cr=80000):
@@ -353,7 +464,7 @@ class DallasMPC:
     
     def __init__(self, nn_casadi=None, params=None, dt=0.1, N=20,
                  nn_scale=1.0, nn_sign=1, kappa_mode='zero',
-                 lateral_load_transfer=True):
+                 lateral_load_transfer=True, tire_model='nn'):
         """
         Initialize Dallas MPC.
         
@@ -368,7 +479,10 @@ class DallasMPC:
                         'approx' = approximate kappa from ax/(mu*g)
             lateral_load_transfer: If True, use 4 NN calls per step (outer+inner per axle).
                                    If False, use 2 NN calls with mean Fz per axle (faster).
+            tire_model: 'nn', 'pacejka', 'tmeasy', or 'linear'. When 'nn', uses nn_casadi.
+                        Falls back to pacejka if nn_casadi is None and tire_model is 'nn'.
         """
+        self.tire_model = tire_model
         self.kappa_mode = kappa_mode
         self.nn_scale = nn_scale
         self.lateral_load_transfer = lateral_load_transfer
@@ -396,6 +510,17 @@ class DallasMPC:
         self.pacejka_E = 0.376  # Curvature factor (PEY1 from .tir file)
         self.mu = 0.74          # Peak friction (PDY1 from .tir file)
         
+        # TMeasy lateral force parameters (per tire, from HMMWV data)
+        # Degressive model: linear region → parabolic transition → saturation plateau
+        # dFy0: initial slope (cornering stiffness) at α=0 (N/rad per tire)
+        # Fym: peak lateral force per tire (N)
+        # alpha_m: slip angle at peak force (rad)
+        # alpha_slide: slip angle at full sliding (rad)
+        self.tmeasy_dFy0 = 40000.0   # ~Cf/2 per tire
+        self.tmeasy_Fym = 4000.0     # peak Fy per tire ≈ μ * Fz_per_tire
+        self.tmeasy_alpha_m = 0.12   # ~7 degrees
+        self.tmeasy_alpha_slide = 0.25  # ~14 degrees
+        
         if params:
             self.__dict__.update(params)
         
@@ -406,7 +531,7 @@ class DallasMPC:
         
         # Neural network tire model
         self.nn_casadi = nn_casadi
-        self.use_nn = nn_casadi is not None
+        self.use_nn = nn_casadi is not None and self.tire_model == 'nn'
         
         # State constraints (from Dallas paper)
         self.u_min = 0.5      # Min longitudinal speed (m/s)
@@ -418,7 +543,7 @@ class DallasMPC:
         
         # Control constraints 
         self.delta_dot_min = -0.5  # Min steering rate (rad/s)
-        self.delta_dot_max = 0.7   # Max steering rate (rad/s)
+        self.delta_dot_max = 0.5   # Max steering rate (rad/s)
         self.Jx_min = -3.0         # Min jerk (m/s^3)
         self.Jx_max = 3.0          # Max jerk (m/s^3)
         
@@ -430,9 +555,9 @@ class DallasMPC:
         self.w_terminal = 50.0    # Terminal distance weight
         
         # Additional state tracking weights
-        self.w_lateral = 100.0   # Lateral error weight (prevent right-swing)
+        self.w_lateral = 120.0   # Lateral error weight (prevent right-swing)
         self.w_heading = 20.0     # Heading error weight
-        self.w_speed = 20.0       # Speed tracking weight (high to overcome unmodeled SCM drag)
+        self.w_speed = 10.0       # Speed tracking weight (high to overcome unmodeled SCM drag)
         self.w_continuity = 100.0 # Inter-solve continuity (penalise U[:,0] jump from last solve)
         
         # Last applied control (for continuity penalty)
@@ -457,6 +582,14 @@ class DallasMPC:
         zeta = ca.SX.sym('zeta', nu)  # Control
         n_terrain_sym = ca.SX.sym('n_terrain')  # Sinkage exponent (from UKF or nominal)
         sr_meas_sym = ca.SX.sym('sr_meas')  # Measured steering rate (rad/s) - from vehicle, not control
+        
+        # Temporal NN: frozen per-tire history from recent observations
+        K_t = getattr(self.nn_casadi, 'temporal_K', 1) if self.nn_casadi else 1
+        self._temporal_mode = (K_t > 1)
+        hist_dim = (K_t - 1) * 5 if self._temporal_mode else 0
+        if self._temporal_mode:
+            hist_front_sym = ca.SX.sym('hist_front', hist_dim)
+            hist_rear_sym = ca.SX.sym('hist_rear', hist_dim)
         
         # Extract states
         x_pos = z[0]     # Global x
@@ -517,8 +650,66 @@ class DallasMPC:
         else:
             kappa = 0.0
         
-        if self.use_nn and self.nn_casadi is not None:
-            # ---- Batched NN evaluation ----
+        if self.use_nn and self.nn_casadi is not None and self._temporal_mode:
+            # ---- Temporal batched NN evaluation ----
+            # Construct [input_dim x 8] matrix with current ops + frozen history + terrain.
+            B = self.nn_casadi._BATCH  # 8
+            terrain = self.nn_casadi.terrain_params
+            phi_rad = np.radians(terrain['phi'])
+            t_vec = ca.vertcat(terrain['Kphi'], terrain['Kc'], n_terrain_sym,
+                               terrain['c'], phi_rad, terrain['k'])
+            # Use κ=0.15 (near peak traction for soft terrain) so the NN
+            # returns a positive net Fx.  At κ=0.08 the NN predicts negative
+            # net force for sand (resistance > gross traction) which would
+            # force ax ≤ 0 and prevent the vehicle from reaching target speed.
+            kappa_ref = 0.15
+
+            if self.lateral_load_transfer:
+                slot_ops = [
+                    ca.vertcat(kappa, alpha_f, u_safe, Fz_f_outer, sr_meas_sym),
+                    ca.vertcat(kappa, alpha_f, u_safe, Fz_f_inner, sr_meas_sym),
+                    ca.vertcat(kappa, alpha_r, u_safe, Fz_r_outer, sr_meas_sym),
+                    ca.vertcat(kappa, alpha_r, u_safe, Fz_r_inner, sr_meas_sym),
+                    ca.vertcat(kappa_ref, 0.0, u_safe, Fz_f_mean, 0.0),
+                    ca.vertcat(kappa_ref, 0.0, u_safe, Fz_r_mean, 0.0),
+                    ca.vertcat(kappa_ref, 0.0, u_safe, Fz_f_mean, 0.0),
+                    ca.vertcat(kappa_ref, 0.0, u_safe, Fz_r_mean, 0.0),
+                ]
+                slot_hist = [hist_front_sym, hist_front_sym,
+                             hist_rear_sym,  hist_rear_sym,
+                             hist_front_sym, hist_rear_sym,
+                             hist_front_sym, hist_rear_sym]
+            else:
+                slot_ops = [
+                    ca.vertcat(kappa, alpha_f, u_safe, Fz_f_mean, sr_meas_sym),
+                    ca.vertcat(kappa, alpha_r, u_safe, Fz_r_mean, sr_meas_sym),
+                    ca.vertcat(kappa_ref, 0.0, u_safe, Fz_f_mean, 0.0),
+                    ca.vertcat(kappa_ref, 0.0, u_safe, Fz_r_mean, 0.0),
+                    ca.vertcat(0.0, 0.0, u_safe, Fz_f_mean, 0.0),
+                    ca.vertcat(0.0, 0.0, u_safe, Fz_r_mean, 0.0),
+                    ca.vertcat(0.0, 0.0, u_safe, Fz_f_mean, 0.0),
+                    ca.vertcat(0.0, 0.0, u_safe, Fz_r_mean, 0.0),
+                ]
+                slot_hist = [hist_front_sym, hist_rear_sym,
+                             hist_front_sym, hist_rear_sym,
+                             hist_front_sym, hist_rear_sym,
+                             hist_front_sym, hist_rear_sym]
+
+            cols = [ca.vertcat(slot_ops[i], slot_hist[i], t_vec) for i in range(B)]
+            X_batch = ca.horzcat(*cols)
+            Fxs_all, Fys_all = self.nn_casadi.predict_batch_temporal(X_batch)
+
+            if self.lateral_load_transfer:
+                Fyf = -self.nn_scale * (Fys_all[0] + Fys_all[1])
+                Fyr = -self.nn_scale * (Fys_all[2] + Fys_all[3])
+                Fx_traction = 2.0 * (Fxs_all[4] + Fxs_all[5])
+            else:
+                Fyf = -self.nn_scale * 2.0 * Fys_all[0]
+                Fyr = -self.nn_scale * 2.0 * Fys_all[1]
+                Fx_traction = 2.0 * (Fxs_all[2] + Fxs_all[3])
+
+        elif self.use_nn and self.nn_casadi is not None:
+            # ---- Batched NN evaluation (non-temporal) ----
             # Pack all tire queries into a single batched call (6 lateral + 2 traction = 8).
             # This creates one symbolic sub-graph instead of 8 separate ones,
             # massively reducing the CasADi NLP size and Jacobian cost.
@@ -526,9 +717,9 @@ class DallasMPC:
 
             if self.lateral_load_transfer:
                 # Slots 0-3: lateral forces (outer/inner x front/rear)
-                # Slots 4-5: traction constraint (front/rear at kappa=0.08, alpha=0)
+                # Slots 4-5: traction constraint (front/rear at kappa=0.15, alpha=0)
                 # Slots 6-7: unused padding (repeat slot 4/5 values)
-                kappa_ref = 0.08
+                kappa_ref = 0.15
                 a_vec = ca.vertcat(alpha_f, alpha_f, alpha_r, alpha_r,
                                    0.0, 0.0, 0.0, 0.0)
                 fz_vec = ca.vertcat(Fz_f_outer, Fz_f_inner, Fz_r_outer, Fz_r_inner,
@@ -548,7 +739,7 @@ class DallasMPC:
                 Fx_traction = 2.0 * (Fxs_all[4] + Fxs_all[5])    # front+rear traction
             else:
                 # 2 lateral + 2 traction = 4 real, padded to 8
-                kappa_ref = 0.08
+                kappa_ref = 0.15
                 a_vec = ca.vertcat(alpha_f, alpha_r, 0.0, 0.0,
                                    0.0, 0.0, 0.0, 0.0)
                 fz_vec = ca.vertcat(Fz_f_mean, Fz_r_mean, Fz_f_mean, Fz_r_mean,
@@ -567,23 +758,72 @@ class DallasMPC:
                 Fyr = -self.nn_scale * 2.0 * Fys_all[1]
                 Fx_traction = 2.0 * (Fxs_all[2] + Fxs_all[3])
         else:
-            # Pacejka Magic Formula tire model (simplified)
-            # Fy = D * sin(C * atan(B*α - E*(B*α - atan(B*α))))
-            B = self.pacejka_B
-            C = self.pacejka_C
-            E = self.pacejka_E
-            
-            # Peak force D = μ * Fz (with combined slip reduction)
+            # ---- Analytical tire models (no NN) ----
+            # Combined slip reduction factor (kappa influence on lateral force)
             lateral_limit_factor = ca.sqrt(ca.fmax(1.0 - (kappa/0.2)**2, 0.1))
-            Df = self.mu * Fz_f_axle * lateral_limit_factor
-            Dr = self.mu * Fz_r_axle * lateral_limit_factor
-            
-            # Magic formula: Fy = D * sin(C * atan(B*α - E*(B*α - atan(B*α))))
-            Baf = B * alpha_f
-            Bar = B * alpha_r
-            Fyf = Df * ca.sin(C * ca.atan(Baf - E * (Baf - ca.atan(Baf))))
-            Fyr = Dr * ca.sin(C * ca.atan(Bar - E * (Bar - ca.atan(Bar))))
-            
+
+            if self.tire_model == 'pacejka':
+                # Pacejka Magic Formula tire model (simplified)
+                # Fy = D * sin(C * atan(B*α - E*(B*α - atan(B*α))))
+                Bp = self.pacejka_B
+                Cp = self.pacejka_C
+                Ep = self.pacejka_E
+
+                # Peak force D = μ * Fz (with combined slip reduction)
+                Df = self.mu * Fz_f_axle * lateral_limit_factor
+                Dr = self.mu * Fz_r_axle * lateral_limit_factor
+
+                # Magic formula: Fy = D * sin(C * atan(B*α - E*(B*α - atan(B*α))))
+                Baf = Bp * alpha_f
+                Bar = Bp * alpha_r
+                Fyf = Df * ca.sin(Cp * ca.atan(Baf - Ep * (Baf - ca.atan(Baf))))
+                Fyr = Dr * ca.sin(Cp * ca.atan(Bar - Ep * (Bar - ca.atan(Bar))))
+
+            elif self.tire_model == 'tmeasy':
+                # TMeasy degressive lateral force model
+                # Three regions: linear (|α| < α_m), parabolic transition (α_m..α_slide),
+                # and sliding (|α| > α_slide) where Fy ≈ Fym (saturated).
+                dFy0 = self.tmeasy_dFy0
+                Fym = self.tmeasy_Fym
+                am = self.tmeasy_alpha_m
+                a_slide = self.tmeasy_alpha_slide
+
+                # Scale peak force with vertical load ratio and combined slip
+                Fz_nom = (Fz_f_axle + Fz_r_axle) / 2.0
+                Fz_f_ratio = Fz_f_axle / (2.0 * ca.fmax(Fz_nom, 1.0))
+                Fz_r_ratio = Fz_r_axle / (2.0 * ca.fmax(Fz_nom, 1.0))
+
+                # TMeasy formula: smooth approximation using CasADi
+                # For |α| <= α_m: Fy = dFy0 * α (linear)
+                # For α_m < |α| < α_slide: parabolic transition to peak
+                # Use smooth blend:  Fy = Fym * sin(π/2 * α / α_m) clipped at Fym
+                #   (good approximation of the degressive characteristic)
+                Fyf_per_tire = Fym * Fz_f_ratio * lateral_limit_factor * ca.sin(
+                    ca.fmin(1.5707963 * alpha_f / ca.fmax(am, 1e-4), 1.5707963))
+                Fyr_per_tire = Fym * Fz_r_ratio * lateral_limit_factor * ca.sin(
+                    ca.fmin(1.5707963 * alpha_r / ca.fmax(am, 1e-4), 1.5707963))
+                # Axle total (2 tires per axle)
+                Fyf = 2.0 * Fyf_per_tire
+                Fyr = 2.0 * Fyr_per_tire
+
+            elif self.tire_model == 'linear':
+                # Simple linear cornering stiffness: Fy = -C * α
+                # (No saturation — valid for small slip angles only)
+                Fyf = -self.Cf * alpha_f * lateral_limit_factor
+                Fyr = -self.Cr * alpha_r * lateral_limit_factor
+
+            else:
+                # Default fallback: Pacejka
+                Bp = self.pacejka_B
+                Cp = self.pacejka_C
+                Ep = self.pacejka_E
+                Df = self.mu * Fz_f_axle * lateral_limit_factor
+                Dr = self.mu * Fz_r_axle * lateral_limit_factor
+                Baf = Bp * alpha_f
+                Bar = Bp * alpha_r
+                Fyf = Df * ca.sin(Cp * ca.atan(Baf - Ep * (Baf - ca.atan(Baf))))
+                Fyr = Dr * ca.sin(Cp * ca.atan(Bar - Ep * (Bar - ca.atan(Bar))))
+
             # Available traction from friction limit
             Fx_traction = self.mu * (Fz_f_axle + Fz_r_axle)
         
@@ -609,10 +849,17 @@ class DallasMPC:
             Jx
         )
         
-        self.f = ca.Function('f', [z, zeta, n_terrain_sym, sr_meas_sym],
-                             [zdot, Fx_traction],
-                             ['z', 'zeta', 'n_terrain', 'sr_meas'],
-                             ['zdot', 'Fx_traction'])
+        if self._temporal_mode:
+            self.f = ca.Function('f',
+                [z, zeta, n_terrain_sym, sr_meas_sym, hist_front_sym, hist_rear_sym],
+                [zdot, Fx_traction],
+                ['z', 'zeta', 'n_terrain', 'sr_meas', 'hist_front', 'hist_rear'],
+                ['zdot', 'Fx_traction'])
+        else:
+            self.f = ca.Function('f', [z, zeta, n_terrain_sym, sr_meas_sym],
+                                 [zdot, Fx_traction],
+                                 ['z', 'zeta', 'n_terrain', 'sr_meas'],
+                                 ['zdot', 'Fx_traction'])
         
         # =====================================================================
         # Optimal Control Problem Setup
@@ -624,10 +871,12 @@ class DallasMPC:
         
         # Parameters: [z0(8), x_goal, y_goal, psi_goal, v_target, n_terrain, sr_meas,
         #              last_u0(2), w_cont(1),
+        #              hist_front(hist_dim), hist_rear(hist_dim),   <-- temporal only
         #              x_ref(N+1), y_ref(N+1), psi_ref(N+1), v_ref(N+1)]
         n_ref = 4 * (N + 1)  # Reference trajectory
         n_cont = nu + 1       # last_u0(2) + w_cont(1)
-        P = ca.SX.sym('P', nx + 6 + n_cont + n_ref)
+        n_hist = 2 * hist_dim  # front + rear history (0 if non-temporal)
+        P = ca.SX.sym('P', nx + 6 + n_cont + n_hist + n_ref)
         
         # Extract parameters
         z0 = P[:nx]
@@ -640,7 +889,12 @@ class DallasMPC:
         last_u0 = P[nx + 6 : nx + 6 + nu]  # Last applied control
         w_cont = P[nx + 6 + nu]             # Continuity weight (0 on first solve)
         
-        ref_start = nx + 6 + n_cont
+        hist_base = nx + 6 + n_cont
+        if self._temporal_mode:
+            hist_front_param = P[hist_base : hist_base + hist_dim]
+            hist_rear_param = P[hist_base + hist_dim : hist_base + 2 * hist_dim]
+        
+        ref_start = hist_base + n_hist
         
         # =====================================================================
         # Cost Function - Dallas Eq. (11)
@@ -677,17 +931,15 @@ class DallasMPC:
             cost += (self.w_delta_dot * delta_dot_k**2 + self.w_Jx * Jx_k**2) * dt
             
             # -----------------------------------------------------------------
-            # Path tracking: CROSS-TRACK (y) error only.
-            # Do NOT penalize x-error: the speed cost handles longitudinal progress.
-            # Including (x_k - x_ref_k)^2 causes countersteering when the MPC
-            # accelerates past the reference, since x-error dominates and y
-            # becomes unconstrained.
+            # Path tracking: true cross-track error (perpendicular to path tangent).
+            # e_ct = (y-y_ref)*cos(psi_ref) - (x-x_ref)*sin(psi_ref)
+            # This is correct even when the path heading is non-zero.
             # -----------------------------------------------------------------
-            crosstrack_error = (y_k - y_ref_k)**2
+            e_ct = (y_k - y_ref_k) * ca.cos(psi_ref_k) - (x_k - x_ref_k) * ca.sin(psi_ref_k)
             heading_error = (psi_k - psi_ref_k)**2
             speed_error = (u_k - v_ref_k)**2
             
-            cost += self.w_lateral * crosstrack_error
+            cost += self.w_lateral * e_ct**2
             cost += self.w_heading * heading_error
             cost += self.w_speed * speed_error
             
@@ -705,7 +957,12 @@ class DallasMPC:
             # NN (smooth tanh) works well with Euler; Pacejka's sharper
             # sin(C*atan(..)) nonlinearities need RK4 at dt=0.1s.
             # -----------------------------------------------------------------
-            if self.use_nn:
+            if self._temporal_mode:
+                # Temporal NN with Euler integration — history frozen across horizon
+                zdot, Fx_avail = self.f(zk, uk, n_terrain_param, sr_meas_param,
+                                         hist_front_param, hist_rear_param)
+                z_next = zk + dt * zdot
+            elif self.use_nn:
                 # Euler integration (1 f-eval per step)
                 zdot, Fx_avail = self.f(zk, uk, n_terrain_param, sr_meas_param)
                 z_next = zk + dt * zdot
@@ -744,15 +1001,13 @@ class DallasMPC:
         cost += w_cont * ca.dot(U[:, 0] - last_u0, U[:, 0] - last_u0)
         
         # =====================================================================
-        # Terminal Cost: cross-track + heading only (no x-distance).
-        # Euclidean distance to (x_goal, y_goal) caused countersteering because
-        # the vehicle overshoots x_goal when accelerating, making the x-component
-        # dominate and the y-component irrelevant.
+        # Terminal Cost: true cross-track + heading (no x-distance).
         # =====================================================================
         z_final = Z[:, N]
         x_f, y_f, psi_f = z_final[0], z_final[1], z_final[2]
+        e_ct_terminal = (y_f - y_goal) * ca.cos(psi_goal) - (x_f - x_goal) * ca.sin(psi_goal)
         
-        cost += self.w_terminal * (y_f - y_goal)**2
+        cost += self.w_terminal * e_ct_terminal**2
         cost += self.w_terminal * 0.5 * (psi_f - psi_goal)**2
         
         # =====================================================================
@@ -774,8 +1029,11 @@ class DallasMPC:
             'ipopt.warm_start_init_point': 'yes',
             'ipopt.tol': 1e-3,
             'ipopt.acceptable_tol': 5e-3,
-            'ipopt.acceptable_iter': 5,
+            'ipopt.acceptable_iter': 3,    # accept after 3 consecutive "good enough" iters
             'ipopt.mu_strategy': 'adaptive',
+            # Better scaling helps when variables span very different magnitudes
+            # (position in metres vs slip angles in milliradians)
+            'ipopt.nlp_scaling_method': 'gradient-based',
         }
         
         self.solver = ca.nlpsol('dallas_mpc', 'ipopt', nlp, opts)
@@ -823,7 +1081,8 @@ class DallasMPC:
         print(f"  Traction constraints: {n_ineq} inequality constraints (Fx-limited ax)")
     
     def solve(self, z0, x_ref, y_ref, psi_ref, v_ref, x_goal, y_goal, psi_goal,
-              n_terrain=None, sr_meas=0.0):
+              n_terrain=None, sr_meas=0.0,
+              hist_front=None, hist_rear=None):
         """
         Solve the MPC optimal control problem.
         
@@ -834,6 +1093,11 @@ class DallasMPC:
             n_terrain: Sinkage exponent from UKF (None => use nominal from terrain config)
             sr_meas: Measured steering rate (rad/s). This is the observed/filtered steering
                      rate from the vehicle, NOT the MPC control input. Default 0.0.
+            hist_front: Flattened per-tire history for front tires [(K-1)*5 array].
+                        Order per timestep: [kappa, alpha_f, u, Fz_f, sr].
+                        Timesteps ordered most-recent-first: [t-1, t-2, ...].
+                        Only used when the NN is temporal (K > 1).
+            hist_rear: Same for rear tires.
             
         Returns:
             delta_dot: Steering rate command
@@ -848,7 +1112,7 @@ class DallasMPC:
         
         # Build parameter vector:
         # [z0, x_goal, y_goal, psi_goal, v_target, n_terrain, sr_meas,
-        #  last_u0(2), w_cont(1), refs...]
+        #  last_u0(2), w_cont(1), [hist_front, hist_rear], refs...]
         p = list(z0)
         p += [x_goal, y_goal, psi_goal, v_ref[0], n_terrain, sr_meas]
         
@@ -858,16 +1122,67 @@ class DallasMPC:
         else:
             p += [0.0, 0.0, 0.0]  # No penalty on first solve
         
+        # Temporal history (frozen per-tire obs for the whole horizon)
+        if self._temporal_mode:
+            K_t = self.nn_casadi.temporal_K
+            hdim = (K_t - 1) * 5
+            if hist_front is None:
+                hist_front = np.zeros(hdim)
+            if hist_rear is None:
+                hist_rear = np.zeros(hdim)
+            p += list(hist_front[:hdim]) + list(hist_rear[:hdim])
+        
         for k in range(N + 1):
             p += [x_ref[k], y_ref[k], psi_ref[k], v_ref[k]]
         
         # Initial guess with warm start
         if self.X_warm is not None:
+            # Shift previous solution by one step (standard MPC warm start)
             Z_init = np.hstack([self.X_warm[:, 1:], self.X_warm[:, -1:]])
             U_init = np.hstack([self.U_warm[:, 1:], self.U_warm[:, -1:]])
         else:
-            Z_init = np.tile(np.array(z0).reshape(-1, 1), (1, N + 1))
+            # Cold start: forward-simulate along the reference instead of just
+            # tiling z0.  This gives IPOPT a near-feasible starting trajectory
+            # and is critical for Pacejka which uses the more expensive RK4
+            # integrator — tiling z0 (vehicle stationary) leaves IPOPT with an
+            # infeasible initial point during the speed-up transient, causing
+            # Maximum_Iterations_Exceeded on every solve until the first success.
+            _dt = self.dt
+            Z_init = np.zeros((nx, N + 1))
             U_init = np.zeros((nu, N))
+            Z_init[:, 0] = np.array(z0)
+            for k in range(N):
+                zk   = Z_init[:, k]
+                xk, yk, psik, uk, vk, omegak, deltak, axk = zk[:8]
+
+                # Proportional heading + lateral correction toward reference
+                psi_err    = np.arctan2(np.sin(psi_ref[k] - psik),
+                                        np.cos(psi_ref[k] - psik))
+                y_err      = (y_ref[k] - yk) * np.cos(psik) - (x_ref[k] - xk) * np.sin(psik)
+                delta_des  = float(np.clip(psi_err * 1.5 + y_err * 0.2, -0.5, 0.5))
+                ddot_k     = float(np.clip((delta_des - deltak) / _dt, -0.5, 0.5))
+
+                # Proportional acceleration toward target speed
+                spd_err    = float(v_ref[k]) - uk
+                ax_des     = float(np.clip(spd_err * 0.8, -3.0, 3.0))
+                jerk_k     = float(np.clip((ax_des - axk) / _dt, -5.0, 5.0))
+
+                U_init[:, k] = [ddot_k, jerk_k]
+
+                # Simple kinematic rollout (bicycle model, no tire forces)
+                ax_next    = float(np.clip(axk + _dt * jerk_k,    -3.0, 3.0))
+                delta_next = float(np.clip(deltak + _dt * ddot_k, -0.5, 0.5))
+                u_next     = max(0.1, uk + _dt * axk)
+                v_next     = vk * 0.9   # gentle damping
+                omega_next = omegak * 0.9
+                psi_next   = psik + _dt * omegak
+                x_next     = xk + _dt * (uk * np.cos(psik) - vk * np.sin(psik))
+                y_next     = yk + _dt * (uk * np.sin(psik) + vk * np.cos(psik))
+
+                Z_init[:8, k + 1] = [x_next, y_next, psi_next, u_next,
+                                     v_next, omega_next, delta_next, ax_next]
+                if nx > 8:
+                    Z_init[8:, k + 1] = zk[8:]  # pass through any extra states
         
         x0_nlp = np.concatenate([Z_init.flatten('F'), U_init.flatten('F')])
         
@@ -891,8 +1206,20 @@ class DallasMPC:
             self.last_solver_status = stats.get('return_status', 'unknown')
             self.last_iter_count = stats.get('iter_count', -1)
 
-            # Save warm start only from converged solves
-            if self.last_solver_status in ('Solve_Succeeded', 'Solved_To_Acceptable_Level'):
+            # Selective warm start:
+            # - Converged / acceptable: always save — best possible warm start.
+            # - Maximum_Iterations_Exceeded: save — the iterate is still interior-
+            #   feasible (IPOPT just ran out of budget), so it's a good starting
+            #   point for the next solve and cures the cold-start cascade.
+            # - Infeasible_Problem_Detected / Restoration_Failed: do NOT save —
+            #   the iterate is far outside the feasible set; feeding it back
+            #   immediately re-triggers infeasibility on the next call.
+            _save_statuses = {
+                'Solve_Succeeded',
+                'Solved_To_Acceptable_Level',
+                'Maximum_Iterations_Exceeded',
+            }
+            if self.last_solver_status in _save_statuses:
                 self.X_warm = Z_opt
                 self.U_warm = U_opt
 

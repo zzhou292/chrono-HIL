@@ -20,9 +20,9 @@ from functools import partial
 from pathlib import Path
 from datetime import datetime
 
-# Import run_simulation from the main demo script
-from dallas_chrono_demo import (run_simulation, TERRAIN_PRESETS, 
-                                 check_sinusoidal_feasibility, suggest_feasible_sine_params)
+import subprocess
+import re
+import os
 
 
 # Path configurations: (name, path_type, sine_amplitude, sine_wavelength)
@@ -38,6 +38,25 @@ PATH_CONFIGS = [
 
 # Base terrain types (excludes soft/hard aliases)
 TERRAIN_TYPES = ['sand', 'clay', 'dirt']
+
+# Base port for ZMQ sockets (avoids default 5555/5556)
+_BASE_PORT = 15600
+
+
+def check_sinusoidal_feasibility(amplitude, wavelength, wheelbase=3.302, delta_max=0.5):
+    """Check if a sinusoidal path is feasible for the vehicle."""
+    kappa_max = amplitude * (2 * np.pi / wavelength) ** 2
+    required_R = 1.0 / kappa_max if kappa_max > 0 else float('inf')
+    achievable_R = wheelbase / np.tan(delta_max)
+    margin_pct = (required_R - achievable_R) / achievable_R * 100
+    return required_R >= achievable_R, required_R, achievable_R, margin_pct
+
+
+def suggest_feasible_sine_params(target_amplitude=2.0, wheelbase=3.302, delta_max=0.5, margin=1.2):
+    """Suggest a feasible wavelength for a given amplitude."""
+    achievable_R = wheelbase / np.tan(delta_max)
+    min_R = achievable_R * margin
+    return 2 * np.pi * np.sqrt(target_amplitude * min_R)
 
 
 def validate_path_configs():
@@ -71,85 +90,124 @@ def validate_path_configs():
     return all_feasible
 
 
+_port_queue = None
+
+
+def _init_worker(port_queue):
+    """Initialize worker process with shared port queue."""
+    global _port_queue
+    _port_queue = port_queue
+
+
+def _parse_rms(stdout_text):
+    """Parse cross-track RMS from controller stdout."""
+    match = re.search(r"Cross-track error\s+..\s+RMS:\s+([0-9.]+)\s+m", stdout_text)
+    return float(match.group(1)) if match else None
+
+
+def _run_subprocess_pair(model, terrain, path_type, sine_amp, sine_wl,
+                         sim_time, v_target, no_noise, no_path_reindex,
+                         rms_time_start, sim_port, ctrl_port, visualize=False):
+    """Launch a sim + controller subprocess pair and return the RMS error."""
+    script_dir = Path(__file__).parent
+
+    sim_cmd = [
+        sys.executable, str(script_dir / "chrono_sim_node.py"),
+        "--time", str(sim_time),
+        "--speed", str(v_target),
+        "--terrain", terrain,
+        "--path", path_type,
+        "--sine-amplitude", str(sine_amp),
+        "--sine-wavelength", str(sine_wl),
+        "--sim-port", str(sim_port),
+        "--ctrl-port", str(ctrl_port),
+    ]
+    if not visualize:
+        sim_cmd.append("--no-vis")
+    if no_noise:
+        sim_cmd.append("--no-noise")
+
+    ctrl_cmd = [
+        sys.executable, str(script_dir / "mpc_controller_node.py"),
+        "--model", model,
+        "--path", path_type,
+        "--speed", str(v_target),
+        "--terrain", terrain,
+        "--time", str(sim_time),
+        "--sine-amplitude", str(sine_amp),
+        "--sine-wavelength", str(sine_wl),
+        "--sim-port", str(sim_port),
+        "--ctrl-port", str(ctrl_port),
+        "--rms-time-start", str(rms_time_start),
+        "--no-plot",
+        "--no-csv",
+    ]
+    if no_path_reindex:
+        ctrl_cmd.append("--no-path-reindex")
+
+    sim_proc = None
+    ctrl_proc = None
+    try:
+        # Controller first — it waits for config from sim
+        ctrl_proc = subprocess.Popen(
+            ctrl_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+        )
+        time.sleep(0.3)
+        sim_proc = subprocess.Popen(
+            sim_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+
+        sim_proc.wait()
+        ctrl_stdout, _ = ctrl_proc.communicate(timeout=30)
+        return _parse_rms(ctrl_stdout)
+    except Exception:
+        return None
+    finally:
+        for proc in [sim_proc, ctrl_proc]:
+            if proc and proc.poll() is None:
+                proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+
+
 def run_single_simulation(args_tuple):
     """
     Worker function for parallel execution.
-    Must be a top-level function for multiprocessing to pickle it.
-    
-    Args:
-        args_tuple: (model, terrain, path_name, path_type, sine_amp, sine_wl, 
-                     sim_time, v_target, run_idx, measurement_noise, use_closest_point,
-                     rms_time_start, rms_time_end)
-    
+    Launches a sim + controller subprocess pair with unique ZMQ ports.
+
     Returns:
         (terrain, path_name, model, run_idx, rms_error or None)
     """
-    import sys
-    import os
-    
-    (model, terrain, path_name, path_type, sine_amp, sine_wl, 
-     sim_time, v_target, run_idx, measurement_noise, use_closest_point,
-     rms_time_start, rms_time_end) = args_tuple
-    
-    # Seed RNG uniquely per worker using run_idx and hash of job params
-    # This ensures different noise realizations for each run
-    seed = hash((terrain, path_name, model, run_idx)) % (2**31)
-    np.random.seed(seed)
-    
+    (model, terrain, path_name, path_type, sine_amp, sine_wl,
+     sim_time, v_target, run_idx, no_noise, no_path_reindex,
+     rms_time_start) = args_tuple
+
+    sim_port, ctrl_port = _port_queue.get()
     try:
-        # Suppress stdout from individual simulations in parallel mode
-        devnull = open(os.devnull, 'w')
-        old_stdout = sys.stdout
-        sys.stdout = devnull
-        
-        try:
-            rms = run_simulation(
-                controller_type=model,
-                visualize=False,  # No visualization in parallel mode
-                sim_time=sim_time,
-                path_type=path_type,
-                terrain_preset=terrain,
-                v_target=v_target,
-                sine_amplitude=sine_amp,
-                sine_wavelength=sine_wl,
-                measurement_noise=measurement_noise,
-                use_closest_point=use_closest_point,
-                rms_time_start=rms_time_start,
-                rms_time_end=rms_time_end,
-                debug=False
-            )
-        finally:
-            sys.stdout = old_stdout
-            devnull.close()
-        
+        rms = _run_subprocess_pair(
+            model, terrain, path_type, sine_amp, sine_wl,
+            sim_time, v_target, no_noise, no_path_reindex,
+            rms_time_start, sim_port, ctrl_port
+        )
         return (terrain, path_name, model, run_idx, rms)
-    except Exception as e:
+    except Exception:
         return (terrain, path_name, model, run_idx, None)
+    finally:
+        _port_queue.put((sim_port, ctrl_port))
 
 
 def run_benchmark_parallel(n_runs=20, sim_time=30.0, v_target=5.0, n_workers=None,
-                           measurement_noise=None, use_closest_point=True,
-                           rms_time_start=5.0, rms_time_end=25.0):
+                           no_noise=False, no_path_reindex=False,
+                           rms_time_start=5.0):
     """
     Run benchmark in parallel using multiprocessing.
-    
-    Args:
-        n_runs: Number of runs per (model, terrain, path) combination
-        sim_time: Simulation time per run (s)
-        v_target: Target speed (m/s)
-        n_workers: Number of parallel workers (default: CPU count - 1)
-        measurement_noise: Dict with noise std devs or True for defaults
-        use_closest_point: If True, use closest-point path re-indexing for sinusoidal
-        rms_time_start: Start time for RMS calculation (excludes startup transients)
-        rms_time_end: End time for RMS calculation (excludes final transients)
-    
-    Returns:
-        results: Dict[(terrain, path_name)][model] -> list of RMS errors
+    Each worker spawns a sim + controller subprocess pair with unique ZMQ ports.
     """
     terrains = TERRAIN_TYPES
     models = ['linear', 'nn']
     
-    # Default to leaving one core free for system
     if n_workers is None:
         n_workers = max(1, mp.cpu_count() - 1)
     
@@ -161,17 +219,17 @@ def run_benchmark_parallel(n_runs=20, sim_time=30.0, v_target=5.0, n_workers=Non
                 for run_idx in range(n_runs):
                     jobs.append((
                         model, terrain, path_name, path_type, sine_amp, sine_wl,
-                        sim_time, v_target, run_idx, measurement_noise, use_closest_point,
-                        rms_time_start, rms_time_end
+                        sim_time, v_target, run_idx, no_noise, no_path_reindex,
+                        rms_time_start
                     ))
     
     total_jobs = len(jobs)
     
-    noise_str = "ON" if measurement_noise else "OFF"
-    reindex_str = "ON" if use_closest_point else "OFF"
-    rms_window_str = f"[{rms_time_start:.0f}s, {rms_time_end:.0f}s]" if rms_time_start else "full"
+    noise_str = "OFF" if no_noise else "ON"
+    reindex_str = "OFF" if no_path_reindex else "ON"
+    rms_window_str = f"[{rms_time_start:.0f}s, {sim_time:.0f}s]"
     print(f"\n{'='*70}")
-    print(f"TIRE MODEL BENCHMARK (Parallel)")
+    print(f"TIRE MODEL BENCHMARK (Parallel — Decoupled)")
     print(f"{'='*70}")
     print(f"  Terrains: {', '.join(terrains)}")
     print(f"  Paths: {', '.join([p[0] for p in PATH_CONFIGS])}")
@@ -183,6 +241,7 @@ def run_benchmark_parallel(n_runs=20, sim_time=30.0, v_target=5.0, n_workers=Non
     print(f"  Path re-indexing: {reindex_str}")
     print(f"  Total simulations: {total_jobs}")
     print(f"  Workers: {n_workers}")
+    print(f"  Ports: {_BASE_PORT}–{_BASE_PORT + 2*n_workers - 1}")
     print(f"{'='*70}\n")
     
     t_start = time.time()
@@ -193,13 +252,19 @@ def run_benchmark_parallel(n_runs=20, sim_time=30.0, v_target=5.0, n_workers=Non
         for path_name, _, _, _ in PATH_CONFIGS:
             results[(terrain, path_name)] = {'linear': [], 'nn': []}
     
+    # Create port queue with unique port pairs per worker
+    port_queue = mp.Queue()
+    for i in range(n_workers):
+        port_queue.put((_BASE_PORT + 2 * i, _BASE_PORT + 2 * i + 1))
+    
     # Run in parallel
     completed = 0
     last_pct = 0
     
     print("Progress: ", end='', flush=True)
     
-    with mp.Pool(processes=n_workers) as pool:
+    with mp.Pool(processes=n_workers, initializer=_init_worker,
+                 initargs=(port_queue,)) as pool:
         for result in pool.imap_unordered(run_single_simulation, jobs):
             terrain, path_name, model, run_idx, rms = result
             
@@ -222,10 +287,10 @@ def run_benchmark_parallel(n_runs=20, sim_time=30.0, v_target=5.0, n_workers=Non
 
 
 def run_benchmark_sequential(n_runs=20, sim_time=30.0, v_target=5.0, visualize=False,
-                              measurement_noise=None, use_closest_point=True,
-                              rms_time_start=5.0, rms_time_end=25.0):
+                              no_noise=False, no_path_reindex=False,
+                              rms_time_start=5.0):
     """
-    Run benchmark sequentially (original implementation).
+    Run benchmark sequentially using subprocess pairs.
     """
     terrains = TERRAIN_TYPES
     models = ['linear', 'nn']
@@ -237,11 +302,12 @@ def run_benchmark_sequential(n_runs=20, sim_time=30.0, v_target=5.0, visualize=F
     
     total_runs = len(terrains) * len(PATH_CONFIGS) * len(models) * n_runs
     
-    noise_str = "ON" if measurement_noise else "OFF"
-    reindex_str = "ON" if use_closest_point else "OFF"
-    rms_window_str = f"[{rms_time_start:.0f}s, {rms_time_end:.0f}s]" if rms_time_start else "full"
+    noise_str = "OFF" if no_noise else "ON"
+    reindex_str = "OFF" if no_path_reindex else "ON"
+    rms_window_str = f"[{rms_time_start:.0f}s, {sim_time:.0f}s]"
+    vis_str = "ON" if visualize else "OFF"
     print(f"\n{'='*70}")
-    print(f"TIRE MODEL BENCHMARK (Sequential)")
+    print(f"TIRE MODEL BENCHMARK (Sequential — Decoupled)")
     print(f"{'='*70}")
     print(f"  Terrains: {', '.join(terrains)}")
     print(f"  Paths: {', '.join([p[0] for p in PATH_CONFIGS])}")
@@ -251,10 +317,12 @@ def run_benchmark_sequential(n_runs=20, sim_time=30.0, v_target=5.0, visualize=F
     print(f"  RMS window: {rms_window_str}")
     print(f"  Measurement noise: {noise_str}")
     print(f"  Path re-indexing: {reindex_str}")
+    print(f"  Visualization: {vis_str}")
     print(f"  Total runs: {total_runs}")
     print(f"{'='*70}\n")
     
     t_start = time.time()
+    sim_port, ctrl_port = _BASE_PORT, _BASE_PORT + 1
     
     for terrain in terrains:
         print(f"\n{'='*60}")
@@ -270,27 +338,17 @@ def run_benchmark_sequential(n_runs=20, sim_time=30.0, v_target=5.0, visualize=F
                 
                 run_errors = []
                 for i in range(n_runs):
-                    try:
-                        rms = run_simulation(
-                            controller_type=model,
-                            visualize=visualize,
-                            sim_time=sim_time,
-                            path_type=path_type,
-                            terrain_preset=terrain,
-                            v_target=v_target,
-                            sine_amplitude=sine_amp,
-                            sine_wavelength=sine_wl,
-                            measurement_noise=measurement_noise,
-                            use_closest_point=use_closest_point,
-                            rms_time_start=rms_time_start,
-                            rms_time_end=rms_time_end,
-                            debug=False
-                        )
-                        if rms is not None:
-                            run_errors.append(rms)
-                            print(f".", end='', flush=True)
-                    except Exception as e:
-                        print(f"X", end='', flush=True)
+                    rms = _run_subprocess_pair(
+                        model, terrain, path_type, sine_amp, sine_wl,
+                        sim_time, v_target, no_noise, no_path_reindex,
+                        rms_time_start, sim_port, ctrl_port,
+                        visualize=visualize
+                    )
+                    if rms is not None:
+                        run_errors.append(rms)
+                        print(".", end='', flush=True)
+                    else:
+                        print("X", end='', flush=True)
                 
                 results[(terrain, path_name)][model] = run_errors
                 
@@ -299,7 +357,7 @@ def run_benchmark_sequential(n_runs=20, sim_time=30.0, v_target=5.0, visualize=F
                     std_rms = np.std(run_errors)
                     print(f" {mean_rms:.4f} ± {std_rms:.4f} m")
                 else:
-                    print(f" FAILED")
+                    print(" FAILED")
     
     elapsed = time.time() - t_start
     print(f"\n[Benchmark completed in {elapsed/60:.1f} minutes]")
@@ -617,15 +675,14 @@ def save_raw_data(results, output_path='benchmark_raw_data.npz'):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark NN vs Pacejka tire models")
+    parser = argparse.ArgumentParser(
+        description="Benchmark NN vs Pacejka tire models (decoupled architecture)")
     parser.add_argument('--runs', type=int, default=20, 
                         help='Number of runs per combination')
     parser.add_argument('--time', type=float, default=30.0,
                         help='Simulation time per run (s, default: 30)')
     parser.add_argument('--rms-start', type=float, default=5.0,
                         help='Start time for RMS calculation (s, default: 5)')
-    parser.add_argument('--rms-end', type=float, default=25.0,
-                        help='End time for RMS calculation (s, default: 25)')
     parser.add_argument('--speed', type=float, default=5.0,
                         help='Target speed (m/s)')
     parser.add_argument('--workers', '-j', type=int, default=None,
@@ -635,13 +692,13 @@ def main():
     parser.add_argument('--vis', action='store_true',
                         help='Enable visualization (requires --sequential)')
     parser.add_argument('--no-noise', action='store_true',
-                        help='Disable measurement noise (on by default: x,y:1.2m, psi,omega:0.0175rad, u,v:0.25m/s)')
+                        help='Disable measurement noise (on by default)')
     parser.add_argument('--no-reindex', action='store_true',
-                        help='Disable closest-point path re-indexing (test old x-projection method)')
+                        help='Disable closest-point path re-indexing')
     parser.add_argument('--output', type=str, default='benchmark_results.png',
                         help='Output plot filename')
     parser.add_argument('--quick', action='store_true',
-                        help='Quick test: 3 runs, 15s sim time, [3-12]s RMS window')
+                        help='Quick test: 3 runs, 15s sim time, RMS from 3s')
     
     args = parser.parse_args()
     
@@ -649,24 +706,16 @@ def main():
         n_runs = 3
         sim_time = 15.0
         rms_time_start = 3.0
-        rms_time_end = 12.0
-        print("[QUICK MODE: 3 runs, 15s sim time, RMS [3-12]s]")
+        print("[QUICK MODE: 3 runs, 15s sim time, RMS from 3s]")
     else:
         n_runs = args.runs
         sim_time = args.time
         rms_time_start = args.rms_start
-        rms_time_end = args.rms_end
     
     # Visualization requires sequential mode
     if args.vis and not args.sequential:
         print("Warning: --vis requires --sequential. Enabling sequential mode.")
         args.sequential = True
-    
-    # Measurement noise ON by default (use --no-noise to disable)
-    measurement_noise = None if args.no_noise else True
-    
-    # Path re-indexing (default ON, --no-reindex disables)
-    use_closest_point = not args.no_reindex
     
     # Validate all paths are feasible for the vehicle
     validate_path_configs()
@@ -678,10 +727,9 @@ def main():
             sim_time=sim_time,
             v_target=args.speed,
             visualize=args.vis,
-            measurement_noise=measurement_noise,
-            use_closest_point=use_closest_point,
+            no_noise=args.no_noise,
+            no_path_reindex=args.no_reindex,
             rms_time_start=rms_time_start,
-            rms_time_end=rms_time_end
         )
     else:
         results = run_benchmark_parallel(
@@ -689,10 +737,9 @@ def main():
             sim_time=sim_time,
             v_target=args.speed,
             n_workers=args.workers,
-            measurement_noise=measurement_noise,
-            use_closest_point=use_closest_point,
+            no_noise=args.no_noise,
+            no_path_reindex=args.no_reindex,
             rms_time_start=rms_time_start,
-            rms_time_end=rms_time_end
         )
     
     # Compute statistics
@@ -704,7 +751,7 @@ def main():
     
     # Create timestamped output directory
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    noise_tag = "noise" if measurement_noise else "nonoise"
+    noise_tag = "nonoise" if args.no_noise else "noise"
     run_dir = Path("benchmark_runs") / f"{ts}_{noise_tag}"
     run_dir.mkdir(parents=True, exist_ok=True)
     print(f"\nOutput directory: {run_dir}/")

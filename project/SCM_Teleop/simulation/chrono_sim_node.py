@@ -28,6 +28,13 @@ import numpy as np
 import pychrono as chrono
 import pychrono.vehicle as veh
 
+# Sensor imports (optional — only needed for sensor visualization mode)
+try:
+    import pychrono.sensor as sens
+    HAS_SENSOR = True
+except ImportError:
+    HAS_SENSOR = False
+
 # Local imports
 sys.path.insert(0, str(Path(__file__).parent))
 from hil_messages import (
@@ -41,8 +48,8 @@ from param_consistency import (
     get_terrain_preset, terrain_preset_to_internal,
 )
 
-# Re-use terrain/vehicle setup helpers from dallas_chrono_demo
-from dallas_chrono_demo import (
+# Re-use terrain/vehicle setup helpers from scm_hmmwv_demo
+from scm_hmmwv_demo import (
     setup_chrono_vehicle,
     setup_scm_terrain,
     add_trajectory_markers,
@@ -84,7 +91,7 @@ class ExternalDriver(veh.ChDriver):
 
 
 # =============================================================================
-# Vehicle state extraction (matches dallas_chrono_demo._read_vehicle_state)
+# Vehicle state extraction (matches scm_hmmwv_demo._read_vehicle_state)
 # =============================================================================
 
 # Default measurement noise standard deviations (sensor-fusion realistic)
@@ -203,21 +210,32 @@ def run_sim_node(args):
     print("Chrono Simulation Node (Decoupled)")
     print("=" * 60)
 
+    # Determine visualization flags
+    use_irrlicht = args.vis_mode in ('irrlicht', 'both')
+    use_sensor = args.vis_mode in ('sensor', 'both')
+    any_vis = use_irrlicht or use_sensor
+
+    if use_sensor and not HAS_SENSOR:
+        print("WARNING: pychrono.sensor not available, falling back to irrlicht")
+        use_sensor = False
+        use_irrlicht = True
+        any_vis = True
+
     # ------------------------------------------------------------------
     # Setup vehicle
     # ------------------------------------------------------------------
-    system, vehicle = setup_chrono_vehicle(args.visualize)
+    system, vehicle = setup_chrono_vehicle(any_vis)
 
     # ------------------------------------------------------------------
     # Setup terrain
     # ------------------------------------------------------------------
     terrain_config = None
     if args.terrain_config:
-        from dallas_chrono_demo import load_terrain_config
+        from scm_hmmwv_demo import load_terrain_config
         terrain_config = load_terrain_config(args.terrain_config)
 
     terrain, terrain_params = setup_scm_terrain(
-        system, vehicle=vehicle, visualize=args.visualize,
+        system, vehicle=vehicle, visualize=any_vis,
         terrain_preset=args.terrain, terrain_config=terrain_config,
         bump_amplitude=args.bump, bump_wavelength=args.bump_wavelength,
         bump_octaves=args.bump_octaves, bump_seed=args.bump_seed,
@@ -227,13 +245,14 @@ def run_sim_node(args):
     # ------------------------------------------------------------------
     # Trajectory markers (visual only)
     # ------------------------------------------------------------------
-    if args.visualize:
+    if any_vis:
         marker_z = args.bump + 0.5 if args.bump > 0 else 0.15
         add_trajectory_markers(
             system, args.path, args.time, v_target=args.speed,
             marker_z=marker_z,
             sine_amplitude=args.sine_amplitude,
             sine_wavelength=args.sine_wavelength,
+            lead_in=args.lead_in,
         )
 
     # ------------------------------------------------------------------
@@ -242,10 +261,10 @@ def run_sim_node(args):
     driver = ExternalDriver(vehicle)
 
     # ------------------------------------------------------------------
-    # Visualization
+    # Visualization — Irrlicht
     # ------------------------------------------------------------------
     vis = None
-    if args.visualize:
+    if use_irrlicht:
         try:
             vis = veh.ChWheeledVehicleVisualSystemIrrlicht()
             vis.SetWindowTitle("Chrono Sim Node (decoupled)")
@@ -256,8 +275,54 @@ def run_sim_node(args):
             vis.AddSkyBox()
             vis.AttachVehicle(vehicle.GetVehicle())
         except Exception as e:
-            print(f"Warning: Visualization failed: {e}")
+            print(f"Warning: Irrlicht visualization failed: {e}")
             vis = None
+
+    # ------------------------------------------------------------------
+    # Visualization — Chrono Sensor (driver POV camera)
+    # ------------------------------------------------------------------
+    sensor_manager = None
+    driver_cam = None
+    if use_sensor:
+        try:
+            sensor_manager = sens.ChSensorManager(system)
+            # Scene lighting and environment
+            sensor_manager.scene.AddPointLight(
+                chrono.ChVector3f(0, 0, 100),
+                chrono.ChColor(1.5, 1.5, 1.5),
+                500.0,
+            )
+            sensor_manager.scene.SetAmbientLight(chrono.ChVector3f(0.1, 0.1, 0.1))
+            sensor_manager.scene.SetSceneEpsilon(1e-3)
+            sensor_manager.scene.EnableDynamicOrigin(True)
+            sensor_manager.scene.SetOriginOffsetThreshold(500.0)
+
+            # Driver POV camera attached to chassis
+            # Eye-point matches HMMWV left-hand-drive seat position
+            cam_offset = chrono.ChFramed(
+                chrono.ChVector3d(0.4, 0.7, 1.0),
+                chrono.ChQuaterniond(1, 0, 0, 0),
+            )
+            driver_cam = sens.ChCameraSensor(
+                vehicle.GetChassisBody(),  # attached body
+                30,                        # update rate (Hz)
+                cam_offset,                # offset pose
+                3440,                      # image width
+                1440,                      # image height
+                1.92,                      # horizontal FOV (~110°, natural for ultrawide)
+            )
+            driver_cam.SetName("DriverPOV")
+            driver_cam.SetLag(0.0)
+            driver_cam.PushFilter(sens.ChFilterVisualize(
+                3440, 1440, "Driver POV", False
+            ))
+            driver_cam.PushFilter(sens.ChFilterRGBA8Access())
+            sensor_manager.AddSensor(driver_cam)
+            print("  Chrono Sensor: driver POV camera active")
+        except Exception as e:
+            print(f"Warning: Sensor visualization failed: {e}")
+            sensor_manager = None
+            driver_cam = None
 
     # ------------------------------------------------------------------
     # ZMQ transport
@@ -289,6 +354,7 @@ def run_sim_node(args):
             "step_size": args.step_size,
             "sine_amplitude": args.sine_amplitude,
             "sine_wavelength": args.sine_wavelength,
+            "lead_in": args.lead_in,
         },
     )
     state_pub.send(config_msg)
@@ -319,12 +385,16 @@ def run_sim_node(args):
         if vis is not None and not vis.Run():
             break
 
-        # --- Render (frame-skipped) ---
+        # --- Render Irrlicht (frame-skipped) ---
         if vis is not None and (time_chrono - last_render_time >= render_interval):
             vis.BeginScene()
             vis.Render()
             vis.EndScene()
             last_render_time = time_chrono
+
+        # --- Update Chrono Sensor manager ---
+        if sensor_manager is not None:
+            sensor_manager.Update()
 
         # --- Receive latest control command (non-blocking) ---
         result = ctrl_sub.recv(timeout_ms=0)
@@ -363,11 +433,14 @@ def run_sim_node(args):
             state_pub.send(state_msg)
             last_state_pub_time = time_chrono
 
-        # --- Real-time pacing (only when visualizing) ---
-        if vis is not None:
+        # --- Real-time pacing (always on unless --no-rt) ---
+        # Without this, the headless sim runs 4-5x real-time and the
+        # decoupled MPC controller can only process ~10% of state messages.
+        if not args.no_rt:
             target_wall = start_wall + time_chrono
-            while wall_time.time() < target_wall:
-                pass
+            remaining = target_wall - wall_time.time()
+            if remaining > 0:
+                wall_time.sleep(remaining)
 
         # --- Progress report ---
         if time_chrono - last_report_time >= 2.0:
@@ -393,6 +466,8 @@ def run_sim_node(args):
     ctrl_sub.close()
     if vis is not None:
         vis.GetDevice().closeDevice()
+    if sensor_manager is not None:
+        del sensor_manager
 
 
 # =============================================================================
@@ -405,7 +480,11 @@ def main():
     # Simulation
     p.add_argument("--time", type=float, default=15.0, help="Simulation duration (s)")
     p.add_argument("--step-size", type=float, default=3e-3, help="Physics step (s)")
-    p.add_argument("--no-vis", dest="visualize", action="store_false", help="Headless")
+    p.add_argument("--vis-mode", default="irrlicht",
+                   choices=["irrlicht", "sensor", "both", "none"],
+                   help="Visualization mode: irrlicht, sensor (driver POV), both, or none")
+    p.add_argument("--no-rt",  action="store_true",
+                   help="Disable real-time pacing (fast-forward; breaks decoupled MPC)")
     p.add_argument("--speed", type=float, default=5.0, help="Target speed for markers (m/s)")
 
     # Terrain
@@ -422,6 +501,8 @@ def main():
                    choices=["lane_change", "double_lane_change", "sinusoidal"])
     p.add_argument("--sine-amplitude", type=float, default=2.0)
     p.add_argument("--sine-wavelength", type=float, default=30.0)
+    p.add_argument("--lead-in", type=float, default=0.0,
+                   help="Straight lead-in distance (m) before path starts")
 
     # Network
     p.add_argument("--sim-port", type=int, default=5555, help="Port to publish state")

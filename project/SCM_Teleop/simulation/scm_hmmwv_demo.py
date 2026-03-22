@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Dallas MPC + PyChrono Integration Demo
-======================================
+SCM HMMWV MPC Demo  
+==================
 
 Full comparison of Dallas et al. MPC formulation with:
 1. Linear (Pacejka-like) tire model - baseline
@@ -34,7 +34,7 @@ import pychrono as chrono
 import pychrono.vehicle as veh
 
 # Import Dallas MPC and parameter consistency (vehicle params, training range, terrain presets)
-from dallas_mpc import DallasMPC, NNCasADi
+from mpc_solver import DallasMPC, NNCasADi
 from param_consistency import (
     get_vehicle_params_for_demo,
     check_terrain_in_training_range,
@@ -791,7 +791,7 @@ def _mpc_worker_process(request_queue: mp.Queue, result_queue: mp.Queue,
     Must rebuild MPC solver here since CasADi objects can't be pickled.
     """
     # Import MPC in child process
-    from dallas_mpc import DallasMPC, NNCasADi
+    from mpc_solver import DallasMPC, NNCasADi
     import numpy as np
     import time
     
@@ -1639,10 +1639,11 @@ class DallasMPCDriver(veh.ChDriver):
 # Path Generator
 # =============================================================================
 
-def find_closest_point_on_sinusoid(x_veh, y_veh, amplitude, wavelength, search_range=10.0, n_samples=100):
+def find_closest_point_on_sinusoid(x_veh, y_veh, amplitude, wavelength, search_range=10.0, n_samples=100,
+                                    x_offset=0.0):
     """
-    Find the closest point on a sinusoidal path y = amp*sin(2*pi*x/wavelength) 
-    to the vehicle's current position.
+    Find the closest point on a sinusoidal path y = amp*sin(2*pi*(x - x_offset)/wavelength) 
+    to the vehicle's current position.  For x < x_offset the path is y=0 (lead-in).
     
     Returns:
         s_closest: The x-coordinate of the closest point on the path
@@ -1654,7 +1655,9 @@ def find_closest_point_on_sinusoid(x_veh, y_veh, amplitude, wavelength, search_r
     x_max = x_veh + search_range
     
     x_samples = np.linspace(x_min, x_max, n_samples)
-    y_samples = amplitude * np.sin(2 * np.pi * x_samples / wavelength)
+    y_samples = np.where(x_samples >= x_offset,
+                         amplitude * np.sin(2 * np.pi * (x_samples - x_offset) / wavelength),
+                         0.0)
     
     # Find minimum distance point
     distances = np.sqrt((x_samples - x_veh)**2 + (y_samples - y_veh)**2)
@@ -1663,22 +1666,29 @@ def find_closest_point_on_sinusoid(x_veh, y_veh, amplitude, wavelength, search_r
     # Refine with local search (Newton-like)
     x_closest = x_samples[idx_min]
     for _ in range(3):  # Few iterations of refinement
-        y_path = amplitude * np.sin(2 * np.pi * x_closest / wavelength)
-        dy_dx = amplitude * 2 * np.pi / wavelength * np.cos(2 * np.pi * x_closest / wavelength)
+        if x_closest < x_offset:
+            # In the lead-in region: path is y=0, closest point is directly below
+            y_path = 0.0
+            dy_dx = 0.0
+            d2y_dx2 = 0.0
+        else:
+            y_path = amplitude * np.sin(2 * np.pi * (x_closest - x_offset) / wavelength)
+            dy_dx = amplitude * 2 * np.pi / wavelength * np.cos(2 * np.pi * (x_closest - x_offset) / wavelength)
+            d2y_dx2 = -amplitude * (2 * np.pi / wavelength)**2 * np.sin(2 * np.pi * (x_closest - x_offset) / wavelength)
         
         # Gradient of distance^2 w.r.t. x_path
-        # d/dx [(x_path - x_veh)^2 + (y_path - y_veh)^2]
-        # = 2*(x_path - x_veh) + 2*(y_path - y_veh)*dy_dx
         grad = 2 * (x_closest - x_veh) + 2 * (y_path - y_veh) * dy_dx
         
         # Second derivative for Newton step
-        d2y_dx2 = -amplitude * (2 * np.pi / wavelength)**2 * np.sin(2 * np.pi * x_closest / wavelength)
         hess = 2 + 2 * dy_dx**2 + 2 * (y_path - y_veh) * d2y_dx2
         
         if abs(hess) > 1e-6:
             x_closest = x_closest - 0.5 * grad / hess  # Damped Newton step
     
-    y_closest = amplitude * np.sin(2 * np.pi * x_closest / wavelength)
+    if x_closest < x_offset:
+        y_closest = 0.0
+    else:
+        y_closest = amplitude * np.sin(2 * np.pi * (x_closest - x_offset) / wavelength)
     dist = np.sqrt((x_closest - x_veh)**2 + (y_closest - y_veh)**2)
     
     return x_closest, y_closest, dist
@@ -1731,24 +1741,34 @@ def suggest_feasible_sine_params(target_amplitude=2.0, wheelbase=3.302, delta_ma
 
 
 def make_path_function(path_type='lane_change', lane_offset=3.0, v_target=8.0,
-                        sine_amplitude=2.0, sine_wavelength=30.0, 
-                        use_closest_point=True):
+                        sine_amplitude=2.0, sine_wavelength=30.0,
+                        use_closest_point=True, lead_in=0.0,
+                        csv_dir=None, total_length=None):
     """
-    Create a path function for the MPC driver.
-    
-    Returns function(time, z0, N, dt) -> (x_ref, y_ref, psi_ref, v_ref, x_goal, y_goal, psi_goal)
-    
-    All paths use FIXED x-positions (deterministic, velocity-independent).
-    
+    Create a ReferencePath for the MPC driver.
+
+    Generates dense waypoints for the chosen path type, fits an arc-length
+    parameterised cubic spline, and returns a :class:`ReferencePath` whose
+    :meth:`get_reference` method has the same ``(time, z0, N, dt)`` signature
+    used by the controller loop.
+
     Args:
         path_type: 'lane_change', 'double_lane_change', or 'sinusoidal'
         lane_offset: Lateral offset for lane change maneuvers (m)
         v_target: Target longitudinal velocity (m/s)
         sine_amplitude: Amplitude for sinusoidal path (m)
         sine_wavelength: Wavelength for sinusoidal path (m)
-        use_closest_point: If True, find closest point on path for re-indexing (helps recovery)
+        use_closest_point: (kept for CLI compat; now always True internally)
+        lead_in: Straight lead-in distance (m) added before path geometry
+        csv_dir: If given, save a reference_path_<type>.csv into this dir
+        total_length: Override total path length (m); auto-computed if None
+
+    Returns:
+        ReferencePath object.  Use ``ref_path.get_reference`` as the
+        path callable, and ``ref_path.evaluate_at_x`` for analytics.
     """
-    
+    from reference_path import ReferencePath, generate_path_waypoints
+
     # Check sinusoidal path feasibility
     if path_type == 'sinusoidal':
         is_feasible, req_R, ach_R, margin = check_sinusoidal_feasibility(
@@ -1765,179 +1785,29 @@ def make_path_function(path_type='lane_change', lane_offset=3.0, v_target=8.0,
             print()
         else:
             print(f"  Path feasibility: OK (margin: +{margin:.0f}%)")
-    
-    # Fixed position-based lane change parameters
-    transition_start_x = 10.0   # Start lane change at x=10m
-    transition_end_x = 25.0     # End lane change at x=25m
-    
-    def lane_change_path(time, z0, N, dt):
-        """Lane change maneuver - position-based reference"""
-        x, y, psi, u = z0[0], z0[1], z0[2], z0[3]
-        
-        # Time horizon
-        t_ref = time + np.arange(N + 1) * dt
-        
-        # X reference: extrapolate at current speed (or target if slow)
-        u_proj = max(u, 1.0)  # At least 1 m/s for projection
-        x_ref = x + u_proj * (t_ref - time)
-        
-        # Y reference: position-based lane change
-        y_ref = np.zeros(N + 1)
-        psi_ref = np.zeros(N + 1)
-        
-        for i, x_i in enumerate(x_ref):
-            if x_i < transition_start_x:
-                # Before transition: stay in lane
-                y_ref[i] = 0.0
-                psi_ref[i] = 0.0
-            elif x_i > transition_end_x:
-                # After transition: in new lane
-                y_ref[i] = lane_offset
-                psi_ref[i] = 0.0
-            else:
-                # During transition: smooth sigmoid
-                blend = (x_i - transition_start_x) / (transition_end_x - transition_start_x)
-                # Smooth step: 3*blend^2 - 2*blend^3
-                blend = blend * blend * (3 - 2 * blend)
-                y_ref[i] = blend * lane_offset
-                # Approximate heading for lane change
-                dy_dx = lane_offset / (transition_end_x - transition_start_x)
-                # Derivative of smooth step
-                blend_raw = (x_i - transition_start_x) / (transition_end_x - transition_start_x)
-                dblend = 6 * blend_raw * (1 - blend_raw) / (transition_end_x - transition_start_x)
-                psi_ref[i] = np.arctan(lane_offset * dblend)
-        
-        v_ref = v_target * np.ones(N + 1)  # Target speed
-        
-        # Goal at end of horizon
-        x_goal = x_ref[-1]
-        y_goal = y_ref[-1]
-        psi_goal = psi_ref[-1]
-        
-        return x_ref, y_ref, psi_ref, v_ref, x_goal, y_goal, psi_goal
-    
-    def sinusoidal_path(time, z0, N, dt):
-        """
-        Sinusoidal path following with closest-point re-indexing.
-        
-        When vehicle deviates from path, finds the closest point on the sinusoid
-        and builds the reference trajectory forward from there, creating a smooth
-        recovery path rather than aggressive snap-back corrections.
-        """
-        x, y, psi, u = z0[0], z0[1], z0[2], z0[3]
-        
-        # Parameters from closure
-        amp = sine_amplitude
-        wavelength = sine_wavelength
-        
-        u_proj = max(u, 1.0)
-        
-        if use_closest_point:
-            # Find closest point on the sinusoidal path
-            x_closest, y_closest, crosstrack_dist = find_closest_point_on_sinusoid(
-                x, y, amp, wavelength, search_range=wavelength/2)
-            
-            # Build reference from the closest point, projecting forward along the path
-            # Arc length on sinusoid ≈ x for moderate amplitudes, so we use x as parameter
-            s_start = x_closest
-            
-            # Project forward in arc-length (approximated as x for small amp/wavelength ratio)
-            arc_lengths = np.arange(N + 1) * dt * u_proj
-            s_ref = s_start + arc_lengths
-            
-            x_ref = s_ref
-            y_ref = amp * np.sin(2 * np.pi * s_ref / wavelength)
-            
-            # Smooth blend from current position to path over first few points
-            # This prevents discontinuous reference that causes jerk
-            blend_horizon = min(3, N)  # Blend over ~3 MPC steps
-            for i in range(blend_horizon):
-                alpha = (i + 1) / (blend_horizon + 1)  # 0.25, 0.5, 0.75, ...
-                # Blend current position toward path
-                # x_ref stays as-is (we're mostly moving forward)
-                y_ref[i] = (1 - alpha) * y + alpha * y_ref[i]
-        else:
-            # Original behavior: project from current x (can cause aggressive corrections)
-            t_ref = time + np.arange(N + 1) * dt
-            s_ref = x + u_proj * (t_ref - time)
-            
-            x_ref = s_ref
-            y_ref = amp * np.sin(2 * np.pi * s_ref / wavelength)
-        
-        # Heading tangent to path
-        psi_ref = np.arctan(2 * np.pi * amp / wavelength * np.cos(2 * np.pi * x_ref / wavelength))
-        v_ref = v_target * np.ones(N + 1)
-        
-        x_goal = x_ref[-1]
-        y_goal = y_ref[-1]
-        psi_goal = psi_ref[-1]
-        
-        return x_ref, y_ref, psi_ref, v_ref, x_goal, y_goal, psi_goal
-    
-    def double_lane_change_path(time, z0, N, dt):
-        """
-        Double lane change (ISO 3888 style) - more challenging than single lane change.
-        Vehicle must: straight -> move left -> straight -> move right -> straight
-        """
-        x, y, psi, u = z0[0], z0[1], z0[2], z0[3]
-        
-        t_ref = time + np.arange(N + 1) * dt
-        u_proj = max(u, 1.0)
-        x_ref = x + u_proj * (t_ref - time)
-        
-        # Double lane change zones (position-based)
-        zone1_start = 8.0    # First lane change starts
-        zone1_end = 18.0     # First lane change ends (now in left lane)
-        zone2_start = 28.0   # Second lane change starts
-        zone2_end = 38.0     # Second lane change ends (back to original)
-        
-        y_ref = np.zeros(N + 1)
-        psi_ref = np.zeros(N + 1)
-        
-        for i, x_i in enumerate(x_ref):
-            if x_i < zone1_start:
-                # Initial straight
-                y_ref[i] = 0.0
-                psi_ref[i] = 0.0
-            elif x_i < zone1_end:
-                # First lane change (move left)
-                blend = (x_i - zone1_start) / (zone1_end - zone1_start)
-                blend = blend * blend * (3 - 2 * blend)  # Smooth step
-                y_ref[i] = blend * lane_offset
-                # Heading for lane change
-                blend_raw = (x_i - zone1_start) / (zone1_end - zone1_start)
-                dblend = 6 * blend_raw * (1 - blend_raw) / (zone1_end - zone1_start)
-                psi_ref[i] = np.arctan(lane_offset * dblend)
-            elif x_i < zone2_start:
-                # Middle straight (in left lane)
-                y_ref[i] = lane_offset
-                psi_ref[i] = 0.0
-            elif x_i < zone2_end:
-                # Second lane change (move right, back to original)
-                blend = (x_i - zone2_start) / (zone2_end - zone2_start)
-                blend = blend * blend * (3 - 2 * blend)
-                y_ref[i] = lane_offset * (1 - blend)
-                # Heading for lane change (negative direction)
-                blend_raw = (x_i - zone2_start) / (zone2_end - zone2_start)
-                dblend = 6 * blend_raw * (1 - blend_raw) / (zone2_end - zone2_start)
-                psi_ref[i] = -np.arctan(lane_offset * dblend)
-            else:
-                # Final straight
-                y_ref[i] = 0.0
-                psi_ref[i] = 0.0
-        
-        v_ref = v_target * np.ones(N + 1)
-        
-        return x_ref, y_ref, psi_ref, v_ref, x_ref[-1], y_ref[-1], psi_ref[-1]
-    
-    if path_type == 'lane_change':
-        return lane_change_path
-    elif path_type == 'sinusoidal':
-        return sinusoidal_path
-    elif path_type == 'double_lane_change':
-        return double_lane_change_path
-    else:
-        return lane_change_path
+
+    if lead_in > 0:
+        print(f"  Lead-in: {lead_in:.0f}m straight before path starts")
+
+    # Generate dense waypoints
+    x_pts, y_pts = generate_path_waypoints(
+        path_type, lead_in=lead_in, lane_offset=lane_offset,
+        sine_amplitude=sine_amplitude, sine_wavelength=sine_wavelength,
+        total_length=total_length,
+    )
+
+    # Build spline-based reference path
+    ref_path = ReferencePath(x_pts, y_pts, v_target)
+    print(f"  Reference path: {ref_path}")
+
+    # Optionally save CSV
+    if csv_dir is not None:
+        import os
+        os.makedirs(csv_dir, exist_ok=True)
+        ref_path.save_csv(os.path.join(csv_dir,
+                                       f'reference_path_{path_type}.csv'))
+
+    return ref_path
 
 
 # =============================================================================
@@ -1945,7 +1815,7 @@ def make_path_function(path_type='lane_change', lane_offset=3.0, v_target=8.0,
 # =============================================================================
 
 def setup_chrono_vehicle(visualize=True):
-    """Setup PyChrono HMMWV vehicle"""
+    """Setup PyChrono HMMWV vehicle."""
     
     # Set Chrono data path for mesh files
     chrono.SetChronoDataPath(chrono.GetChronoDataPath())
@@ -2125,7 +1995,7 @@ def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand
 
 def add_trajectory_markers(system, path_type='lane_change', sim_time=10.0, 
                            v_target=8.0, lane_offset=3.0, marker_z=None,
-                           sine_amplitude=2.0, sine_wavelength=30.0):
+                           sine_amplitude=2.0, sine_wavelength=30.0, lead_in=0.0):
     """
     Add visual markers on the ground to show the reference trajectory.
     
@@ -2149,14 +2019,14 @@ def add_trajectory_markers(system, path_type='lane_change', sim_time=10.0,
     
     print(f"  Adding {n_markers} trajectory markers for {path_type}...")
     
-    # Path-specific parameters - ALL FIXED POSITIONS (deterministic)
-    # Single lane change (fixed x positions)
-    lc_start = 10.0   # Start at x=10m
-    lc_end = 25.0     # End at x=25m
+    # Path-specific parameters - ALL FIXED POSITIONS (shifted by lead_in)
+    # Single lane change
+    lc_start = 10.0 + lead_in
+    lc_end = 25.0 + lead_in
     
-    # Double lane change zones (fixed)
-    dlc_z1_start, dlc_z1_end = 8.0, 18.0
-    dlc_z2_start, dlc_z2_end = 28.0, 38.0
+    # Double lane change zones
+    dlc_z1_start, dlc_z1_end = 8.0 + lead_in, 18.0 + lead_in
+    dlc_z2_start, dlc_z2_end = 28.0 + lead_in, 38.0 + lead_in
     
     for i in range(n_markers):
         x = i * marker_spacing
@@ -2196,8 +2066,11 @@ def add_trajectory_markers(system, path_type='lane_change', sim_time=10.0,
                 zone = 'end'
                 
         elif path_type == 'sinusoidal':
-            # Use parameters passed to function
-            y = sine_amplitude * np.sin(2 * np.pi * x / sine_wavelength)
+            # Use parameters passed to function (with lead-in offset)
+            if x < lead_in:
+                y = 0.0
+            else:
+                y = sine_amplitude * np.sin(2 * np.pi * (x - lead_in) / sine_wavelength)
             zone = 'sine'
         else:
             y = 0.0
@@ -2393,14 +2266,15 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
         nn_calls = 4 if lateral_load_transfer else 2
         print(f"  [TIMING] MPC setup: {t_mpc:.2f}s (NN calls/step: {nn_calls})")
         
-        # Create path function
-        path_func = make_path_function(path_type, v_target=v_target,
-                                       sine_amplitude=sine_amplitude, 
+        # Create reference path (spline-based)
+        ref_path = make_path_function(path_type, v_target=v_target,
+                                       sine_amplitude=sine_amplitude,
                                        sine_wavelength=sine_wavelength,
                                        use_closest_point=use_closest_point)
+        path_func = ref_path.get_reference
         print(f"  Target speed: {v_target} m/s")
         if path_type == 'sinusoidal':
-            print(f"  Sinusoidal: amp={sine_amplitude}m, wavelength={sine_wavelength}m, reindex={use_closest_point}")
+            print(f"  Sinusoidal: amp={sine_amplitude}m, wavelength={sine_wavelength}m")
         
         # UKF terrain estimation (Dallas Sec. IV)
         # V2 is proper UKF, V3 is trajectory-matching grid search
@@ -2929,7 +2803,7 @@ def compare_controllers(visualize=False, sim_time=10.0, path_type='lane_change',
 
 def test_mpc_only():
     """Test MPC controllers without Chrono"""
-    from dallas_mpc import test_dallas_mpc, test_with_nn
+    from mpc_solver import test_dallas_mpc, test_with_nn
     
     test_dallas_mpc()
     test_with_nn()

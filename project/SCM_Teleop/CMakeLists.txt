@@ -145,6 +145,33 @@ else()
 endif()
 
 #--------------------------------------------------------------
+# Temporal SCM Data Collection (time-series for temporal NN)
+#--------------------------------------------------------------
+
+message(STATUS "...add collect_temporal_data (temporal/time-series data collection)")
+
+add_executable(collect_temporal_data "cpp_collect/collect_temporal_data.cpp")
+source_group("" FILES "cpp_collect/collect_temporal_data.cpp")
+
+target_compile_definitions(collect_temporal_data
+    PUBLIC
+        "CHRONO_DATA_DIR=\"${CHRONO_DATA_DIR}\""
+)
+target_compile_options(collect_temporal_data PUBLIC ${CHRONO_CXX_FLAGS})
+target_link_options(collect_temporal_data PUBLIC ${CH_LINKERFLAG_SHARED})
+
+target_link_libraries(collect_temporal_data
+    PRIVATE
+        Chrono::Chrono_vehicle
+        Chrono::ChronoModels_vehicle
+)
+
+if(OpenMP_CXX_FOUND)
+    target_compile_definitions(collect_temporal_data PRIVATE CHRONO_OPENMP)
+    target_link_libraries(collect_temporal_data PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+#--------------------------------------------------------------
 # Full Vehicle SCM Data Collection (using HMMWV_Full)
 #--------------------------------------------------------------
 

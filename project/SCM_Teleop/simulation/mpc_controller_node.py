@@ -42,8 +42,8 @@ from param_consistency import (
     get_vehicle_params_for_demo, get_terrain_preset,
     terrain_preset_to_internal, HMMWV_VEHICLE_PARAMS,
 )
-from dallas_mpc import DallasMPC, NNCasADi
-from dallas_chrono_demo import make_path_function
+from mpc_solver import DallasMPC, NNCasADi
+from scm_hmmwv_demo import make_path_function
 
 
 # =============================================================================
@@ -196,7 +196,7 @@ def quat_to_yaw(e0, e1, e2, e3):
 
 class ControlIntegrator:
     """Integrates MPC rate commands (delta_dot, Jx) into steering/throttle/brake
-    at the MPC update rate, matching the dallas_chrono_demo conversion logic."""
+    at the MPC update rate, matching the scm_hmmwv_demo conversion logic."""
 
     def __init__(self, mpc: DallasMPC, v_target: float = 5.0):
         self.mpc = mpc
@@ -256,26 +256,94 @@ class ControlIntegrator:
 # =============================================================================
 
 class TrackingAnalytics:
-    """Accumulates path-tracking metrics over the simulation.
+    def plot_results(self, plot_dir: str, terrain_name: str = '', model_label: str = ''):
+        """Generate and save basic tracking plots (crosstrack, heading, speed, XY trajectory)."""
+        import os
+        import matplotlib.pyplot as plt
+        import numpy as np
 
-    Tracks:
-      - Cross-track error (lateral deviation from reference path)
-      - Heading error (yaw deviation from reference heading)
-      - Speed error (actual vs target)
-      - Position (x, y) for post-run analysis
-    """
+        os.makedirs(plot_dir, exist_ok=True)
 
-    def __init__(self, path_type: str, v_target: float,
-                 lane_offset: float = 3.0,
-                 sine_amplitude: float = 2.0,
-                 sine_wavelength: float = 30.0,
-                 rms_time_start: float = 0.0):
-        self.path_type = path_type
+        times = np.array(self.times)
+        crosstrack = np.array(self.crosstrack_errors)
+        heading = np.degrees(np.array(self.heading_errors))
+        speed = np.array(self.us)
+        speed_err = np.array(self.speed_errors)
+        xs = np.array(self.xs)
+        ys = np.array(self.ys)
+        y_refs = np.array(self.y_refs)
+        psi_refs = np.degrees(np.array(self.psi_refs))
+
+        # Cross-track error plot
+        plt.figure()
+        plt.plot(times, crosstrack, label='Cross-track error (m)')
+        plt.xlabel('Time (s)')
+        plt.ylabel('Cross-track error (m)')
+        plt.title(f'Cross-track Error\n{terrain_name} {model_label}')
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(plot_dir, 'crosstrack_error.png'))
+        plt.close()
+
+        # Heading error plot
+        plt.figure()
+        plt.plot(times, heading, label='Heading error (deg)')
+        plt.xlabel('Time (s)')
+        plt.ylabel('Heading error (deg)')
+        plt.title(f'Heading Error\n{terrain_name} {model_label}')
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(plot_dir, 'heading_error.png'))
+        plt.close()
+
+        # Speed error plot
+        plt.figure()
+        plt.plot(times, speed_err, label='Speed error (m/s)')
+        plt.xlabel('Time (s)')
+        plt.ylabel('Speed error (m/s)')
+        plt.title(f'Speed Error\n{terrain_name} {model_label}')
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(plot_dir, 'speed_error.png'))
+        plt.close()
+
+        # XY trajectory plot
+        plt.figure()
+        plt.plot(xs, ys, label='Actual trajectory')
+        if hasattr(self.ref_path, 'x_pts') and hasattr(self.ref_path, 'y_pts'):
+            plt.plot(self.ref_path.x_pts, self.ref_path.y_pts, '--', label='Reference path')
+        plt.xlabel('X (m)')
+        plt.ylabel('Y (m)')
+        plt.title(f'XY Trajectory\n{terrain_name} {model_label}')
+        plt.axis('equal')
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(plot_dir, 'xy_trajectory.png'))
+        plt.close()
+
+        print(f"Plots saved to {plot_dir}")
+
+        """
+        Accumulates path-tracking metrics over the simulation.
+
+        Tracks:
+            - Cross-track error (lateral deviation from reference path)
+            - Heading error (yaw deviation from reference heading)
+            - Speed error (actual vs target)
+            - Position (x, y) for post-run analysis
+        """
+
+    def __init__(self, ref_path, v_target: float,
+                 rms_time_start: float = 0.0,
+                 path_type: str = ''):
+        self.ref_path = ref_path  # ReferencePath object (spline-based)
         self.v_target = v_target
-        self.lane_offset = lane_offset
-        self.sine_amplitude = sine_amplitude
-        self.sine_wavelength = sine_wavelength
         self.rms_time_start = rms_time_start
+        self.path_type = path_type  # display label only
 
         # Raw sample storage
         self.times: list[float] = []
@@ -296,12 +364,12 @@ class TrackingAnalytics:
         self.tau_comp_ms: list[float] = []
         self.ctrl_times: list[float] = []    # may differ from self.times
 
-        # Lateral force comparison (Chrono actual vs NN predicted)
+        # Lateral force comparison (Chrono actual vs model predicted)
         self.fy_times: list[float] = []
         self.actual_Fy_front: list[float] = []
         self.actual_Fy_rear: list[float] = []
-        self.nn_Fy_front: list[float] = []
-        self.nn_Fy_rear: list[float] = []
+        self.pred_Fy_front: list[float] = []
+        self.pred_Fy_rear: list[float] = []
 
         # Reference path arrays (for XY plot)
         self.y_refs: list[float] = []
@@ -310,69 +378,11 @@ class TrackingAnalytics:
         # Running statistics (for periodic reports)
         self._window: list[float] = []  # recent |crosstrack| for windowed RMS
 
-    # ----- reference path (matches dallas_chrono_demo RMS logic) -----
-
-    def _y_ref(self, x: float) -> float:
-        if self.path_type == "lane_change":
-            s, e = 10.0, 25.0
-            if x < s:
-                return 0.0
-            elif x > e:
-                return self.lane_offset
-            t = (x - s) / (e - s)
-            return self.lane_offset * t * t * (3 - 2 * t)
-        elif self.path_type == "double_lane_change":
-            z1s, z1e = 8.0, 18.0
-            z2s, z2e = 28.0, 38.0
-            if x < z1s:
-                return 0.0
-            elif x < z1e:
-                t = (x - z1s) / (z1e - z1s)
-                return self.lane_offset * t * t * (3 - 2 * t)
-            elif x < z2s:
-                return self.lane_offset
-            elif x < z2e:
-                t = (x - z2s) / (z2e - z2s)
-                return self.lane_offset * (1 - t * t * (3 - 2 * t))
-            else:
-                return 0.0
-        elif self.path_type == "sinusoidal":
-            return self.sine_amplitude * np.sin(
-                2 * np.pi * x / self.sine_wavelength)
-        return 0.0
-
-    def _psi_ref(self, x: float) -> float:
-        if self.path_type == "lane_change":
-            s, e = 10.0, 25.0
-            if s < x < e:
-                t = (x - s) / (e - s)
-                dy_dx = self.lane_offset * 6 * t * (1 - t) / (e - s)
-                return np.arctan(dy_dx)
-            return 0.0
-        elif self.path_type == "double_lane_change":
-            z1s, z1e = 8.0, 18.0
-            z2s, z2e = 28.0, 38.0
-            if z1s < x < z1e:
-                t = (x - z1s) / (z1e - z1s)
-                dy_dx = self.lane_offset * 6 * t * (1 - t) / (z1e - z1s)
-                return np.arctan(dy_dx)
-            elif z2s < x < z2e:
-                t = (x - z2s) / (z2e - z2s)
-                dy_dx = -self.lane_offset * 6 * t * (1 - t) / (z2e - z2s)
-                return np.arctan(dy_dx)
-            return 0.0
-        elif self.path_type == "sinusoidal":
-            return np.arctan(
-                2 * np.pi * self.sine_amplitude / self.sine_wavelength
-                * np.cos(2 * np.pi * x / self.sine_wavelength))
-        return 0.0
-
     # ----- public API -----
 
     def record(self, t: float, x: float, y: float, psi: float, u: float):
         """Record one sample."""
-        y_ref = self._y_ref(x)
-        psi_ref = self._psi_ref(x)
+        y_ref, psi_ref = self.ref_path.evaluate_at_x(x)
 
         ct_err = y - y_ref
         hd_err = psi - psi_ref
@@ -406,13 +416,13 @@ class TrackingAnalytics:
 
     def record_tire_forces(self, t: float,
                            actual_Fy_f: float, actual_Fy_r: float,
-                           nn_Fy_f: float, nn_Fy_r: float):
-        """Record actual (Chrono) vs NN-predicted axle lateral forces."""
+                           pred_Fy_f: float, pred_Fy_r: float):
+        """Record actual (Chrono) vs model-predicted axle lateral forces."""
         self.fy_times.append(t)
         self.actual_Fy_front.append(actual_Fy_f)
         self.actual_Fy_rear.append(actual_Fy_r)
-        self.nn_Fy_front.append(nn_Fy_f)
-        self.nn_Fy_rear.append(nn_Fy_r)
+        self.pred_Fy_front.append(pred_Fy_f)
+        self.pred_Fy_rear.append(pred_Fy_r)
 
     def periodic_summary(self, last_n: int = 20) -> str:
         """One-line summary of recent tracking performance."""
@@ -437,163 +447,67 @@ class TrackingAnalytics:
         sp = np.array(self.speed_errors)
         ts = np.array(self.times)
 
-        # Apply RMS time window (skip startup transient)
+        # Restrict stats to after rms_time_start
         mask = ts >= self.rms_time_start
-        if mask.sum() == 0:
-            mask = np.ones(len(ts), dtype=bool)
-        ct_w, hd_w, sp_w = ct[mask], hd[mask], sp[mask]
+        ct_m = ct[mask] if mask.any() else ct
+        hd_m = hd[mask] if mask.any() else hd
+        sp_m = sp[mask] if mask.any() else sp
 
-        rms_ct = np.sqrt(np.mean(ct_w ** 2))
-        max_ct = np.max(np.abs(ct_w))
-        rms_hd = np.degrees(np.sqrt(np.mean(hd_w ** 2)))
-        max_hd = np.degrees(np.max(np.abs(hd_w)))
-        rms_sp = np.sqrt(np.mean(sp_w ** 2))
-        mean_sp = np.mean(np.array(self.us)[mask])
-        min_sp = np.min(np.array(self.us)[mask])
+        mean_ct  = np.mean(np.abs(ct_m))
+        rms_ct   = np.sqrt(np.mean(ct_m ** 2))
+        max_ct   = np.max(np.abs(ct_m))
+        rms_hd   = np.degrees(np.sqrt(np.mean(hd_m ** 2)))
+        mean_sp  = np.mean(sp_m)
 
         lines = [
-            "",
-            "  Tracking Analytics:",
-            f"    Samples: {mask.sum()} (from t≥{self.rms_time_start:.1f}s)",
-            f"    Cross-track error  — RMS: {rms_ct:.4f} m,  Max: {max_ct:.4f} m",
-            f"    Heading error      — RMS: {rms_hd:.2f}°,  Max: {max_hd:.2f}°",
-            f"    Speed error        — RMS: {rms_sp:.3f} m/s",
-            f"    Speed              — Avg: {mean_sp:.2f},  Min: {min_sp:.2f} m/s",
+            f"\n  Tracking Summary (t≥{self.rms_time_start:.1f}s):",
+            f"    Avg |CTE|:  {mean_ct:.4f} m",
+            f"    RMS CTE:    {rms_ct:.4f} m",
+            f"    Max |CTE|:  {max_ct:.4f} m",
+            f"    RMS heading:{rms_hd:.2f}°",
+            f"    Mean Δspeed:{mean_sp:+.3f} m/s",
         ]
         return "\n".join(lines)
 
-    def plot_results(self, plot_dir: str, terrain_name: str,
-                     model_label: str):
-        """Generate end-of-run diagnostic plots and save to plot_dir."""
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
 
-        if len(self.times) < 2:
-            print("  Not enough data for plots.")
-            return
+# =============================================================================
+# Tire history tracker for temporal NN
+# =============================================================================
 
-        model_tag = "nn" if "NN" in model_label else "pacejka"
-        out = Path(plot_dir)
-        out.mkdir(parents=True, exist_ok=True)
-        tag = f"{terrain_name}_{self.path_type}_{model_tag}"
+class TireHistoryTracker:
+    """Track recent per-tire operating conditions for the temporal NN.
 
-        ts = np.array(self.times)
-        xs = np.array(self.xs)
-        ys = np.array(self.ys)
-        yr = np.array(self.y_refs)
-        ct = np.array(self.crosstrack_errors)
-        hd = np.degrees(np.array(self.heading_errors))
-        us = np.array(self.us)
+    Maintains a sliding window of the last (K-1) observations of
+    [kappa, alpha, u, Fz, steering_rate] for front and rear tires.
+    The history is flattened most-recent-first for the NLP parameter vector.
+    """
 
-        # ---- Figure 1: XY trajectory + reference ----
-        fig, ax = plt.subplots(figsize=(12, 5))
-        ax.plot(xs, yr, 'k--', lw=1.5, label='Reference')
-        sc = ax.scatter(xs, ys, c=np.abs(ct), cmap='RdYlGn_r',
-                        s=8, vmin=0, vmax=max(0.3, np.percentile(np.abs(ct), 95)))
-        plt.colorbar(sc, ax=ax, label='|Cross-track error| (m)')
-        ax.set_xlabel('X (m)')
-        ax.set_ylabel('Y (m)')
-        ax.set_title(f'XY Trajectory — {model_label} / {terrain_name} / {self.path_type}')
-        ax.legend(loc='upper left')
-        ax.set_aspect('equal', adjustable='datalim')
-        ax.grid(True, alpha=0.3)
-        fig.tight_layout()
-        fig.savefig(out / f'xy_trajectory_{tag}.png', dpi=150)
-        plt.close(fig)
+    def __init__(self, K):
+        self.K = K
+        self.n_keep = K - 1  # number of past observations to store
+        # Each entry is [kappa, alpha, u, Fz, sr] — most recent at index 0
+        self._front = collections.deque(maxlen=self.n_keep)
+        self._rear = collections.deque(maxlen=self.n_keep)
+        # Pre-fill with zeros
+        for _ in range(self.n_keep):
+            self._front.append(np.zeros(5))
+            self._rear.append(np.zeros(5))
 
-        # ---- Figure 2: Tracking errors (3 subplots) ----
-        fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
-        fig.suptitle(f'Tracking Errors — {model_label} / {terrain_name} / {self.path_type}',
-                     fontsize=13)
+    def update(self, kappa_f, alpha_f, u, Fz_f, sr_f,
+               kappa_r, alpha_r, Fz_r, sr_r):
+        """Push new front/rear observations (called once per MPC solve)."""
+        self._front.appendleft(np.array([kappa_f, alpha_f, u, Fz_f, sr_f]))
+        self._rear.appendleft(np.array([kappa_r, alpha_r, u, Fz_r, sr_r]))
 
-        axes[0].plot(ts, ct * 100, 'b-', lw=0.8)
-        axes[0].axhline(0, color='k', lw=0.5)
-        axes[0].set_ylabel('Cross-track (cm)')
-        axes[0].grid(True, alpha=0.3)
-        # Add RMS annotation
-        mask = ts >= self.rms_time_start
-        if mask.sum() > 0:
-            rms_ct = np.sqrt(np.mean(ct[mask] ** 2)) * 100
-            axes[0].axhline(rms_ct, color='r', ls='--', lw=0.7, label=f'RMS={rms_ct:.1f}cm')
-            axes[0].axhline(-rms_ct, color='r', ls='--', lw=0.7)
-            axes[0].legend(fontsize=9)
+    @property
+    def front(self):
+        """Flattened history for front tires, shape ((K-1)*5,)."""
+        return np.concatenate(list(self._front))
 
-        axes[1].plot(ts, hd, 'g-', lw=0.8)
-        axes[1].axhline(0, color='k', lw=0.5)
-        axes[1].set_ylabel('Heading error (°)')
-        axes[1].grid(True, alpha=0.3)
-
-        axes[2].plot(ts, us, 'r-', lw=0.8, label='Actual')
-        axes[2].axhline(self.v_target, color='k', ls='--', lw=1, label=f'Target={self.v_target:.1f}')
-        axes[2].set_ylabel('Speed (m/s)')
-        axes[2].set_xlabel('Time (s)')
-        axes[2].legend(fontsize=9)
-        axes[2].grid(True, alpha=0.3)
-
-        fig.tight_layout()
-        fig.savefig(out / f'tracking_errors_{tag}.png', dpi=150)
-        plt.close(fig)
-
-        # ---- Figure 3: Control inputs + MPC timing (4 subplots) ----
-        if len(self.ctrl_times) > 1:
-            tc = np.array(self.ctrl_times)
-            fig, axes = plt.subplots(4, 1, figsize=(12, 10), sharex=True)
-            fig.suptitle(f'Controls & MPC — {model_label} / {terrain_name} / {self.path_type}',
-                         fontsize=13)
-
-            axes[0].plot(tc, np.degrees(self.deltas), 'b-', lw=0.8)
-            axes[0].set_ylabel('Steering angle (°)')
-            axes[0].grid(True, alpha=0.3)
-
-            axes[1].plot(tc, self.throttles, 'g-', lw=0.8, label='Throttle')
-            axes[1].plot(tc, self.brakings, 'r-', lw=0.8, label='Brake')
-            axes[1].set_ylabel('Throttle / Brake')
-            axes[1].set_ylim(-0.05, 1.05)
-            axes[1].legend(fontsize=9)
-            axes[1].grid(True, alpha=0.3)
-
-            axes[2].plot(tc, self.solve_times_ms, 'purple', lw=0.8)
-            axes[2].set_ylabel('MPC solve (ms)')
-            axes[2].grid(True, alpha=0.3)
-
-            axes[3].plot(tc, self.tau_comp_ms, 'orange', lw=0.8)
-            axes[3].set_ylabel('τ_comp (ms)')
-            axes[3].set_xlabel('Time (s)')
-            axes[3].grid(True, alpha=0.3)
-
-            fig.tight_layout()
-            fig.savefig(out / f'controls_mpc_{tag}.png', dpi=150)
-            plt.close(fig)
-
-        # ---- Figure 4: Fy actual vs NN (if data available) ----
-        if len(self.fy_times) > 1:
-            tf = np.array(self.fy_times)
-            fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-            fig.suptitle(
-                f'Lateral Force: Chrono vs NN — {terrain_name} / {self.path_type}',
-                fontsize=13)
-
-            axes[0].plot(tf, self.actual_Fy_front, 'b-', lw=0.8, label='Chrono')
-            axes[0].plot(tf, self.nn_Fy_front, 'r--', lw=0.8, label='NN')
-            axes[0].set_ylabel('Fy (N)')
-            axes[0].set_title('Front Axle Lateral Force')
-            axes[0].legend(fontsize=9)
-            axes[0].grid(True, alpha=0.3)
-
-            axes[1].plot(tf, self.actual_Fy_rear, 'b-', lw=0.8, label='Chrono')
-            axes[1].plot(tf, self.nn_Fy_rear, 'r--', lw=0.8, label='NN')
-            axes[1].set_ylabel('Fy (N)')
-            axes[1].set_xlabel('Time (s)')
-            axes[1].set_title('Rear Axle Lateral Force')
-            axes[1].legend(fontsize=9)
-            axes[1].grid(True, alpha=0.3)
-
-            fig.tight_layout()
-            fig.savefig(out / f'Fy_actual_vs_nn_{tag}.png', dpi=150)
-            plt.close(fig)
-
-        print(f"  Plots saved to {out}/")
+    @property
+    def rear(self):
+        """Flattened history for rear tires, shape ((K-1)*5,)."""
+        return np.concatenate(list(self._rear))
 
 
 # =============================================================================
@@ -636,6 +550,7 @@ def run_controller_node(args):
             "sim_time": args.time,
             "sine_amplitude": args.sine_amplitude,
             "sine_wavelength": args.sine_wavelength,
+            "lead_in": args.lead_in,
         }
 
     vehicle_params = config["vehicle_params"]
@@ -644,16 +559,19 @@ def run_controller_node(args):
     path_type = config.get("path_type", args.path)
     sine_amp = config.get("sine_amplitude", args.sine_amplitude)
     sine_wl = config.get("sine_wavelength", args.sine_wavelength)
+    lead_in = config.get("lead_in", args.lead_in)
     terrain_name = config.get("terrain_preset", args.terrain)
 
     print(f"  Terrain: {terrain_name}")
     print(f"  Path: {path_type}, v_target: {v_target} m/s")
+    if lead_in > 0:
+        print(f"  Lead-in: {lead_in:.0f}m straight before path")
 
     # ------------------------------------------------------------------
     # Build MPC
     # ------------------------------------------------------------------
     dt_mpc = 0.1
-    N_horizon = 25
+    N_horizon = 30
 
     nn_casadi = None
     if args.model == "nn":
@@ -673,9 +591,17 @@ def run_controller_node(args):
         N=N_horizon,
         kappa_mode=args.kappa,
         lateral_load_transfer=not args.no_lat_transfer,
+        tire_model=args.model,
     )
-    model_label = "NN" if mpc.use_nn else "Pacejka"
+    model_label = args.model.upper() if not mpc.use_nn else "NN"
     print(f"  MPC built: {model_label}, N={N_horizon}, dt={dt_mpc}s")
+
+    # Temporal history tracker
+    tire_hist = None
+    if mpc._temporal_mode:
+        K_t = mpc.nn_casadi.temporal_K
+        tire_hist = TireHistoryTracker(K_t)
+        print(f"  Temporal history: K={K_t}, tracking {K_t - 1} past observations per tire")
 
     # Warmup MPC solver (JIT)
     print("  Warming up MPC solver...", end="", flush=True)
@@ -690,15 +616,26 @@ def run_controller_node(args):
     print(" done!")
 
     # ------------------------------------------------------------------
-    # Path generator
+    # Timestamped run directory (shared by CSV + plots + path CSV)
     # ------------------------------------------------------------------
-    path_func = make_path_function(
+    model_tag = args.model
+    run_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    run_dir = Path(args.plot_dir) / f"{run_ts}_{terrain_name}_{path_type}_{model_tag}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Reference path (spline-based, with CSV export)
+    # ------------------------------------------------------------------
+    ref_path = make_path_function(
         path_type=path_type,
         v_target=v_target,
         sine_amplitude=sine_amp,
         sine_wavelength=sine_wl,
         use_closest_point=not args.no_path_reindex,
+        lead_in=lead_in,
+        csv_dir=str(run_dir),
     )
+    path_func = ref_path.get_reference
 
     # ------------------------------------------------------------------
     # Transport delay compensation
@@ -716,11 +653,10 @@ def run_controller_node(args):
     # Tracking analytics
     # ------------------------------------------------------------------
     analytics = TrackingAnalytics(
-        path_type=path_type,
+        ref_path=ref_path,
         v_target=v_target,
-        sine_amplitude=sine_amp,
-        sine_wavelength=sine_wl,
         rms_time_start=args.rms_time_start,
+        path_type=path_type,
     )
 
     # ------------------------------------------------------------------
@@ -736,14 +672,6 @@ def run_controller_node(args):
     last_state: VehicleState = None
     solve_times = []
     n_terrain_est = terrain_params.get("n", 1.1)
-
-    # ------------------------------------------------------------------
-    # Timestamped run directory (shared by CSV + plots)
-    # ------------------------------------------------------------------
-    model_tag = "nn" if model_label == "NN" else "pacejka"
-    run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = Path(args.plot_dir) / f"{run_ts}_{terrain_name}_{path_type}_{model_tag}"
-    run_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Diagnostic CSV logger
@@ -774,7 +702,7 @@ def run_controller_node(args):
             # tracking errors
             "crosstrack_err", "heading_err_deg", "speed_err",
             # tire forces (if available)
-            "actual_Fy_front", "actual_Fy_rear", "nn_Fy_front", "nn_Fy_rear",
+            "actual_Fy_front", "actual_Fy_rear", "pred_Fy_front", "pred_Fy_rear",
             # slip angles & Fz used for NN
             "alpha_f", "alpha_r", "Fz_f_mean", "Fz_r_mean",
         ]
@@ -821,7 +749,7 @@ def run_controller_node(args):
 
         z0_measured = np.array([
             x_fa, y_fa, psi,
-            max(msg.u, 0.5),  # Clamp min speed (same as dallas_chrono_demo)
+            max(msg.u, 0.5),  # Clamp min speed (same as scm_hmmwv_demo)
             msg.v, msg.omega,
             integrator.steering_angle,
             integrator.acceleration,
@@ -840,20 +768,57 @@ def run_controller_node(args):
             msg.time, z0, mpc.N, mpc.dt
         )
 
+        # --- Compute per-tire operating conditions (for temporal history) ---
+        u_safe_h = max(abs(msg.u), 0.5)
+        alpha_f_h = integrator.steering_angle - math.atan2(
+            msg.v + mpc.Lf * msg.omega, u_safe_h)
+        alpha_r_h = -math.atan2(
+            msg.v - mpc.Lr * msg.omega, u_safe_h)
+        g_h = 9.81
+        ax_h = integrator.acceleration
+        L_h = mpc.Lf + mpc.Lr
+        Fz_f_h = (mpc.M * g_h * mpc.Lr - mpc.M * ax_h * mpc.h_cg) / L_h / 2.0
+        Fz_r_h = (mpc.M * g_h * mpc.Lf + mpc.M * ax_h * mpc.h_cg) / L_h / 2.0
+        kappa_h = 0.0  # kappa_mode=zero default
+        sr_h = 0.0  # steering rate measurement
+
         # --- Solve MPC ---
         t0_solve = wall_time.time()
+        solve_kwargs = dict(
+            n_terrain=n_terrain_est,
+            sr_meas=sr_h,
+        )
+        if tire_hist is not None:
+            solve_kwargs['hist_front'] = tire_hist.front
+            solve_kwargs['hist_rear'] = tire_hist.rear
         delta_dot, Jx, Z_opt, U_opt = mpc.solve(
             z0, x_ref, y_ref, psi_ref, v_ref,
             x_goal, y_goal, psi_goal,
-            n_terrain=n_terrain_est,
-            sr_meas=0.0,
+            **solve_kwargs,
         )
         t_solve = wall_time.time() - t0_solve
         solve_times.append(t_solve)
         delay_est.update_solve(t_solve)
 
-        if Z_opt is None:
+        _bad_statuses = {'Infeasible_Problem_Detected', 'Restoration_Failed'}
+        if Z_opt is None or getattr(mpc, 'last_solver_status', '') in _bad_statuses:
+            # Hold current controls (zero rate of change) rather than applying
+            # potentially garbage controls from a failed/infeasible iterate.
             delta_dot, Jx = 0.0, 0.0
+
+        # Suppress steering during lead-in acceleration phase.
+        # At low speeds, the Pacejka solver produces unreliable steering
+        # commands (slip-angle singularity) that cause large lateral drift.
+        # The path is straight during lead-in, so steering is unnecessary.
+        if lead_in > 0 and z0[0] < lead_in and msg.u < 0.8 * v_target:
+            delta_dot = 0.0
+
+        # --- Update tire history after solve ---
+        if tire_hist is not None:
+            tire_hist.update(
+                kappa_h, alpha_f_h, u_safe_h, Fz_f_h, sr_h,
+                kappa_h, alpha_r_h, Fz_r_h, sr_h,
+            )
 
         # --- Integrate controls ---
         steering, throttle, braking = integrator.update(
@@ -880,8 +845,8 @@ def run_controller_node(args):
             t_solve * 1000.0, delay_est.compensation_delay * 1000.0,
         )
 
-        # --- Record Fy: Chrono actual vs NN predicted (if NN enabled) ---
-        if mpc.use_nn and msg.tire_forces is not None:
+        # --- Record Fy: Chrono actual vs model predicted ---
+        if msg.tire_forces is not None:
             tf = msg.tire_forces
             actual_Fy_f = tf.get('front_left_Fy', 0) + tf.get('front_right_Fy', 0)
             actual_Fy_r = tf.get('rear_left_Fy', 0) + tf.get('rear_right_Fy', 0)
@@ -900,33 +865,49 @@ def run_controller_node(args):
             Fz_f_mean = (mpc.M * g * mpc.Lr - mpc.M * ax * mpc.h_cg) / L / 2.0
             Fz_r_mean = (mpc.M * g * mpc.Lf + mpc.M * ax * mpc.h_cg) / L / 2.0
 
-            if mpc.lateral_load_transfer:
-                ay = msg.u * msg.omega
-                dFz = mpc.M * ay * mpc.h_cg / mpc.T / 2.0
-                Fz_fo = min(Fz_f_mean + dFz, 1.9 * Fz_f_mean)
-                Fz_fi = max(Fz_f_mean - dFz, 0.1 * Fz_f_mean)
-                Fz_ro = min(Fz_r_mean + dFz, 1.9 * Fz_r_mean)
-                Fz_ri = max(Fz_r_mean - dFz, 0.1 * Fz_r_mean)
-                _, Fy_fo = mpc.nn_casadi.predict_numeric(
-                    alpha_f, Fz_fo, u_safe, n_terrain=n_terrain_est)
-                _, Fy_fi = mpc.nn_casadi.predict_numeric(
-                    alpha_f, Fz_fi, u_safe, n_terrain=n_terrain_est)
-                _, Fy_ro = mpc.nn_casadi.predict_numeric(
-                    alpha_r, Fz_ro, u_safe, n_terrain=n_terrain_est)
-                _, Fy_ri = mpc.nn_casadi.predict_numeric(
-                    alpha_r, Fz_ri, u_safe, n_terrain=n_terrain_est)
-                nn_Fy_f = -(Fy_fo + Fy_fi)
-                nn_Fy_r = -(Fy_ro + Fy_ri)
+            if mpc.use_nn:
+                # NN prediction
+                if mpc.lateral_load_transfer:
+                    ay = msg.u * msg.omega
+                    dFz = mpc.M * ay * mpc.h_cg / mpc.T / 2.0
+                    Fz_fo = min(Fz_f_mean + dFz, 1.9 * Fz_f_mean)
+                    Fz_fi = max(Fz_f_mean - dFz, 0.1 * Fz_f_mean)
+                    Fz_ro = min(Fz_r_mean + dFz, 1.9 * Fz_r_mean)
+                    Fz_ri = max(Fz_r_mean - dFz, 0.1 * Fz_r_mean)
+                    _, Fy_fo = mpc.nn_casadi.predict_numeric(
+                        alpha_f, Fz_fo, u_safe, n_terrain=n_terrain_est)
+                    _, Fy_fi = mpc.nn_casadi.predict_numeric(
+                        alpha_f, Fz_fi, u_safe, n_terrain=n_terrain_est)
+                    _, Fy_ro = mpc.nn_casadi.predict_numeric(
+                        alpha_r, Fz_ro, u_safe, n_terrain=n_terrain_est)
+                    _, Fy_ri = mpc.nn_casadi.predict_numeric(
+                        alpha_r, Fz_ri, u_safe, n_terrain=n_terrain_est)
+                    pred_Fy_f = -(Fy_fo + Fy_fi)
+                    pred_Fy_r = -(Fy_ro + Fy_ri)
+                else:
+                    _, Fy_fw = mpc.nn_casadi.predict_numeric(
+                        alpha_f, Fz_f_mean, u_safe, n_terrain=n_terrain_est)
+                    _, Fy_rw = mpc.nn_casadi.predict_numeric(
+                        alpha_r, Fz_r_mean, u_safe, n_terrain=n_terrain_est)
+                    pred_Fy_f = -2.0 * Fy_fw
+                    pred_Fy_r = -2.0 * Fy_rw
             else:
-                _, Fy_fw = mpc.nn_casadi.predict_numeric(
-                    alpha_f, Fz_f_mean, u_safe, n_terrain=n_terrain_est)
-                _, Fy_rw = mpc.nn_casadi.predict_numeric(
-                    alpha_r, Fz_r_mean, u_safe, n_terrain=n_terrain_est)
-                nn_Fy_f = -2.0 * Fy_fw
-                nn_Fy_r = -2.0 * Fy_rw
+                # Pacejka Magic Formula prediction (same formula as MPC dynamics)
+                B = mpc.pacejka_B
+                C = mpc.pacejka_C
+                E = mpc.pacejka_E
+                mu = mpc.mu
+                kappa = integrator.acceleration / max(u_safe, 1.0)  # approx slip ratio
+                lat_limit = math.sqrt(max(1.0 - (kappa / 0.2) ** 2, 0.1))
+                Df = mu * 2.0 * Fz_f_mean * lat_limit
+                Dr = mu * 2.0 * Fz_r_mean * lat_limit
+                Baf = B * alpha_f
+                Bar = B * alpha_r
+                pred_Fy_f = Df * math.sin(C * math.atan(Baf - E * (Baf - math.atan(Baf))))
+                pred_Fy_r = Dr * math.sin(C * math.atan(Bar - E * (Bar - math.atan(Bar))))
 
             analytics.record_tire_forces(
-                msg.time, actual_Fy_f, actual_Fy_r, nn_Fy_f, nn_Fy_r)
+                msg.time, actual_Fy_f, actual_Fy_r, pred_Fy_f, pred_Fy_r)
 
         # --- Publish command ---
         cmd = ControlCommand(
@@ -967,8 +948,8 @@ def run_controller_node(args):
             # Fy data (last recorded, may be empty)
             fy_af = analytics.actual_Fy_front[-1] if analytics.actual_Fy_front else ''
             fy_ar = analytics.actual_Fy_rear[-1] if analytics.actual_Fy_rear else ''
-            fy_nf = analytics.nn_Fy_front[-1] if analytics.nn_Fy_front else ''
-            fy_nr = analytics.nn_Fy_rear[-1] if analytics.nn_Fy_rear else ''
+            fy_nf = analytics.pred_Fy_front[-1] if analytics.pred_Fy_front else ''
+            fy_nr = analytics.pred_Fy_rear[-1] if analytics.pred_Fy_rear else ''
 
             # Slip angles & Fz (compute inline)
             u_safe_csv = max(abs(msg.u), 0.5)
@@ -1026,12 +1007,15 @@ def run_controller_node(args):
     # ------------------------------------------------------------------
     if solve_times:
         st = np.array(solve_times)
+        ct_arr = np.array(analytics.crosstrack_errors) if analytics.crosstrack_errors else None
+        avg_cte = np.mean(np.abs(ct_arr)) if ct_arr is not None else float("nan")
         print(f"\n  Controller Summary ({model_label}):")
-        print(f"    Total solves: {len(st)}")
-        print(f"    Mean solve:   {np.mean(st)*1000:.2f} ms")
-        print(f"    Max solve:    {np.max(st)*1000:.2f} ms")
+        print(f"    Total solves:   {len(st)}")
+        print(f"    Mean solve:     {np.mean(st)*1000:.2f} ms")
+        print(f"    Max solve:      {np.max(st)*1000:.2f} ms")
         print(f"    Effective rate: {1.0/np.mean(st):.1f} Hz")
-        print(f"    Final τ_comp: {delay_est.compensation_delay*1000:.1f} ms")
+        print(f"    Avg |CTE|:      {avg_cte:.4f} m")
+        print(f"    Final τ_comp:   {delay_est.compensation_delay*1000:.1f} ms")
 
     print(analytics.final_summary())
 
@@ -1059,8 +1043,9 @@ def main():
     p = argparse.ArgumentParser(description="MPC Controller Node (decoupled)")
 
     # Model
-    p.add_argument("--model", default="nn", choices=["nn", "linear"],
-                   help="nn = NN tire model, linear = Pacejka")
+    p.add_argument("--model", default="nn",
+                   choices=["nn", "pacejka", "tmeasy", "linear"],
+                   help="MPC tire model: nn, pacejka (Magic Formula), tmeasy, or linear")
     p.add_argument("--nn-model", default="v6", help="NN model version directory")
     p.add_argument("--kappa", default="zero", choices=["zero", "approx"])
     p.add_argument("--no-lat-transfer", action="store_true",
@@ -1072,6 +1057,8 @@ def main():
     p.add_argument("--speed", type=float, default=5.0, help="Target speed (m/s)")
     p.add_argument("--sine-amplitude", type=float, default=2.0)
     p.add_argument("--sine-wavelength", type=float, default=30.0)
+    p.add_argument("--lead-in", type=float, default=0.0,
+                   help="Straight lead-in distance (m) before path starts")
     p.add_argument("--no-path-reindex", action="store_true")
 
     # Terrain (used as fallback if no config received from sim)
