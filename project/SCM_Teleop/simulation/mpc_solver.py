@@ -931,15 +931,17 @@ class DallasMPC:
             cost += (self.w_delta_dot * delta_dot_k**2 + self.w_Jx * Jx_k**2) * dt
             
             # -----------------------------------------------------------------
-            # Path tracking: true cross-track error (perpendicular to path tangent).
-            # e_ct = (y-y_ref)*cos(psi_ref) - (x-x_ref)*sin(psi_ref)
-            # This is correct even when the path heading is non-zero.
+            # Path tracking: CROSS-TRACK (y) error only.
+            # Do NOT penalize x-error: the speed cost handles longitudinal progress.
+            # Including (x_k - x_ref_k)^2 causes countersteering when the MPC
+            # accelerates past the reference, since x-error dominates and y
+            # becomes unconstrained.
             # -----------------------------------------------------------------
-            e_ct = (y_k - y_ref_k) * ca.cos(psi_ref_k) - (x_k - x_ref_k) * ca.sin(psi_ref_k)
+            crosstrack_error = (y_k - y_ref_k)**2
             heading_error = (psi_k - psi_ref_k)**2
             speed_error = (u_k - v_ref_k)**2
             
-            cost += self.w_lateral * e_ct**2
+            cost += self.w_lateral * crosstrack_error
             cost += self.w_heading * heading_error
             cost += self.w_speed * speed_error
             
@@ -980,15 +982,25 @@ class DallasMPC:
             # Traction constraint: commanded force M*ax must not exceed
             # available tire force Fx_total from NN prediction.
             # Fx_avail is from the k1 evaluation above (same batch call).
+            #
+            # Skip k=0: the initial state Z[:,0]=z0 is fixed by the equality
+            # constraint and cannot be changed by the solver.  If the current
+            # acceleration exceeds the NN-predicted traction budget (common
+            # during the speed-up transient on deformable terrain), enforcing
+            # the traction inequality at k=0 makes the NLP infeasible and
+            # IPOPT returns Infeasible_Problem_Detected on every call.
+            # Constraints at k=1..N-1 still ensure the *planned* trajectory
+            # respects traction limits.
             # -----------------------------------------------------------------
-            ax_k = zk[7]
-            
-            # Acceleration traction limit: M*ax - Fx_avail ≤ 0
-            g_ineq.append(M * ax_k - Fx_avail)
-            
-            # Braking traction limit: -M*ax - |Fx_avail| ≤ 0
-            # (braking force magnitude limited by same traction)
-            g_ineq.append(-M * ax_k - ca.fabs(Fx_avail))
+            if k > 0:
+                ax_k = zk[7]
+                
+                # Acceleration traction limit: M*ax - Fx_avail ≤ 0
+                g_ineq.append(M * ax_k - Fx_avail)
+                
+                # Braking traction limit: -M*ax - |Fx_avail| ≤ 0
+                # (braking force magnitude limited by same traction)
+                g_ineq.append(-M * ax_k - ca.fabs(Fx_avail))
         
         # Combine constraints: equality first, then inequality
         g = g_eq + g_ineq
@@ -1001,13 +1013,15 @@ class DallasMPC:
         cost += w_cont * ca.dot(U[:, 0] - last_u0, U[:, 0] - last_u0)
         
         # =====================================================================
-        # Terminal Cost: true cross-track + heading (no x-distance).
+        # Terminal Cost: cross-track + heading only (no x-distance).
+        # Euclidean distance to (x_goal, y_goal) caused countersteering because
+        # the vehicle overshoots x_goal when accelerating, making the x-component
+        # dominate and the y-component irrelevant.
         # =====================================================================
         z_final = Z[:, N]
         x_f, y_f, psi_f = z_final[0], z_final[1], z_final[2]
-        e_ct_terminal = (y_f - y_goal) * ca.cos(psi_goal) - (x_f - x_goal) * ca.sin(psi_goal)
         
-        cost += self.w_terminal * e_ct_terminal**2
+        cost += self.w_terminal * (y_f - y_goal)**2
         cost += self.w_terminal * 0.5 * (psi_f - psi_goal)**2
         
         # =====================================================================
@@ -1064,9 +1078,10 @@ class DallasMPC:
         
         # Constraint bounds:
         # - Equality constraints for dynamics: nx*(N+1) constraints = 0
-        # - Inequality constraints for traction: 2*N constraints ≤ 0
-        n_eq = nx * (N + 1)   # Dynamics equality constraints
-        n_ineq = 2 * N        # Traction inequality constraints (accel + brake per step)
+        # - Inequality constraints for traction: 2*(N-1) constraints ≤ 0
+        #   (skipping k=0 because the initial state is fixed)
+        n_eq = nx * (N + 1)       # Dynamics equality constraints
+        n_ineq = 2 * (N - 1)     # Traction inequality constraints (skip k=0)
         
         self.lbg = np.concatenate([
             np.zeros(n_eq),           # Equality: g = 0

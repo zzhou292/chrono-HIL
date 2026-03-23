@@ -144,6 +144,10 @@ class ReferencePath:
         self.cs_x = CubicSpline(self.s, x_pts)
         self.cs_y = CubicSpline(self.s, y_pts)
 
+        # Direct x→y spline for x-based reference generation (avoids arc-length
+        # compression during lane changes that shortens the effective horizon).
+        self.cs_y_of_x = CubicSpline(x_pts, y_pts)
+
         # Tangent direction at the end of the path (for extrapolation past s_max)
         self._end_dx = float(self.cs_x(self.s_max, 1))
         self._end_dy = float(self.cs_y(self.s_max, 1))
@@ -195,22 +199,24 @@ class ReferencePath:
         s0 = self.s[idx]
         cross_track = float(np.sqrt(dists_sq[local_idx]))
 
-        # 2. Sample N+1 forward arc-length positions.
-        #    Points beyond s_max are extrapolated linearly in the terminal
-        #    tangent direction instead of being clamped — this prevents all
-        #    reference points from piling up on the last waypoint.
-        s_raw = s0 + np.arange(N + 1) * step
-        on_path = s_raw <= self.s_max
-        s_clamped = np.where(on_path, s_raw, self.s_max)
-        overshoot = np.where(on_path, 0.0, s_raw - self.s_max)
+        # 2. X-based forward projection (matches old analytical reference).
+        #    Projects x positions from the vehicle, then evaluates y(x) directly.
+        #    This avoids the arc-length compression that occurs during lane
+        #    changes (curved path has more arc-length per unit x, shortening
+        #    the effective horizon in x).
+        x_raw = x_veh + np.arange(N + 1) * step
+        x_max = self.x_pts[-1]
+        x_clamped = np.minimum(x_raw, x_max)
+        on_path = x_raw <= x_max
 
-        x_path = self.cs_x(s_clamped) + overshoot * self._end_dx
-        y_path = self.cs_y(s_clamped) + overshoot * self._end_dy
+        x_path = x_raw  # x always increases linearly
+        y_path = np.where(on_path,
+                          self.cs_y_of_x(x_clamped),
+                          self.cs_y_of_x(x_max))
 
-        # Heading: use spline tangent on-path, terminal tangent beyond end
-        dx_ds = np.where(on_path, self.cs_x(s_clamped, 1), self._end_dx)
-        dy_ds = np.where(on_path, self.cs_y(s_clamped, 1), self._end_dy)
-        psi_path = np.arctan2(dy_ds, dx_ds)
+        # Heading from spline tangent: psi = arctan(dy/dx)
+        dy_dx = self.cs_y_of_x(x_clamped, 1)
+        psi_path = np.where(on_path, np.arctan(dy_dx), 0.0)
 
         # 3. Adaptive blending: proportional to cross-track error.
         #    Small CT (<0.3m) → no blend (use spline heading directly).
