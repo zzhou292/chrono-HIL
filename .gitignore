@@ -1,8 +1,18 @@
 project/SCM_Teleop/diagnostic_scripts/plots/
 project/SCM_Teleop/diagnostic_scripts/logs/
+project/SCM_Teleop/diagnostic_scripts/*.csv
+project/SCM_Teleop/diagnostic_scripts/*.json
 project/SCM_Teleop/simulation/plots/
 project/SCM_Teleop/simulation/logs/
 project/SCM_Teleop/simulation/benchmark_runs/
+project/SCM_Teleop/plots/
+plots/
+
+# SCM data files (not the tracked training data)
+project/SCM_Teleop/data/scm_temporal_*.csv
 
 # ignore all __pycache__ directories
 __pycache__/
+
+# Generated image/log outputs
+*.log

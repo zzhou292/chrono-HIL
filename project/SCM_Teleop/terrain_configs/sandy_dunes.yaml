@@ -1,0 +1,26 @@
+# SCM Terrain Configuration: Sandy Dunes
+# ==========================================
+# Soft sand with large rolling dunes.
+# High sinkage combined with significant elevation changes.
+
+# Bekker pressure-sinkage parameters (dry loose sand)
+Kphi: 800000          # Lower stiffness — soft sand (Pa/m^n)
+Kc: 500               # Very low cohesion (Pa/m^(n-1))
+n: 1.2                # High sinkage exponent — deep penetration
+
+# Mohr-Coulomb shear strength parameters
+cohesion: 500         # Minimal cohesion (Pa)
+friction_angle: 28    # Moderate friction (degrees)
+
+# Janosi shear displacement parameter
+janosi_shear: 0.024
+
+# Contact parameters
+elastic_stiffness: 2.0e8
+damping: 3.0e4
+
+# Terrain topology (Perlin noise bumpiness)
+bump_amplitude: 0.25  # Large dune-like features (m)
+bump_wavelength: 25.0 # Long wavelength — broad dunes (m)
+bump_octaves: 3       # Smooth dune shapes
+bump_max_slope: 0.2   # Moderate dune slopes (20% grade)

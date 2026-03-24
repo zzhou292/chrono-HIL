@@ -40,10 +40,26 @@ from param_consistency import (
     check_terrain_in_training_range,
     get_static_fz_per_wheel,
     TERRAIN_PRESETS,
+    TOPOLOGY_LEVELS,
     EXCITATION_DEFAULTS,
     HMMWV_VEHICLE_PARAMS,
     TRAINING_RANGES_V6,
 )
+
+# Import new modules: sensors, perception, safety filter
+from sensors.obstacles import add_rock_obstacles, get_rock_positions, get_rock_radii
+from perception import LidarPerception
+from safety import CBFSafetyFilter
+
+# Lidar sensor (optional — requires pychrono.sensor module)
+try:
+    from sensors import LidarManager
+    import pychrono.sensor as sens
+    LIDAR_AVAILABLE = True
+    HAS_SENSOR = True
+except (ImportError, RuntimeError):
+    LIDAR_AVAILABLE = False
+    HAS_SENSOR = False
 
 
 # =============================================================================
@@ -78,7 +94,7 @@ class G29Controller:
     FF_FRICTION = 0.25  # Friction force that opposes steering velocity
     FF_ROAD_FEEL = 0.15  # Speed-dependent constant resistance ("road feel")
     
-    def __init__(self, joystick_index: int = None, enable_force_feedback: bool = True):
+    def __init__(self, joystick_index: int = None, enable_force_feedback: bool = False):
         """
         Initialize G29 controller.
         
@@ -93,6 +109,11 @@ class G29Controller:
         self._initialized = False
         self._joystick_index = joystick_index
         self._enable_ff = enable_force_feedback
+        
+        # Pedal convention auto-detection
+        # Linux G29: rest=-1, pressed=+1; Windows G29: rest=+1, pressed=-1
+        self._pedal_inverted = None  # None=not yet detected
+        self._pedal_detect_frames = 0
         
         # Force feedback state (PySDL2)
         self._haptic = None
@@ -181,15 +202,45 @@ class G29Controller:
         # Steering: axis returns -1 to 1, negate for correct direction
         self.steering = -raw_steering
         
-        # Throttle/Brake: pygame normalizes to -1..1, but pedals rest at 1 (released)
-        # and go to -1 (pressed). Convert to 0..1 range.
-        self.throttle = (1.0 - raw_throttle) / 2.0
-        self.brake = (1.0 - raw_brake) / 2.0
+        # Auto-detect pedal convention on first few frames (pedals should be released)
+        if self._pedal_inverted is None:
+            self._pedal_detect_frames += 1
+            if self._pedal_detect_frames >= 3:
+                # After a few event pumps, check pedal rest position
+                if raw_throttle < -0.5:
+                    # Linux: rest=-1, pressed=+1
+                    self._pedal_inverted = True
+                    print(f"    G29 pedals: Linux convention detected (rest={raw_throttle:.2f})")
+                else:
+                    # Windows/default: rest=+1, pressed=-1
+                    self._pedal_inverted = False
+                    print(f"    G29 pedals: Windows convention detected (rest={raw_throttle:.2f})")
         
+        # Map pedals to 0..1 based on detected convention
+        if self._pedal_inverted:
+            # Linux: -1 (released) to +1 (pressed)
+            self.throttle = (raw_throttle + 1.0) / 2.0
+            self.brake = (raw_brake + 1.0) / 2.0
+        else:
+            # Windows: +1 (released) to -1 (pressed)
+            self.throttle = (1.0 - raw_throttle) / 2.0
+            self.brake = (1.0 - raw_brake) / 2.0
+
         # Clamp to valid range
         self.steering = max(-1.0, min(1.0, self.steering))
         self.throttle = max(0.0, min(1.0, self.throttle))
         self.brake = max(0.0, min(1.0, self.brake))
+
+        # Diagnostic: print raw + mapped values for first 60 frames (~2s)
+        self._pedal_detect_frames += 0  # reuse counter safely
+        if hasattr(self, '_diag_count'):
+            self._diag_count += 1
+        else:
+            self._diag_count = 0
+        if self._diag_count < 60 and self._diag_count % 10 == 0:
+            inv_tag = "LINUX" if self._pedal_inverted else "WIN"
+            print(f"    [G29 diag #{self._diag_count}] raw_thr={raw_throttle:+.3f} raw_brk={raw_brake:+.3f}"
+                  f" -> thr={self.throttle:.3f} brk={self.brake:.3f} steer={self.steering:+.3f} [{inv_tag}]")
     
     def get_inputs(self) -> Tuple[float, float, float]:
         """Get current (steering, throttle, brake) values."""
@@ -1875,10 +1926,17 @@ def load_terrain_config(config_path):
     
     # Convert all values to float (handles scientific notation strings like '2.1e6')
     numeric_fields = ['Kphi', 'Kc', 'n', 'cohesion', 'friction_angle', 'janosi_shear',
-                      'elastic_stiffness', 'damping', 'length', 'width', 'mesh_resolution']
+                      'elastic_stiffness', 'damping', 'length', 'width', 'mesh_resolution',
+                      'bump_amplitude', 'bump_wavelength', 'bump_max_slope']
     for field in numeric_fields:
         if field in config:
             config[field] = float(config[field])
+    
+    # Integer fields
+    int_fields = ['bump_octaves']
+    for field in int_fields:
+        if field in config:
+            config[field] = int(config[field])
     
     return config
 
@@ -2119,7 +2177,15 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
                    sine_amplitude=2.0, sine_wavelength=30.0, measurement_noise=True,
                    use_closest_point=True, rms_time_start=None, rms_time_end=None,
                    steer_excite_amp=0.0, steer_excite_freq=0.15, steer_excite_ramp=3.0,
-                   lateral_load_transfer=True):
+                   lateral_load_transfer=True,
+                   enable_lidar=False, lidar_vis=False, lidar_rate=20.0, lidar_range=100.0,
+                   num_rocks=0, rock_zone_x=(-15.0, 50.0), rock_zone_y=(-10.0, 10.0),
+                   rock_size=(0.5, 3.0), rock_seed=42,
+                   enable_safety_filter=False, cbf_alpha=3.0, safety_buffer=1.0,
+                   delay_steps=5,
+                   cbf_w_long=0.01, cbf_w_lat=0.11, cbf_forward_bias=5.0,
+                   dob_bandwidth=10.0, cbf_flavor='balance',
+                   use_sensor_vis=False, use_irrlicht_vis=None):
     """
     Run simulation with Dallas MPC controller or manual G29 control.
     
@@ -2183,6 +2249,86 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
                                                  bump_max_slope=bump_max_slope)
     t_terrain = time.time() - t0_terrain
     print(f"  [TIMING] Terrain setup: {t_terrain:.2f}s")
+    
+    # -------------------------------------------------------------------------
+    # Add rock obstacles (before lidar so sensor sees them)
+    # -------------------------------------------------------------------------
+    rocks = []
+    if num_rocks > 0:
+        # Keep rocks away from vehicle start position and reference path center
+        exclusion_zones = [(-25.0, 0.0, 5.0)]  # Vehicle spawn at x=-25
+        rocks = add_rock_obstacles(
+            system, num_rocks=num_rocks,
+            zone_x=tuple(rock_zone_x), zone_y=tuple(rock_zone_y),
+            size_range=tuple(rock_size), seed=rock_seed,
+            exclusion_zones=exclusion_zones,
+        )
+    
+    # -------------------------------------------------------------------------
+    # Setup lidar sensor
+    # -------------------------------------------------------------------------
+    lidar_mgr = None
+    if enable_lidar:
+        if not LIDAR_AVAILABLE:
+            print("  ⚠ Lidar requested but pychrono.sensor not available. Skipping.")
+        else:
+            lidar_config = {
+                'update_rate': lidar_rate,
+                'max_range': lidar_range,
+                'visualize': lidar_vis,
+            }
+            lidar_mgr = LidarManager(system, vehicle, config=lidar_config)
+            lidar_mgr.initialize()
+    
+    # -------------------------------------------------------------------------
+    # Setup perception pipeline (runs even without lidar, using rock ground truth)
+    # -------------------------------------------------------------------------
+    perception = None
+    if enable_lidar or num_rocks > 0:
+        perception = LidarPerception(
+            grid_resolution=1.0,
+            perception_range=30.0,
+            ground_height_threshold=0.4,
+            min_obstacle_points=5,
+        )
+    
+    # -------------------------------------------------------------------------
+    # Setup CBF safety filter
+    # -------------------------------------------------------------------------
+    safety_filter = None
+    if enable_safety_filter:
+        vehicle_params_for_cbf = get_vehicle_params_for_demo()
+        # Load NN tire model for terrain-aware traction limits in CBF
+        nn_for_cbf = None
+        model_version = nn_model_dir if nn_model_dir else "v6"
+        base_path = Path(__file__).parent.parent
+        cbf_model_path = base_path / "nn_models" / model_version / "best_terrain_nn.pt"
+        cbf_scaler_path = cbf_model_path.parent / "scalers.pkl"
+        if cbf_model_path.exists():
+            try:
+                nn_for_cbf = NNCasADi(cbf_model_path, cbf_scaler_path, terrain_params)
+                print(f"  [SAFETY] NN tire model loaded for CBF: {model_version}")
+            except Exception as e:
+                print(f"  [SAFETY] NN load failed ({e}), using kinematic fallback")
+                nn_for_cbf = None
+        else:
+            print(f"  [SAFETY] NN model not found at {cbf_model_path}, using kinematic fallback")
+
+        safety_filter = CBFSafetyFilter(
+            vehicle_params=vehicle_params_for_cbf,
+            nn_casadi=nn_for_cbf,
+            cbf_alpha=cbf_alpha,
+            obstacle_buffer=safety_buffer,
+            delay_steps=delay_steps,
+            w_long=cbf_w_long,
+            w_lat=cbf_w_lat,
+            forward_bias=cbf_forward_bias,
+            dob_bandwidth=dob_bandwidth,
+            cbf_flavor=cbf_flavor,
+        )
+        print(f"  [SAFETY] DOB-CBF filter enabled: alpha={cbf_alpha}, buffer={safety_buffer}m, "
+              f"delay={delay_steps} steps, flavor={cbf_flavor}, "
+              f"w_long={cbf_w_long}, w_lat={cbf_w_lat}, bias={cbf_forward_bias}")
     
     # Manual control mode: skip MPC setup, use G29 steering wheel
     if manual_control:
@@ -2248,6 +2394,11 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
                     Fy_mpc = -2.0 * Fy
                     print(f"    α={alpha_deg:+3.0f}°: NN wheel Fy={Fy:+7.0f}N → MPC axle Fy={Fy_mpc:+8.0f}N")
                 print("")
+                
+                # Connect NN to safety filter for terrain-aware traction limits
+                if safety_filter is not None:
+                    safety_filter.nn_casadi = nn_casadi
+                    print("  [SAFETY] NN tire model connected to CBF filter")
         else:
             nn_casadi = None
         
@@ -2350,7 +2501,9 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
     
     # Visualization - optimized for real-time performance
     vis = None
-    if visualize:
+    # use_irrlicht_vis overrides when provided; otherwise Irrlicht = visualize (legacy)
+    show_irrlicht = use_irrlicht_vis if use_irrlicht_vis is not None else visualize
+    if show_irrlicht:
         try:
             vis = veh.ChWheeledVehicleVisualSystemIrrlicht()
             vis.SetWindowTitle(f"Dallas MPC - {controller_type.upper()}")
@@ -2364,6 +2517,44 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
         except Exception as e:
             print(f"⚠ Visualization failed: {e}")
             vis = None
+    
+    # Sensor-based driver POV camera (--vis-mode sensor or both)
+    driver_cam_mgr = None
+    if use_sensor_vis and HAS_SENSOR:
+        try:
+            driver_cam_mgr = sens.ChSensorManager(system)
+            driver_cam_mgr.scene.AddPointLight(
+                chrono.ChVector3f(0, 0, 100),
+                chrono.ChColor(1.5, 1.5, 1.5),
+                500.0,
+            )
+            driver_cam_mgr.scene.SetAmbientLight(chrono.ChVector3f(0.1, 0.1, 0.1))
+            driver_cam_mgr.scene.SetSceneEpsilon(1e-3)
+            driver_cam_mgr.scene.EnableDynamicOrigin(True)
+            driver_cam_mgr.scene.SetOriginOffsetThreshold(500.0)
+
+            cam_offset = chrono.ChFramed(
+                chrono.ChVector3d(0.4, 0.7, 1.0),
+                chrono.ChQuaterniond(1, 0, 0, 0),
+            )
+            driver_cam = sens.ChCameraSensor(
+                vehicle.GetChassisBody(),
+                30,             # update rate (Hz)
+                cam_offset,
+                3440, 1440,     # resolution
+                1.92,           # horizontal FOV (~110 deg)
+            )
+            driver_cam.SetName("DriverPOV")
+            driver_cam.SetLag(0.0)
+            driver_cam.PushFilter(sens.ChFilterVisualize(
+                3440, 1440, "Driver POV", False
+            ))
+            driver_cam.PushFilter(sens.ChFilterRGBA8Access())
+            driver_cam_mgr.AddSensor(driver_cam)
+            print("  Sensor visualization: driver POV camera active")
+        except Exception as e:
+            print(f"⚠ Sensor visualization failed: {e}")
+            driver_cam_mgr = None
     
     print(f"  Physics step: {step_size*1000:.0f}ms")
     
@@ -2396,6 +2587,9 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
     force_log_interval = 10  # Log every N-th physics step to avoid overhead
     force_log_counter = 0
     
+    # Safety filter logging
+    safety_log = []  # List of dicts logged at perception rate
+    
     # Frame skipping for visualization: render at ~35 FPS, not every physics step
     # At 3ms step = 333 Hz physics, render every ~10 steps = ~35 FPS
     render_interval = 1.0 / 35.0  # Target 35 FPS
@@ -2422,6 +2616,10 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
             timing_stats['render'] += time.time() - t0
             last_render_time = time_chrono
         
+        # Update sensor-based driver POV camera
+        if driver_cam_mgr is not None:
+            driver_cam_mgr.Update()
+        
         # Synchronize driver first to get latest inputs (critical for manual control)
         t0 = time.time()
         driver.Synchronize(time_chrono)
@@ -2432,6 +2630,126 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
         driver_inputs.m_steering = driver.GetSteering()
         driver_inputs.m_throttle = driver.GetThrottle()
         driver_inputs.m_braking = driver.GetBraking()
+        
+        # ---- Lidar update + Perception + Safety Filter ----
+        # Update lidar sensor (processes new data if interval elapsed)
+        if lidar_mgr is not None:
+            lidar_mgr.update()
+        
+        # Run perception at lidar rate (~20Hz, not every physics step)
+        perception_result = None
+        terrain_roughness = 0.0
+        obstacle_list = []
+        if perception is not None and timing_stats['step_count'] % max(1, int(1.0 / (lidar_rate * step_size))) == 0:
+            chassis_body = vehicle.GetChassisBody()
+            veh_pos = chassis_body.GetPos()
+            veh_rot = chassis_body.GetRot()
+            veh_psi = np.arctan2(
+                2 * (veh_rot.e0 * veh_rot.e3 + veh_rot.e1 * veh_rot.e2),
+                1 - 2 * (veh_rot.e2**2 + veh_rot.e3**2)
+            )
+            
+            # Get point cloud from lidar, or use ground-truth rock positions
+            if lidar_mgr is not None:
+                cloud = lidar_mgr.get_point_cloud_world()
+            elif num_rocks > 0:
+                # Fallback: construct synthetic point cloud from known rock positions
+                rock_pts = get_rock_positions(rocks)
+                if len(rock_pts) > 0:
+                    cloud = np.column_stack([rock_pts, np.ones(len(rock_pts))])
+                else:
+                    cloud = None
+            else:
+                cloud = None
+            
+            if cloud is not None:
+                perception_result = perception.process(
+                    cloud, vehicle_x=veh_pos.x, vehicle_y=veh_pos.y,
+                    timestamp=time_chrono
+                )
+                obstacle_list = perception.get_obstacles_for_safety(
+                    perception_result, veh_pos.x, veh_pos.y
+                )
+                terrain_roughness = perception.get_terrain_roughness_ahead(
+                    perception_result, veh_pos.x, veh_pos.y, veh_psi
+                )
+        
+        # Apply safety filter at ~20Hz (not every physics step)
+        safety_filter_interval = max(1, int(1.0 / (20.0 * step_size)))
+        if safety_filter is not None and timing_stats['step_count'] % safety_filter_interval == 0:
+            # Save original driver-desired inputs for logging
+            desired_steering = driver_inputs.m_steering
+            desired_throttle = driver_inputs.m_throttle
+            desired_brake = driver_inputs.m_braking
+            
+            chassis_body = vehicle.GetChassisBody()
+            veh_pos = chassis_body.GetPos()
+            veh_speed = vehicle.GetVehicle().GetSpeed()
+            veh_rot = chassis_body.GetRot()
+            veh_psi = np.arctan2(
+                2 * (veh_rot.e0 * veh_rot.e3 + veh_rot.e1 * veh_rot.e2),
+                1 - 2 * (veh_rot.e2**2 + veh_rot.e3**2)
+            )
+            
+            # Build vehicle state for safety filter (body-frame velocities)
+            vel_world = chassis_body.GetPosDt()
+            vel_loc = veh_rot.RotateBack(vel_world)
+            veh_v_lat = vel_loc.y
+            veh_omega = chassis_body.GetAngVelLocal().z
+            veh_state = {
+                'x': veh_pos.x, 'y': veh_pos.y, 'psi': veh_psi,
+                'u': veh_speed, 'v': veh_v_lat, 'omega': veh_omega,
+                'delta': driver_inputs.m_steering * 0.49,  # Approximate steering angle
+            }
+            
+            # Combine lidar-detected obstacles with ground-truth rocks (if no lidar)
+            all_obstacles = list(obstacle_list)
+            if num_rocks > 0 and not enable_lidar:
+                rock_pos = get_rock_positions(rocks)
+                rock_rad = get_rock_radii(rocks)
+                for i in range(len(rock_pos)):
+                    dist = np.sqrt((rock_pos[i, 0] - veh_pos.x)**2 + 
+                                   (rock_pos[i, 1] - veh_pos.y)**2)
+                    if dist < 30.0:
+                        all_obstacles.append((rock_pos[i, 0], rock_pos[i, 1], rock_rad[i]))
+            
+            sf_result = safety_filter.filter(
+                desired_steering=desired_steering,
+                desired_throttle=desired_throttle,
+                desired_brake=desired_brake,
+                vehicle_state=veh_state,
+                obstacles=all_obstacles,
+                terrain_roughness=terrain_roughness,
+            )
+            
+            # Apply filtered inputs
+            driver_inputs.m_steering = sf_result.steering
+            driver_inputs.m_throttle = sf_result.throttle
+            driver_inputs.m_braking = sf_result.braking
+            
+            # Log safety filter state
+            safety_log.append({
+                'time': time_chrono,
+                'modified': sf_result.was_modified,
+                'active_constraints': sf_result.active_constraints,
+                'solve_ms': sf_result.solve_time_ms,
+                'v_max_terrain': sf_result.v_max_terrain,
+                'safety_margin': sf_result.safety_margin if sf_result.safety_margin < 1e6 else -1,
+                'num_obstacles': len(all_obstacles),
+                'terrain_roughness': terrain_roughness,
+                'steer_in': desired_steering,
+                'steer_out': sf_result.steering,
+                'throttle_in': desired_throttle,
+                'throttle_out': sf_result.throttle,
+                'dob_norm': sf_result.dob_norm,
+            })
+        elif safety_filter is not None and safety_filter._last_result is not None:
+            # Between updates, apply cached safety filter result
+            cached = safety_filter._last_result
+            if cached.was_modified:
+                driver_inputs.m_steering = cached.steering
+                driver_inputs.m_throttle = cached.throttle
+                driver_inputs.m_braking = cached.braking
         
         t0 = time.time()
         terrain.Synchronize(time_chrono)
@@ -2639,6 +2957,31 @@ def run_simulation(controller_type='linear', visualize=True, sim_time=10.0,
     if vis is not None:
         vis.GetDevice().closeDevice()
     
+    # Clean up lidar
+    if lidar_mgr is not None:
+        lidar_mgr.shutdown()
+    
+    # Safety filter summary
+    if safety_filter is not None:
+        diag = safety_filter.get_diagnostics()
+        print(f"\n  [SAFETY FILTER] Summary:")
+        print(f"    Total filter calls: {diag['filter_calls']}")
+        print(f"    Interventions: {diag['interventions']} ({diag['intervention_rate']*100:.1f}%)")
+        print(f"    Last terrain speed limit: {diag['last_v_max_terrain']:.1f} m/s")
+        if diag['last_safety_margin'] < float('inf'):
+            print(f"    Last min safety margin: {diag['last_safety_margin']:.2f} m²")
+    
+    # Save safety filter log as CSV
+    if safety_log:
+        import csv
+        sf_log_path = Path(__file__).parent.parent / "diagnostic_scripts" / "safety_filter_log.csv"
+        sf_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(sf_log_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=safety_log[0].keys())
+            writer.writeheader()
+            writer.writerows(safety_log)
+        print(f"  Safety filter log saved: {sf_log_path} ({len(safety_log)} records)")
+    
     # Save tire force history if any data was collected
     if tire_force_history:
         import json
@@ -2819,6 +3162,9 @@ if __name__ == "__main__":
     parser.add_argument('--nn', action='store_true', help='Run NN model only')
     parser.add_argument('--both', action='store_true', help='Compare both models')
     parser.add_argument('--no-vis', action='store_true', help='Disable visualization')
+    parser.add_argument('--vis-mode', default=None,
+                        choices=['irrlicht', 'sensor', 'both', 'none'],
+                        help='Visualization mode: irrlicht (3D chase cam), sensor (driver POV), both, or none')
     parser.add_argument('--time', type=float, default=15.0, help='Simulation time (s)')
     parser.add_argument('--path', type=str, default='lane_change',
                         choices=['lane_change', 'double_lane_change', 'sinusoidal'],
@@ -2831,10 +3177,13 @@ if __name__ == "__main__":
                         help='Longitudinal slip mode: zero (pure lateral) or approx (ax-based)')
     parser.add_argument('--sweep', action='store_true', help='Sweep through scale/sign combinations')
     parser.add_argument('--terrain-config', type=str, default=None, 
-                        help='Path to YAML terrain config file (overrides --terrain)')
+                        help='Path to YAML terrain config file (overrides --terrain and --topology)')
     parser.add_argument('--terrain', type=str, default='sand',
                         choices=['sand', 'clay', 'dirt'],
-                        help='Terrain preset: sand (dry sand), clay (clayey soil), dirt (sandy loam)')
+                        help='Terrain soil type: sand (dry sand), clay (clayey soil), dirt (sandy loam)')
+    parser.add_argument('--topology', type=int, default=None, choices=range(1, 11),
+                        metavar='N',
+                        help='Terrain bumpiness level 1-10 (1=flat, 10=extreme). Independent of --terrain soil type.')
     parser.add_argument('--random-terrain', action='store_true', help='Random soil params within NN training range')
     parser.add_argument('--terrain-n', type=float, default=None, help='Override terrain sinkage exponent n (e.g. 1.0-1.4)')
     parser.add_argument('--ukf', action='store_true', help='Enable UKF terrain estimation (with --nn)')
@@ -2881,9 +3230,65 @@ if __name__ == "__main__":
     parser.add_argument('--manual', action='store_true',
                         help='Manual control with G29 steering wheel (no MPC)')
     
+    # Lidar sensor options
+    parser.add_argument('--lidar', action='store_true',
+                        help='Enable lidar sensor on vehicle (requires pychrono.sensor)')
+    parser.add_argument('--lidar-vis', action='store_true',
+                        help='Show lidar point cloud visualization window')
+    parser.add_argument('--lidar-rate', type=float, default=20.0,
+                        help='Lidar update rate in Hz (default: 20)')
+    parser.add_argument('--lidar-range', type=float, default=100.0,
+                        help='Lidar max range in meters (default: 100)')
+    
+    # Rock obstacle options
+    parser.add_argument('--rocks', type=int, default=0,
+                        help='Number of rock obstacles to place (0 = none, try 10-30)')
+    parser.add_argument('--rock-zone-x', type=float, nargs=2, default=[-15.0, 50.0],
+                        help='Rock placement zone X range (default: -15 50)')
+    parser.add_argument('--rock-zone-y', type=float, nargs=2, default=[-10.0, 10.0],
+                        help='Rock placement zone Y range (default: -10 10)')
+    parser.add_argument('--rock-size', type=float, nargs=2, default=[0.5, 3.0],
+                        help='Rock size range min max in meters (default: 0.5 3.0)')
+    parser.add_argument('--rock-seed', type=int, default=42,
+                        help='Random seed for rock placement (default: 42)')
+    
+    # Safety filter options
+    parser.add_argument('--safety-filter', action='store_true',
+                        help='Enable CBF safety filter (obstacle avoidance + terrain speed limits)')
+    parser.add_argument('--cbf-alpha', type=float, default=5.0,
+                        help='CBF barrier gain (higher = more conservative, default: 5.0)')
+    parser.add_argument('--safety-buffer', type=float, default=0.25,
+                        help='Extra safety margin around obstacles in meters (default: 0.25)')
+    parser.add_argument('--delay-steps', type=int, default=5,
+                        help='Actuation delay steps for latency compensation (default: 5)')
+    parser.add_argument('--cbf-w-long', type=float, default=0.06,
+                        help='CBF longitudinal barrier weight (smaller = larger safe zone ahead, default: 0.06)')
+    parser.add_argument('--cbf-w-lat', type=float, default=0.50,
+                        help='CBF lateral barrier weight (larger = tighter lateral clearance, default: 0.50)')
+    parser.add_argument('--cbf-forward-bias', type=float, default=3.0,
+                        help='Forward shift of barrier center in meters (default: 3.0)')
+    parser.add_argument('--dob-bandwidth', type=float, default=10.0,
+                        help='DOB velocity observer bandwidth (default: 10.0)')
+    parser.add_argument('--cbf-flavor', type=str, default='balance',
+                        choices=['balance', 'steer_priority', 'throttle_priority'],
+                        help='CBF QP cost flavor: balance, steer_priority, or throttle_priority (default: balance)')
+    
     args = parser.parse_args()
     
-    visualize = not args.no_vis
+    # Determine visualization mode
+    if args.vis_mode is not None:
+        use_irrlicht = args.vis_mode in ('irrlicht', 'both')
+        use_sensor_vis = args.vis_mode in ('sensor', 'both')
+        if use_sensor_vis and not HAS_SENSOR:
+            print("WARNING: pychrono.sensor not available, falling back to irrlicht")
+            use_sensor_vis = False
+            use_irrlicht = True
+        # Load meshes whenever any visualization is active
+        visualize = use_irrlicht or use_sensor_vis
+    else:
+        use_irrlicht = not args.no_vis
+        use_sensor_vis = False
+        visualize = use_irrlicht
     
     terrain_config = None
     if args.terrain_n is not None:
@@ -2911,6 +3316,41 @@ if __name__ == "__main__":
     elif args.terrain_config:
         terrain_config = load_terrain_config(args.terrain_config)
         print(f"Loaded terrain config from: {args.terrain_config}")
+    
+    terrain_preset = args.terrain
+    
+    # Resolve bump params: --topology N overrides --bump flags and YAML config bump params.
+    # Priority: --topology > --bump CLI flags > terrain_config YAML > defaults
+    bump_amplitude = args.bump
+    bump_wavelength = args.bump_wavelength
+    bump_octaves = args.bump_octaves
+    bump_max_slope = args.bump_max_slope
+
+    if args.topology is not None:
+        # --topology N: use predefined topology level (overrides everything)
+        topo = TOPOLOGY_LEVELS[args.topology]
+        bump_amplitude = topo['bump_amplitude']
+        bump_wavelength = topo['bump_wavelength']
+        bump_octaves = topo['bump_octaves']
+        bump_max_slope = topo['bump_max_slope']
+        print(f"  Topology level {args.topology} ({topo['description']}): "
+              f"amp={bump_amplitude:.2f}m, wl={bump_wavelength:.0f}m, "
+              f"octaves={bump_octaves}, slope={bump_max_slope*100:.0f}%")
+    elif terrain_config:
+        if 'bump_amplitude' in terrain_config and args.bump == 0.0:
+            bump_amplitude = terrain_config['bump_amplitude']
+        if 'bump_wavelength' in terrain_config and args.bump_wavelength == 20.0:
+            bump_wavelength = terrain_config['bump_wavelength']
+        if 'bump_octaves' in terrain_config and args.bump_octaves == 4:
+            bump_octaves = terrain_config['bump_octaves']
+        if 'bump_max_slope' in terrain_config and args.bump_max_slope == 0.3:
+            bump_max_slope = terrain_config['bump_max_slope']
+        if bump_amplitude > 0:
+            print(f"  Terrain topology from config: amp={bump_amplitude:.2f}m, "
+                  f"wl={bump_wavelength:.0f}m, octaves={bump_octaves}, slope={bump_max_slope:.2f}")
+    
+    if args.topology is not None:
+        print(f"  Terrain: {args.terrain} soil + topology level {args.topology}")
     
     terrain_preset = args.terrain
     
@@ -2962,28 +3402,52 @@ if __name__ == "__main__":
                       ukf_version=args.ukf_version,
                       async_mpc=args.async_mpc, multiprocess_mpc=args.multiprocess,
                       nn_model_dir=args.nn_model,
-                      bump_amplitude=args.bump, bump_wavelength=args.bump_wavelength,
-                      bump_octaves=args.bump_octaves, bump_seed=args.bump_seed,
-                      bump_max_slope=args.bump_max_slope,
+                      bump_amplitude=bump_amplitude, bump_wavelength=bump_wavelength,
+                      bump_octaves=bump_octaves, bump_seed=args.bump_seed,
+                      bump_max_slope=bump_max_slope,
                       sine_amplitude=args.sine_amplitude, sine_wavelength=args.sine_wavelength,
                       manual_control=args.manual,
                       use_closest_point=not args.no_path_reindex,
                       steer_excite_amp=args.steer_excite,
                       steer_excite_freq=args.steer_excite_freq,
                       steer_excite_ramp=args.steer_excite_ramp,
-                      lateral_load_transfer=not args.no_lat_transfer)
+                      lateral_load_transfer=not args.no_lat_transfer,
+                      enable_lidar=args.lidar, lidar_vis=args.lidar_vis,
+                      lidar_rate=args.lidar_rate, lidar_range=args.lidar_range,
+                      num_rocks=args.rocks,
+                      rock_zone_x=args.rock_zone_x, rock_zone_y=args.rock_zone_y,
+                      rock_size=args.rock_size, rock_seed=args.rock_seed,
+                      enable_safety_filter=args.safety_filter,
+                      cbf_alpha=args.cbf_alpha, safety_buffer=args.safety_buffer,
+                      delay_steps=args.delay_steps,
+                      cbf_w_long=args.cbf_w_long, cbf_w_lat=args.cbf_w_lat,
+                      cbf_forward_bias=args.cbf_forward_bias,
+                      dob_bandwidth=args.dob_bandwidth, cbf_flavor=args.cbf_flavor,
+                      use_sensor_vis=use_sensor_vis, use_irrlicht_vis=use_irrlicht)
     else:
         run_simulation('linear', visualize=visualize, sim_time=args.time, path_type=args.path, 
                       debug=args.debug, terrain_config=terrain_config, terrain_preset=terrain_preset,
                       v_target=args.speed, kappa_mode=args.kappa,
                       async_mpc=args.async_mpc, multiprocess_mpc=args.multiprocess,
-                      bump_amplitude=args.bump, bump_wavelength=args.bump_wavelength,
-                      bump_octaves=args.bump_octaves, bump_seed=args.bump_seed,
-                      bump_max_slope=args.bump_max_slope,
+                      bump_amplitude=bump_amplitude, bump_wavelength=bump_wavelength,
+                      bump_octaves=bump_octaves, bump_seed=args.bump_seed,
+                      bump_max_slope=bump_max_slope,
                       sine_amplitude=args.sine_amplitude, sine_wavelength=args.sine_wavelength,
                       manual_control=args.manual,
                       use_closest_point=not args.no_path_reindex,
                       steer_excite_amp=args.steer_excite,
                       steer_excite_freq=args.steer_excite_freq,
                       steer_excite_ramp=args.steer_excite_ramp,
-                      lateral_load_transfer=not args.no_lat_transfer)
+                      lateral_load_transfer=not args.no_lat_transfer,
+                      enable_lidar=args.lidar, lidar_vis=args.lidar_vis,
+                      lidar_rate=args.lidar_rate, lidar_range=args.lidar_range,
+                      num_rocks=args.rocks,
+                      rock_zone_x=args.rock_zone_x, rock_zone_y=args.rock_zone_y,
+                      rock_size=args.rock_size, rock_seed=args.rock_seed,
+                      enable_safety_filter=args.safety_filter,
+                      cbf_alpha=args.cbf_alpha, safety_buffer=args.safety_buffer,
+                      delay_steps=args.delay_steps,
+                      cbf_w_long=args.cbf_w_long, cbf_w_lat=args.cbf_w_lat,
+                      cbf_forward_bias=args.cbf_forward_bias,
+                      dob_bandwidth=args.dob_bandwidth, cbf_flavor=args.cbf_flavor,
+                      use_sensor_vis=use_sensor_vis, use_irrlicht_vis=use_irrlicht)

@@ -5,12 +5,27 @@ NOTE: elastic_stiffness and damping are not part of original Bekker-Wong/Janosi 
 
 ## Available Presets
 
+### Soil-Only Presets (flat terrain)
 | File | Description |
 |------|-------------|
 | `sand.yaml` | Dry sand - low cohesion, high friction, deep sinkage |
 | `clay.yaml` | Wet clay - high cohesion, low friction, sticky |
 | `dirt.yaml` | Packed dirt/gravel - moderate parameters |
 | `training_mean.yaml` | Mean of NN training range - best for NN accuracy |
+
+### Bumpiness + Soil Presets (terrain topology from Perlin noise)
+| File | Bump Amp | Wavelength | Octaves | Max Slope | Description |
+|------|----------|------------|---------|-----------|-------------|
+| `smooth_road.yaml` | 0.0 m | — | 1 | 10% | Hard-packed flat surface |
+| `gentle_gravel.yaml` | 0.03 m | 25 m | 2 | 10% | Slight undulations |
+| `rolling_dirt.yaml` | 0.08 m | 18 m | 3 | 15% | Maintained dirt trail |
+| `bumpy_field.yaml` | 0.15 m | 12 m | 4 | 20% | Agricultural field |
+| `rough_trail.yaml` | 0.2 m | 10 m | 4 | 25% | Rough unpaved trail |
+| `sandy_dunes.yaml` | 0.25 m | 25 m | 3 | 20% | Soft sand with dunes |
+| `muddy_ruts.yaml` | 0.18 m | 8 m | 5 | 30% | Wet clay with ruts |
+| `rocky_hillside.yaml` | 0.3 m | 8 m | 6 | 35% | Hard rocky terrain |
+| `washboard.yaml` | 0.12 m | 5 m | 2 | 25% | Periodic corrugations |
+| `extreme_offroad.yaml` | 0.35 m | 7 m | 6 | 40% | Maximum difficulty |
 
 ## Usage
 

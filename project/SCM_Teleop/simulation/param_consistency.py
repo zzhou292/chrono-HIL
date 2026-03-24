@@ -157,6 +157,25 @@ TERRAIN_PRESETS = {
 }
 
 # =============================================================================
+# =============================================================================
+# Terrain topology presets — bumpiness levels 1–10.
+# These define ONLY the Perlin-noise heightmap parameters (independent of soil type).
+# Select via --topology N on the CLI, combine with --terrain for soil type.
+# =============================================================================
+TOPOLOGY_LEVELS = {
+    1:  {"description": "Flat",           "bump_amplitude": 0.00, "bump_wavelength": 20.0, "bump_octaves": 1, "bump_max_slope": 0.05},
+    2:  {"description": "Nearly flat",    "bump_amplitude": 0.02, "bump_wavelength": 25.0, "bump_octaves": 2, "bump_max_slope": 0.08},
+    3:  {"description": "Gentle",         "bump_amplitude": 0.05, "bump_wavelength": 22.0, "bump_octaves": 2, "bump_max_slope": 0.10},
+    4:  {"description": "Mild",           "bump_amplitude": 0.08, "bump_wavelength": 18.0, "bump_octaves": 3, "bump_max_slope": 0.15},
+    5:  {"description": "Moderate",       "bump_amplitude": 0.12, "bump_wavelength": 15.0, "bump_octaves": 3, "bump_max_slope": 0.18},
+    6:  {"description": "Bumpy",          "bump_amplitude": 0.15, "bump_wavelength": 12.0, "bump_octaves": 4, "bump_max_slope": 0.20},
+    7:  {"description": "Rough",          "bump_amplitude": 0.20, "bump_wavelength": 10.0, "bump_octaves": 4, "bump_max_slope": 0.25},
+    8:  {"description": "Very rough",     "bump_amplitude": 0.25, "bump_wavelength":  8.0, "bump_octaves": 5, "bump_max_slope": 0.30},
+    9:  {"description": "Rocky",          "bump_amplitude": 0.30, "bump_wavelength":  7.0, "bump_octaves": 5, "bump_max_slope": 0.35},
+    10: {"description": "Extreme",        "bump_amplitude": 0.35, "bump_wavelength":  6.0, "bump_octaves": 6, "bump_max_slope": 0.40},
+}
+
+
 # Steering excitation defaults for terrain estimation (Dallas Sec. V.A)
 # Dallas paper: "sinusoidal steering commands, steering fully in both directions"
 # =============================================================================
