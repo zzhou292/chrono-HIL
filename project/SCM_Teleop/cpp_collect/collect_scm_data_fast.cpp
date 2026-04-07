@@ -89,7 +89,7 @@ struct ParameterRanges {
     double velocity_max = 10.0;
     // Note: Dallas uses 500-5500 N for a lighter vehicle. HMMWV is heavier,
     // so we use 1500-7500 N to avoid "load too small" warnings from tire rig.
-    double vertical_load_min = 1500;  // N - adjusted for HMMWV tire
+    double vertical_load_min = 2500;  // N — HMMWV tire needs ≥2500 to settle on soft SCM
     double vertical_load_max = 7500;
     double steering_rate_min = -0.56; // rad/s - Dallas et al. Table I (CRITICAL!)
     double steering_rate_max = 0.56;

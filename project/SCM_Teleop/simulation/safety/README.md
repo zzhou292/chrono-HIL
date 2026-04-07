@@ -70,14 +70,14 @@ print(f"Terrain v_max: {result.v_max_terrain:.1f} m/s")
 
 ```bash
 # Enable safety filter with default settings
-python scm_hmmwv_demo.py --nn --manual --safety-filter
+python launch_decoupled.py --manual --safety-filter
 
 # Custom CBF parameters
-python scm_hmmwv_demo.py --nn --manual --safety-filter \
+python launch_decoupled.py --manual --safety-filter \
     --cbf-alpha 5.0 --safety-buffer 2.0 --delay-steps 10
 
-# Full demo: manual + lidar + rocks + safety
-python scm_hmmwv_demo.py --nn --manual --lidar --rocks 20 \
+# Full demo: manual + rocks + safety (ground truth obstacles)
+python launch_decoupled.py --manual --rocks 20 \
     --safety-filter --terrain-config terrain_configs/rough_trail.yaml
 ```
 

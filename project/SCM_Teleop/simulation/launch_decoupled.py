@@ -5,7 +5,7 @@ Launch script for decoupled Chrono simulation + MPC controller.
 
 Starts two processes:
   1. chrono_sim_node.py   — PyChrono HMMWV simulation (publishes state, receives commands)
-  2. mpc_controller_node.py — MPC controller (receives state, publishes commands)
+  2. acados_mpc_controller_node.py — ACADOS MPC controller (receives state, publishes commands)
 
 Usage:
     # Default (NN model, sand terrain, lane change, irrlicht visualization)
@@ -97,12 +97,34 @@ Examples:
     p.add_argument("--plot-dir", default="plots",
                    help="Directory for output plots")
 
-    # Terrain bumps
-    p.add_argument("--bump", type=float, default=0.0)
-    p.add_argument("--bump-wavelength", type=float, default=20.0)
-    p.add_argument("--bump-octaves", type=int, default=4)
-    p.add_argument("--bump-seed", type=int, default=12345)
-    p.add_argument("--bump-max-slope", type=float, default=0.3)
+    # Terrain bumpiness
+    p.add_argument("--bumpiness", type=int, default=0, choices=range(0, 11),
+                   help="Terrain bumpiness level 0 (flat) to 10 (extreme)")
+
+    # Rock obstacles
+    p.add_argument("--rocks", type=int, default=0,
+                   help="Number of rock obstacles (0 = none)")
+    p.add_argument("--rock-zone-x", type=float, nargs=2, default=[-15.0, 50.0])
+    p.add_argument("--rock-zone-y", type=float, nargs=2, default=[-10.0, 10.0])
+    p.add_argument("--rock-size", type=float, nargs=2, default=[0.5, 3.0])
+    p.add_argument("--rock-seed", type=int, default=42)
+
+    # Safety filter
+    p.add_argument("--safety-filter", action="store_true",
+                   help="Enable DOB-CBF safety filter")
+    p.add_argument("--cbf-alpha", type=float, default=5.0)
+    p.add_argument("--safety-buffer", type=float, default=0.25)
+    p.add_argument("--delay-steps", type=int, default=5)
+    p.add_argument("--cbf-w-long", type=float, default=0.06)
+    p.add_argument("--cbf-w-lat", type=float, default=0.50)
+    p.add_argument("--cbf-forward-bias", type=float, default=3.0)
+    p.add_argument("--dob-bandwidth", type=float, default=10.0)
+    p.add_argument("--cbf-flavor", type=str, default="balance",
+                   choices=["balance", "steer_priority", "throttle_priority"])
+    p.add_argument("--teleop-delay", type=float, default=0.0,
+                   help="Initial one-way teleop delay in seconds (0 = local)")
+    p.add_argument("--stale-cmd-timeout", type=float, default=2.0,
+                   help="Auto-brake if no command for this many seconds")
 
     # Network
     p.add_argument("--sim-port", type=int, default=5555)
@@ -115,6 +137,18 @@ Examples:
                    help="Only launch the simulation node")
     p.add_argument("--ctrl-only", action="store_true",
                    help="Only launch the controller node")
+    p.add_argument("--manual", action="store_true",
+                   help="Manual control with G29 steering wheel (no MPC controller)")
+
+    # Terrain classifier
+    p.add_argument("--terrain-classifier", action="store_true",
+                   help="Launch terrain classifier node alongside sim + controller")
+    p.add_argument("--tc-model", default="terrain_classifier/models/terrain_rf.pkl",
+                   help="Path to trained terrain classifier model")
+    p.add_argument("--tc-port", type=int, default=5557,
+                   help="Port for terrain classifier to publish estimates")
+    p.add_argument("--tc-ema-alpha", type=float, default=0.3,
+                   help="EMA smoothing for terrain classifier (0=smooth, 1=raw)")
 
     args = p.parse_args()
 
@@ -138,22 +172,41 @@ Examples:
         "--sim-port", str(args.sim_port),
         "--ctrl-host", args.ctrl_host,
         "--ctrl-port", str(args.ctrl_port),
-        "--bump", str(args.bump),
-        "--bump-wavelength", str(args.bump_wavelength),
-        "--bump-octaves", str(args.bump_octaves),
-        "--bump-seed", str(args.bump_seed),
-        "--bump-max-slope", str(args.bump_max_slope),
+        "--bumpiness", str(args.bumpiness),
         "--vis-mode", vis_mode,
     ]
     if args.no_rt:
         sim_cmd.append("--no-rt")
     if args.no_noise:
         sim_cmd.append("--no-noise")
+    if args.manual:
+        sim_cmd.append("--manual")
     if args.terrain_config:
         sim_cmd.extend(["--terrain-config", args.terrain_config])
+    # Rock obstacles
+    if args.rocks > 0:
+        sim_cmd.extend(["--rocks", str(args.rocks)])
+        sim_cmd.extend(["--rock-zone-x"] + [str(v) for v in args.rock_zone_x])
+        sim_cmd.extend(["--rock-zone-y"] + [str(v) for v in args.rock_zone_y])
+        sim_cmd.extend(["--rock-size"] + [str(v) for v in args.rock_size])
+        sim_cmd.extend(["--rock-seed", str(args.rock_seed)])
+    # Safety filter
+    if args.safety_filter:
+        sim_cmd.append("--safety-filter")
+        sim_cmd.extend(["--cbf-alpha", str(args.cbf_alpha)])
+        sim_cmd.extend(["--safety-buffer", str(args.safety_buffer)])
+        sim_cmd.extend(["--delay-steps", str(args.delay_steps)])
+        sim_cmd.extend(["--cbf-w-long", str(args.cbf_w_long)])
+        sim_cmd.extend(["--cbf-w-lat", str(args.cbf_w_lat)])
+        sim_cmd.extend(["--cbf-forward-bias", str(args.cbf_forward_bias)])
+        sim_cmd.extend(["--dob-bandwidth", str(args.dob_bandwidth)])
+        sim_cmd.extend(["--cbf-flavor", args.cbf_flavor])
+        if args.teleop_delay > 0:
+            sim_cmd.extend(["--teleop-delay", str(args.teleop_delay)])
+            sim_cmd.extend(["--stale-cmd-timeout", str(args.stale_cmd_timeout)])
 
     ctrl_cmd = [
-        sys.executable, str(script_dir / "mpc_controller_node.py"),
+        sys.executable, str(script_dir / "acados_mpc_controller_node.py"),
         "--model", args.model,
         "--nn-model", args.nn_model,
         "--kappa", args.kappa,
@@ -180,6 +233,19 @@ Examples:
         ctrl_cmd.append("--no-plot")
     if args.no_csv:
         ctrl_cmd.append("--no-csv")
+    if args.terrain_classifier:
+        ctrl_cmd.append("--terrain-classifier")
+        ctrl_cmd.extend(["--tc-port", str(args.tc_port)])
+
+    # ---- Terrain classifier command ----
+    tc_cmd = [
+        sys.executable, "-m", "terrain_classifier.classifier_node",
+        "--model", args.tc_model,
+        "--sim-host", "localhost",
+        "--sim-port", str(args.sim_port),
+        "--pub-port", str(args.tc_port),
+        "--ema-alpha", str(args.tc_ema_alpha),
+    ]
 
     # ---- Launch ----
     procs = []
@@ -202,8 +268,9 @@ Examples:
             proc = subprocess.Popen(ctrl_cmd)
             procs.append(proc)
             proc.wait()
-        elif args.sim_only:
-            print(f"[launch] Starting simulation only")
+        elif args.sim_only or args.manual:
+            mode = "manual (G29)" if args.manual else "simulation only"
+            print(f"[launch] Starting {mode}")
             print(f"  cmd: {' '.join(sim_cmd)}")
             proc = subprocess.Popen(sim_cmd)
             procs.append(proc)
@@ -213,6 +280,12 @@ Examples:
             print(f"[launch] Starting controller...")
             ctrl_proc = subprocess.Popen(ctrl_cmd)
             procs.append(ctrl_proc)
+
+            # Start terrain classifier if requested
+            if args.terrain_classifier:
+                print(f"[launch] Starting terrain classifier...")
+                tc_proc = subprocess.Popen(tc_cmd, cwd=str(script_dir))
+                procs.append(tc_proc)
 
             # Brief delay, then start simulation
             time.sleep(0.5)

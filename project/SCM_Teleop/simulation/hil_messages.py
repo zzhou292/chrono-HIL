@@ -141,10 +141,18 @@ def parse_message(raw: bytes):
         "control_cmd": ControlCommand,
         "sim_status": SimStatus,
     }
+
+    # Check extended registry (terrain classifier, etc.)
     cls = _registry.get(topic)
+    if cls is None:
+        cls = _EXTENDED_REGISTRY.get(topic)
     if cls is None:
         return topic, payload
     return topic, cls.from_dict(payload)
+
+
+# Extended message registry — populated by downstream modules
+_EXTENDED_REGISTRY: Dict[str, type] = {}
 
 
 # =============================================================================
@@ -160,6 +168,7 @@ class ZMQPublisher:
         self._ctx = _zmq.Context.instance()
         self._sock = self._ctx.socket(_zmq.PUB)
         self._sock.setsockopt(_zmq.SNDHWM, 2)  # Drop old messages if consumer is slow
+        self._sock.setsockopt(_zmq.LINGER, 0)   # Release port immediately on close
         self._sock.bind(endpoint)
         self.endpoint = endpoint
 

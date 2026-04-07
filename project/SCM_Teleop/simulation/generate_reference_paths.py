@@ -1,6 +1,6 @@
 # Script to generate static reference path CSVs for all path types
 from pathlib import Path
-from scm_hmmwv_demo import make_path_function
+from path_utils import make_path_function
 
 path_types = ["lane_change", "double_lane_change", "sinusoidal"]
 v_target = 1.0  # Neutral speed, geometry only

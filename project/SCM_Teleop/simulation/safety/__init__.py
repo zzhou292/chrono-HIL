@@ -163,8 +163,8 @@ class DisturbanceObserver:
 
     The higher-dimensional DOB (position x/y, heading) from the full
     reference is omitted because our obstacle positions come from ground
-    truth or lidar perception, not dead-reckoning, so position disturbance
-    estimation is unnecessary.
+    truth, not dead-reckoning, so position disturbance estimation is
+    unnecessary.
 
     Args:
         a_v: Observer bandwidth for velocity (higher = faster tracking,
@@ -273,6 +273,12 @@ class CBFSafetyFilter:
         cbf_flavor: 'balance' (equal cost to modify steering/throttle),
                     'steer_priority' (strongly prefers throttle modification),
                     'throttle_priority' (strongly preserves throttle).
+        teleop_delay: Estimated one-way network delay for teleoperation (s).
+                      0 = no teleop compensation (local control). When > 0,
+                      the barrier is inflated by v * RTT to account for operator
+                      reaction lag, and stale commands trigger emergency braking.
+        stale_cmd_timeout: Maximum command age before auto-brake (s).
+                           Only active when teleop_delay > 0.
     """
 
     def __init__(self,
@@ -290,7 +296,9 @@ class CBFSafetyFilter:
                  w_lat: float = 0.50,
                  forward_bias: float = 3.0,
                  dob_bandwidth: float = 10.0,
-                 cbf_flavor: str = 'balance'):
+                 cbf_flavor: str = 'balance',
+                 teleop_delay: float = 0.0,
+                 stale_cmd_timeout: float = 2.0):
 
         # Vehicle parameters
         self.M = vehicle_params['M']
@@ -321,10 +329,17 @@ class CBFSafetyFilter:
         # CBF flavor controls QP cost weighting
         self.cbf_flavor = cbf_flavor
 
-        # Perception range for obstacle filtering
-        # Must cover the ellipsoidal barrier's longitudinal reach:
-        # reach ~ forward_bias + sqrt(max_safe_r^2 / w_long)
-        max_safe_r = vehicle_radius + obstacle_buffer + 5.0  # assume max rock radius ~5m
+        # Teleop delay compensation
+        self._teleop_delay = max(teleop_delay, 0.0)
+        self._stale_cmd_timeout = stale_cmd_timeout
+        self._cmd_age = 0.0        # Latest measured command age (s)
+        self._last_cmd_wall = None  # Wall-clock time of last received command
+        self._delay_ema = teleop_delay  # EMA-smoothed one-way delay estimate
+        self._delay_ema_alpha = 0.15    # EMA smoothing factor
+
+        # Obstacle filtering range — must cover the ellipsoidal barrier's
+        # longitudinal reach: reach ~ forward_bias + sqrt(max_safe_r^2 / w_long)
+        max_safe_r = vehicle_radius + obstacle_buffer + 5.0
         self.r_precpt = forward_bias + np.sqrt(max_safe_r**2 / w_long) + 10.0
 
         # Delay compensator
@@ -364,6 +379,59 @@ class CBFSafetyFilter:
 
         # Cache for NN tire force queries (avoid redundant calls per step)
         self._nn_cache = {}
+
+    # ------------------------------------------------------------------
+    # Teleop delay API
+    # ------------------------------------------------------------------
+
+    def set_teleop_delay(self, delay_s: float):
+        """Set estimated one-way teleop network delay (seconds)."""
+        self._teleop_delay = max(delay_s, 0.0)
+        self._delay_ema = max(delay_s, 0.0)
+
+    def update_command_age(self, cmd_wall_time: float):
+        """
+        Update teleop delay estimate from a received command's wall-clock stamp.
+
+        Call this each time a ControlCommand arrives.  Computes one-way
+        latency as ``time.time() - cmd_wall_time`` and feeds an EMA filter.
+        Also tracks the wall-clock of the most recent command for staleness.
+
+        Args:
+            cmd_wall_time: The ``wall_time`` field from the ControlCommand.
+        """
+        now = time.time()
+        one_way = max(now - cmd_wall_time, 0.0)
+        self._cmd_age = one_way
+        self._last_cmd_wall = now  # record *when* we last got a command
+        # EMA smoothing
+        a = self._delay_ema_alpha
+        self._delay_ema = a * one_way + (1.0 - a) * self._delay_ema
+        # Auto-update the effective teleop delay
+        self._teleop_delay = self._delay_ema
+
+    def _effective_obstacle_buffer(self, v: float) -> float:
+        """
+        Compute obstacle buffer inflated by teleop round-trip delay.
+
+        At speed *v* with one-way delay *tau*, the vehicle travels
+        ``v * 2 * tau`` metres during the round-trip before the operator
+        can react.  We add this distance (scaled by 0.5 for tuning head-room)
+        to the static obstacle_buffer.
+
+        Returns the effective buffer in metres.
+        """
+        if self._teleop_delay <= 0.0:
+            return self.obstacle_buffer
+        rtt = 2.0 * self._teleop_delay
+        return self.obstacle_buffer + v * rtt * 0.5
+
+    def _is_command_stale(self) -> bool:
+        """True if no command received within stale_cmd_timeout (teleop only)."""
+        if self._teleop_delay <= 0.0 or self._last_cmd_wall is None:
+            return False
+        age = time.time() - self._last_cmd_wall
+        return age > self._stale_cmd_timeout
 
     def _init_csv_logging(self):
         """Initialize CSV files for safety filter diagnostics."""
@@ -627,6 +695,30 @@ class CBFSafetyFilter:
         # Update internal beta from measured steering angle
         self._beta = delta
 
+        # Teleop: stale command detection — emergency brake if no recent cmds
+        if self._is_command_stale():
+            self._modify_count += 1
+            safe_result = SafetyFilterResult(
+                steering=desired_steering,  # hold last steering
+                throttle=0.0,
+                braking=1.0,
+                was_modified=True,
+                active_constraints=0,
+                solve_time_ms=0.0,
+                v_max_terrain=0.0,
+                safety_margin=0.0,
+                dob_norm=0.0,
+            )
+            self._last_result = safe_result
+            if self._filter_count % 20 == 0:
+                age = time.time() - self._last_cmd_wall if self._last_cmd_wall else float('inf')
+                print(f"  [CBF #{self._filter_count}] STALE COMMAND — age={age:.2f}s > "
+                      f"timeout={self._stale_cmd_timeout:.1f}s  ** EMERGENCY BRAKE **")
+            return safe_result
+
+        # Teleop: compute delay-inflated obstacle buffer for this step
+        effective_buffer = self._effective_obstacle_buffer(v)
+
         # Apply delay compensation
         comp_throttle, comp_steering = self.delay_comp.update(
             desired_throttle, desired_steering
@@ -717,13 +809,17 @@ class CBFSafetyFilter:
         min_h = float('inf')
         self._pending_obs_logs = []
 
+        # Expand obstacle filtering range to cover delay-inflated buffer
+        delay_inflate = effective_buffer - self.obstacle_buffer
+        r_precpt_eff = self.r_precpt + delay_inflate
+
         for (obs_x, obs_y, obs_r) in obstacles:
             # Distance check -- skip far obstacles
             dd = (x - obs_x)**2 + (y - obs_y)**2
-            if dd > self.r_precpt**2:
+            if dd > r_precpt_eff**2:
                 continue
 
-            safe_r = obs_r + self.vehicle_radius + self.obstacle_buffer
+            safe_r = obs_r + self.vehicle_radius + effective_buffer
 
             # ----------------------------------------------------------
             # Position-based CBF: steering enters through h_dot (1st
@@ -901,6 +997,22 @@ class CBFSafetyFilter:
         safe_steering = np.clip(u_safe[0], -1.0, 1.0)
         safe_alpha = u_safe[1]
 
+        # Teleop: forward-predict over delay horizon and emergency-brake
+        # if the QP-safe output still leads to a collision within the RTT
+        if self._teleop_delay > 0.0 and len(obstacles) > 0:
+            pred_horizon = 2.0 * self._teleop_delay + 0.3  # RTT + reaction
+            pred_steps = max(int(pred_horizon / 0.1), 1)
+            preds = self.predict_state(
+                vehicle_state, safe_steering,
+                max(safe_alpha, 0.0), dt=0.1, steps=pred_steps)
+            collision, t_collide = self.check_predicted_collision(preds, obstacles)
+            if collision:
+                # Override to emergency brake; keep steering
+                safe_alpha = -1.0
+                was_modified = True
+                if not qp_success or active_constraints == 0:
+                    active_constraints = 1
+
         # Track applied steering for next call's linearization point
         self._beta = safe_steering * self.max_road_steer_angle
         self._alpha = safe_alpha
@@ -946,12 +1058,13 @@ class CBFSafetyFilter:
             n_obs = len(obstacles)
             mod_tag = " ** MODIFIED **" if was_modified else ""
             n_constraints = len(A_ineq_list)
+            delay_tag = f" delay={self._teleop_delay*1000:.0f}ms buf={effective_buffer:.2f}m" if self._teleop_delay > 0 else ""
             print(f"  [CBF #{self._filter_count}] v={v:.2f} pos=({x:.1f},{y:.1f}) psi={np.degrees(psi):.1f}°"
                   f" | obs={n_obs} constraints={n_constraints} min_h={min_h:.2f} dob={hdv0:+.2f}"
                   f" | IN steer={desired_steering:+.3f} thr={desired_throttle:.3f} brk={desired_brake:.3f}"
                   f" | OUT steer={safe_steering:+.3f} thr={safe_throttle:.3f} brk={safe_brake:.3f}"
                   f" | alpha_cmd={alpha_cmd:+.3f} -> safe_alpha={safe_alpha:+.3f}"
-                  f" | v_max_t={v_max_terrain:.1f}{mod_tag}")
+                  f" | v_max_t={v_max_terrain:.1f}{delay_tag}{mod_tag}")
 
         return self._last_result
 
@@ -960,7 +1073,7 @@ class CBFSafetyFilter:
         """
         Compute terrain-aware maximum safe speed.
 
-        Uses terrain roughness from perception and (optionally) NN tire force
+        Uses terrain roughness and (optionally) NN tire force
         predictions to determine the maximum speed that maintains vehicle
         stability on the current terrain.
         """

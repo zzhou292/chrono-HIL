@@ -143,7 +143,7 @@ def add_rock_obstacles(system: 'chrono.ChSystem',
 
 def get_rock_positions(rocks: List[dict]) -> np.ndarray:
     """
-    Extract rock center positions as an Nx3 array for perception use.
+    Extract rock center positions as an Nx3 array.
     
     Args:
         rocks: List returned by add_rock_obstacles()

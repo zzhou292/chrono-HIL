@@ -17,9 +17,9 @@
 //   - SCM (Soil Contact Model) deformable terrain
 //   - Configurable height map (randomized or from file)
 //   - Obstacle/rock placement with collision
-//   - Camera and LiDAR sensors
+//   - Camera sensors
 //   - Irrlicht visualization (third-person chase camera)
-//   - Sensor visualization (camera and lidar)
+//   - Sensor visualization (camera)
 //   - SDL2 controller input
 //   - ROS2 bridge interface
 //   - Configurable simulation delay
@@ -64,15 +64,9 @@
 
 #include "chrono_sensor/ChSensorManager.h"
 #include "chrono_sensor/filters/ChFilterAccess.h"
-#include "chrono_sensor/filters/ChFilterLidarNoise.h"
-#include "chrono_sensor/filters/ChFilterLidarReduce.h"
-#include "chrono_sensor/filters/ChFilterPCfromDepth.h"
 #include "chrono_sensor/filters/ChFilterSave.h"
-#include "chrono_sensor/filters/ChFilterSavePtCloud.h"
 #include "chrono_sensor/filters/ChFilterVisualize.h"
-#include "chrono_sensor/filters/ChFilterVisualizePointCloud.h"
 #include "chrono_sensor/sensors/ChCameraSensor.h"
-#include "chrono_sensor/sensors/ChLidarSensor.h"
 
 #include "chrono_thirdparty/cxxopts/ChCLI.h"
 #include "chrono_thirdparty/filesystem/path.h"
@@ -157,13 +151,7 @@ double render_fps = 50;
 
 // Sensor configuration
 bool enable_camera = true;
-bool enable_lidar = true;
 double camera_update_rate = 30.0;
-double lidar_update_rate = 20.0;
-ChVector3d lidar_offset(5.0, 0.0, 1.5);  // 5m in front of vehicle
-int lidar_horizontal_samples = 900;
-int lidar_vertical_channels = 32;
-double lidar_max_range = 100.0;
 
 // Network/delay configuration
 float delay_val = 0.0;
@@ -310,9 +298,6 @@ void AddCommandLineOptions(ChCLI &cli) {
 
   // Sensor options
   cli.AddOption<bool>("Sensor", "enable_camera", "Enable camera sensor", "true");
-  cli.AddOption<bool>("Sensor", "enable_lidar", "Enable lidar sensor", "true");
-  cli.AddOption<double>("Sensor", "lidar_offset_x", "Lidar X offset from vehicle", std::to_string(lidar_offset.x()));
-  cli.AddOption<double>("Sensor", "lidar_range", "Lidar max range", std::to_string(lidar_max_range));
 
   // Obstacle options
   cli.AddOption<bool>("Obstacles", "enable_obstacles", "Enable rock obstacles", "true");
@@ -579,9 +564,6 @@ int main(int argc, char *argv[]) {
 
   // Parse sensor options
   enable_camera = cli.GetAsType<bool>("enable_camera");
-  enable_lidar = cli.GetAsType<bool>("enable_lidar");
-  lidar_offset.x() = cli.GetAsType<double>("lidar_offset_x");
-  lidar_max_range = cli.GetAsType<double>("lidar_range");
 
   // Parse obstacle options
   enable_obstacles = cli.GetAsType<bool>("enable_obstacles");
@@ -758,7 +740,6 @@ int main(int argc, char *argv[]) {
   std::shared_ptr<ChSensorManager> manager;
   std::shared_ptr<ChCameraSensor> driver_cam;
   std::shared_ptr<ChCameraSensor> third_person_cam;
-  std::shared_ptr<ChLidarSensor> lidar;
 
   if (vis_mode == VisMode::SENSOR_ONLY || vis_mode == VisMode::BOTH) {
     manager = chrono_types::make_shared<ChSensorManager>(sys);
@@ -809,36 +790,6 @@ int main(int argc, char *argv[]) {
       third_person_cam->PushFilter(chrono_types::make_shared<ChFilterVisualize>(
           1920, 1080, "Third Person View", false));
       manager->AddSensor(third_person_cam);
-    }
-
-    // LiDAR sensor (positioned 5m in front of vehicle)
-    if (enable_lidar) {
-      lidar = chrono_types::make_shared<ChLidarSensor>(
-          hmmwv.GetChassisBody(),
-          lidar_update_rate,
-          ChFrame<double>(lidar_offset, QuatFromAngleAxis(0, ChVector3d(0, 1, 0))),
-          lidar_horizontal_samples,
-          lidar_vertical_channels,
-          static_cast<float>(CH_2PI),              // Horizontal FOV (360 degrees)
-          static_cast<float>(CH_PI / 12),          // Max vertical angle
-          static_cast<float>(-CH_PI / 6),          // Min vertical angle
-          static_cast<float>(lidar_max_range),
-          LidarBeamShape::RECTANGULAR,
-          2,      // Sample radius
-          0.003f, // Vertical divergence
-          0.003f, // Horizontal divergence
-          LidarReturnMode::STRONGEST_RETURN);
-      lidar->SetName("FrontLidar");
-      lidar->SetLag(0.01f);
-      lidar->SetCollectionWindow(0.04f);
-      
-      // Lidar filter pipeline
-      lidar->PushFilter(chrono_types::make_shared<ChFilterPCfromDepth>());
-      lidar->PushFilter(chrono_types::make_shared<ChFilterXYZIAccess>());
-      lidar->PushFilter(chrono_types::make_shared<ChFilterVisualizePointCloud>(
-          1280, 720, 1.0f, "Lidar Point Cloud"));
-      
-      manager->AddSensor(lidar);
     }
 
     // Reconstruct sensor scenes to ensure all bodies (including obstacles) are included

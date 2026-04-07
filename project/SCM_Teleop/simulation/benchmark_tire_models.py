@@ -128,7 +128,7 @@ def _run_subprocess_pair(model, terrain, path_type, sine_amp, sine_wl,
         sim_cmd.append("--no-noise")
 
     ctrl_cmd = [
-        sys.executable, str(script_dir / "mpc_controller_node.py"),
+        sys.executable, str(script_dir / "acados_mpc_controller_node.py"),
         "--model", model,
         "--path", path_type,
         "--speed", str(v_target),

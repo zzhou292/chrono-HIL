@@ -160,20 +160,38 @@ TERRAIN_PRESETS = {
 # =============================================================================
 # Terrain topology presets — bumpiness levels 1–10.
 # These define ONLY the Perlin-noise heightmap parameters (independent of soil type).
-# Select via --topology N on the CLI, combine with --terrain for soil type.
+# Select via --bumpiness N on the CLI, combine with --terrain for soil type.
 # =============================================================================
 TOPOLOGY_LEVELS = {
-    1:  {"description": "Flat",           "bump_amplitude": 0.00, "bump_wavelength": 20.0, "bump_octaves": 1, "bump_max_slope": 0.05},
-    2:  {"description": "Nearly flat",    "bump_amplitude": 0.02, "bump_wavelength": 25.0, "bump_octaves": 2, "bump_max_slope": 0.08},
-    3:  {"description": "Gentle",         "bump_amplitude": 0.05, "bump_wavelength": 22.0, "bump_octaves": 2, "bump_max_slope": 0.10},
-    4:  {"description": "Mild",           "bump_amplitude": 0.08, "bump_wavelength": 18.0, "bump_octaves": 3, "bump_max_slope": 0.15},
-    5:  {"description": "Moderate",       "bump_amplitude": 0.12, "bump_wavelength": 15.0, "bump_octaves": 3, "bump_max_slope": 0.18},
-    6:  {"description": "Bumpy",          "bump_amplitude": 0.15, "bump_wavelength": 12.0, "bump_octaves": 4, "bump_max_slope": 0.20},
-    7:  {"description": "Rough",          "bump_amplitude": 0.20, "bump_wavelength": 10.0, "bump_octaves": 4, "bump_max_slope": 0.25},
-    8:  {"description": "Very rough",     "bump_amplitude": 0.25, "bump_wavelength":  8.0, "bump_octaves": 5, "bump_max_slope": 0.30},
-    9:  {"description": "Rocky",          "bump_amplitude": 0.30, "bump_wavelength":  7.0, "bump_octaves": 5, "bump_max_slope": 0.35},
-    10: {"description": "Extreme",        "bump_amplitude": 0.35, "bump_wavelength":  6.0, "bump_octaves": 6, "bump_max_slope": 0.40},
+    1:  {"description": "Nearly flat",    "bump_amplitude": 0.03, "bump_wavelength": 25.0, "bump_octaves": 1, "bump_max_slope": 0.08},
+    2:  {"description": "Gentle",         "bump_amplitude": 0.08, "bump_wavelength": 22.0, "bump_octaves": 2, "bump_max_slope": 0.12},
+    3:  {"description": "Mild",           "bump_amplitude": 0.15, "bump_wavelength": 18.0, "bump_octaves": 3, "bump_max_slope": 0.18},
+    4:  {"description": "Moderate",       "bump_amplitude": 0.25, "bump_wavelength": 14.0, "bump_octaves": 3, "bump_max_slope": 0.25},
+    5:  {"description": "Bumpy",          "bump_amplitude": 0.35, "bump_wavelength": 11.0, "bump_octaves": 4, "bump_max_slope": 0.30},
+    6:  {"description": "Rough",          "bump_amplitude": 0.45, "bump_wavelength":  9.0, "bump_octaves": 4, "bump_max_slope": 0.40},
+    7:  {"description": "Very rough",     "bump_amplitude": 0.55, "bump_wavelength":  7.0, "bump_octaves": 5, "bump_max_slope": 0.50},
+    8:  {"description": "Rocky",          "bump_amplitude": 0.70, "bump_wavelength":  6.0, "bump_octaves": 5, "bump_max_slope": 0.60},
+    9:  {"description": "Severe",         "bump_amplitude": 0.85, "bump_wavelength":  5.0, "bump_octaves": 6, "bump_max_slope": 0.70},
+    10: {"description": "Extreme",        "bump_amplitude": 1.00, "bump_wavelength":  4.0, "bump_octaves": 6, "bump_max_slope": 0.80},
 }
+
+
+def get_bumpiness_params(level: int, seed: int = 12345) -> dict:
+    """Return Perlin-noise bump parameters for a given bumpiness level (0-10).
+
+    Level 0 = flat (no heightmap).  Levels 1-10 map to TOPOLOGY_LEVELS.
+
+    Returns dict with keys: bump_amplitude, bump_wavelength, bump_octaves,
+                            bump_max_slope, bump_seed, description.
+    """
+    if level <= 0:
+        return {"bump_amplitude": 0.0, "bump_wavelength": 20.0,
+                "bump_octaves": 1, "bump_max_slope": 0.05,
+                "bump_seed": seed, "description": "Flat"}
+    level = min(level, 10)
+    params = dict(TOPOLOGY_LEVELS[level])  # copy
+    params["bump_seed"] = seed
+    return params
 
 
 # Steering excitation defaults for terrain estimation (Dallas Sec. V.A)
