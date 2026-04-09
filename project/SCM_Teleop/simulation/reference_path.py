@@ -259,6 +259,54 @@ class ReferencePath:
     # Point evaluation (for analytics / error computation)
     # ------------------------------------------------------------------
 
+    def closest_point_on_path(self, x_q: float, y_q: float) -> dict:
+        """Closest point on the arc-length spline to ``(x_q, y_q)`` in the plane.
+
+        Searches the same ``s`` samples used to build the spline (dense spacing).
+        Returns geometric distance to the path and Frenet-style signed errors
+        at the projection (tangent from spline derivative).
+
+        This is appropriate for *all* path shapes.  ``evaluate_at_x`` + ``y - y_ref``
+        is only a lateral proxy when ``x`` is a good progress variable; it is
+        misleading for general curves or when the vehicle barely moves.
+        """
+        xc = self.cs_x(self.s)
+        yc = self.cs_y(self.s)
+        dxw = xc - x_q
+        dyw = yc - y_q
+        d2 = dxw * dxw + dyw * dyw
+        i = int(np.argmin(d2))
+        s_star = float(self.s[i])
+        xr = float(xc[i])
+        yr = float(yc[i])
+        pos_err = float(np.sqrt(float(d2[i])))
+
+        tx = float(self.cs_x(s_star, 1))
+        ty = float(self.cs_y(s_star, 1))
+        tn = float(np.hypot(tx, ty))
+        if tn < 1e-12:
+            psi_r = 0.0
+            tx, ty = 1.0, 0.0
+        else:
+            tx /= tn
+            ty /= tn
+            psi_r = float(np.arctan2(ty, tx))
+
+        rx = x_q - xr
+        ry = y_q - yr
+        e_lon = float(rx * tx + ry * ty)
+        e_lat = float(-rx * ty + ry * tx)
+
+        return {
+            "s": s_star,
+            "x_ref": xr,
+            "y_ref": yr,
+            "psi_ref": psi_r,
+            "pos_err": pos_err,
+            "e_lat": e_lat,
+            "e_lon": e_lon,
+        }
+
     def evaluate_at_x(self, x_query):
         """Return (y, psi) on the reference path nearest to a given *x* position.
 

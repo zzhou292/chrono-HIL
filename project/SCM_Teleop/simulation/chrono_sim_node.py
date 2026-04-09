@@ -426,16 +426,17 @@ def run_sim_node(args):
         state_pub.send(config_msg)
 
         # --------------------------------------------------------------
-        # Optional gate: wait for controller to be ready before starting
-        # the simulation loop. This prevents ACADOS codegen/compilation
-        # time in the controller from consuming the user-requested
-        # simulation duration (--time).
+        # Gate: wait for controller ready (neutral ControlCommand) after
+        # ACADOS build + warmup.  acados_mpc_controller_node sends these
+        # pings before/with VehicleState so we do not deadlock.  Prevents
+        # codegen time from consuming --time once the loop runs.
         # --------------------------------------------------------------
-        wait_s = getattr(args, "wait_for_controller", 0.0)
-        if wait_s and wait_s > 0:
-            print(f"  Waiting for first control command (timeout {wait_s:.0f}s)...")
+        wait_s = 0.0 if args.no_wait_for_controller else float(args.wait_for_controller)
+        if wait_s > 0:
+            print(f"  Waiting for controller ready signal (timeout {wait_s:.0f}s)...")
             t0_wait = wall_time.time()
             last_cfg_send = t0_wait
+            got_ready = False
             while wall_time.time() - t0_wait < wait_s:
                 # Re-publish config while waiting so late-starting controllers
                 # (e.g. during ACADOS codegen/compile) can still receive it.
@@ -451,7 +452,11 @@ def run_sim_node(args):
                 if isinstance(msg, ControlCommand):
                     driver.apply(msg)
                     print("  Controller ready — starting simulation.")
+                    got_ready = True
                     break
+            if not got_ready:
+                print("  WARNING: No controller handshake before timeout — "
+                      "starting simulation anyway. Chrono time may run ahead of MPC.")
 
     # ------------------------------------------------------------------
     # Simulation loop
@@ -676,9 +681,13 @@ def main():
                    help="Vehicle state publish rate (Hz)")
     p.add_argument("--no-noise", action="store_true",
                    help="Disable sensor noise (noise ON by default)")
-    p.add_argument("--wait-for-controller", type=float, default=30.0,
-                   help="Wait up to this many seconds for the first control command before starting the sim loop "
-                        "(prevents controller compilation time from consuming --time). Set 0 to disable.")
+    p.add_argument("--wait-for-controller", type=float, default=300.0,
+                   help="Wait up to this many seconds for the controller's first control message (ready ping after "
+                        "ACADOS init) before advancing Chrono. Default 300. Start the sim first, then the "
+                        "controller, or use launch_decoupled.py.")
+    p.add_argument("--no-wait-for-controller", action="store_true",
+                   help="Enter the sim loop immediately (no MPC handshake). Use for sim-only / debugging without a "
+                        "controller node.")
 
     # Manual control
     p.add_argument("--manual", action="store_true",

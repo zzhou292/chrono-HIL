@@ -25,9 +25,9 @@ Usage:
     nn = load_nn_tire_model('nn_models/v6_mlp_16_4', terrain_params)
     mpc = AcadosDallasMPC(nn_tire_model=nn, dt=0.1, N=20)
 
-    delta_cmd, Jx, Z_opt, U_opt = mpc.solve(z0, x_ref, y_ref, psi_ref, v_ref,
-                                             x_goal, y_goal, psi_goal,
-                                             terrain_params=tp)
+    delta_dot, Jx, Z_opt, U_opt = mpc.solve(z0, x_ref, y_ref, psi_ref, v_ref,
+                                              x_goal, y_goal, psi_goal,
+                                              terrain_params=tp)
 """
 
 from __future__ import annotations
@@ -82,13 +82,14 @@ class AcadosDallasMPC:
     """
     ACADOS-based MPC for off-road autonomous driving.
 
-    Direct steering-angle formulation: the MPC optimizes road-wheel angle δ
-    and longitudinal jerk Jx each stage.  Augmented states [δ_prev, Jx_prev]
-    pair with a heavy Δu penalty for smooth commands (limits straight-road
-    chatter).  Effective steering rate is penalised via (δ − δ_prev)² / dt.
+    Same 8-state bicycle model dynamics, cost function, constraints
+    as the CasADi+IPOPT DallasMPC, but solved via SQP-RTI.
 
-    State:   z = [x, y, ψ, u, v, ω, ax, δ_prev, Jx_prev]   (nx = 9)
-    Control: ζ = [δ, Jx]                                   (nu = 2)
+    Supports NN tire models (via nn_tire_model) as well as analytical
+    tire models (pacejka, tmeasy, linear) from analytical_tire_models.py.
+
+    State:   z = [x, y, ψ, u, v, ω, δ, ax]    (nx = 8)
+    Control: ζ = [δ̇, Jx]                        (nu = 2)
     """
 
     def __init__(self, nn_tire_model=None, dt=0.1, N=20,
@@ -110,8 +111,8 @@ class AcadosDallasMPC:
         self.nn_tire_model = nn_tire_model
         self.dt = dt
         self.N = N
-        self.nx = 9    # [x, y, ψ, u, v, ω, ax, δ_prev, Jx_prev]
-        self.nu = 2    # [δ, Jx]
+        self.nx = 10   # [x, y, ψ, u, v, ω, δ, ax, δ̇_prev, Jx_prev]
+        self.nu = 2
         self.lateral_load_transfer = lateral_load_transfer
         self.kappa_mode = kappa_mode
 
@@ -135,13 +136,11 @@ class AcadosDallasMPC:
         self.w_lateral = 120.0
         self.w_heading = 20.0
         self.w_speed = 10.0
-        # Strong (δ−δ_prev)²/dt term smooths wheel angle (straights / RTI).
-        self.w_delta_dot = 800.0
+        self.w_delta_dot = 200.0
         self.w_Jx = 20.0
         self.w_terminal = 50.0
-        self.w_du = 500.0   # penalty on (Jx − Jx_prev)²
+        self.w_du = 500.0
         self.w_steer = 0.0
-        self.max_steer_rate = self.delta_dot_max  # rad/s, for kinematic warm-start
 
         # NN integration mode
         self._temporal_mode = (self.use_nn and nn_tire_model.temporal_K > 1)
@@ -160,10 +159,6 @@ class AcadosDallasMPC:
             if 'resnet' in nn_tire_model.model_type:
                 self._lm = 1e-2
                 self._nlp_max_iter = 3
-            else:
-                # Temporal MLP: deeper input stacking than static → slightly more SQP work.
-                self._lm = max(self._lm, 5e-3)
-                self._nlp_max_iter = max(self._nlp_max_iter, 2)
         # Analytical tire models (Pacejka/TMeasy) have steep nonlinearities.
         # SQP with multiple iterations + FULL_CONDENSING_QPOASES avoids the
         # MINSTEP errors that plague HPIPM with these dynamics.
@@ -261,21 +256,21 @@ class AcadosDallasMPC:
         ocp.cost.cost_type_e = 'EXTERNAL'
 
         # ---- Constraints: bounds ----
-        # State bounds (indices: u=3, v=4, ω=5, ax=6, δ_prev=7, Jx_prev=8)
-        ocp.constraints.lbx = np.array([self.u_min, -10.0, -5.0, self.ax_min,
-                                        self.delta_min, self.Jx_min])
-        ocp.constraints.ubx = np.array([self.u_max, 10.0, 5.0, self.ax_max,
-                                        self.delta_max, self.Jx_max])
-        ocp.constraints.idxbx = np.array([3, 4, 5, 6, 7, 8])
+        # State bounds (indices: u=3, v=4, ω=5, δ=6, ax=7, δ̇_prev=8, Jx_prev=9)
+        ocp.constraints.lbx = np.array([self.u_min, -10.0, -5.0, self.delta_min, self.ax_min,
+                                         self.delta_dot_min, self.Jx_min])
+        ocp.constraints.ubx = np.array([self.u_max, 10.0, 5.0, self.delta_max, self.ax_max,
+                                         self.delta_dot_max, self.Jx_max])
+        ocp.constraints.idxbx = np.array([3, 4, 5, 6, 7, 8, 9])
 
         # Terminal state bounds (same)
         ocp.constraints.lbx_e = ocp.constraints.lbx.copy()
         ocp.constraints.ubx_e = ocp.constraints.ubx.copy()
         ocp.constraints.idxbx_e = ocp.constraints.idxbx.copy()
 
-        # Control bounds: δ and Jx
-        ocp.constraints.lbu = np.array([self.delta_min, self.Jx_min])
-        ocp.constraints.ubu = np.array([self.delta_max, self.Jx_max])
+        # Control bounds
+        ocp.constraints.lbu = np.array([self.delta_dot_min, self.Jx_min])
+        ocp.constraints.ubu = np.array([self.delta_dot_max, self.Jx_max])
         ocp.constraints.idxbu = np.array([0, 1])
 
         # Initial state (will be set at solve time)
@@ -364,7 +359,6 @@ class AcadosDallasMPC:
             'print_level': 0,
             'w_delta_dot': self.w_delta_dot,
             'w_Jx': self.w_Jx,
-            'steer_angle_mpc': True,
             'w_lateral': self.w_lateral,
             'w_heading': self.w_heading,
             'w_speed': self.w_speed,
@@ -395,8 +389,8 @@ class AcadosDallasMPC:
         h_cg, T = _h_cg, _T
 
         # ---- Symbolic variables ----
-        x = ca.SX.sym('x', nx)  # [x, y, ψ, u, v, ω, ax, δ_prev, Jx_prev]
-        u_ctrl = ca.SX.sym('u', nu)  # [δ, Jx]
+        x = ca.SX.sym('x', nx)  # [x, y, ψ, u, v, ω, δ, ax, δ̇_prev, Jx_prev]
+        u_ctrl = ca.SX.sym('u', nu)  # [δ̇, Jx]
         xdot = ca.SX.sym('xdot', nx)
 
         # Parameters per stage
@@ -416,17 +410,15 @@ class AcadosDallasMPC:
         # Unpack state
         px, py, psi = x[0], x[1], x[2]
         u_vel, v_vel, omega = x[3], x[4], x[5]
-        ax = x[6]
-        delta_prev = x[7]
-        Jx_prev = x[8]
+        delta, ax = x[6], x[7]
 
-        # Unpack controls (commanded road-wheel angle + longitudinal jerk)
-        delta_cmd = u_ctrl[0]
+        # Unpack controls
+        delta_dot = u_ctrl[0]
         Jx = u_ctrl[1]
 
         # ---- Tire force computation ----
         u_safe = ca.fmax(ca.fabs(u_vel), 0.5)
-        alpha_f = delta_cmd - ca.atan2(v_vel + Lf * omega, u_safe)
+        alpha_f = delta - ca.atan2(v_vel + Lf * omega, u_safe)
         alpha_r = -ca.atan2(v_vel - Lr * omega, u_safe)
 
         # Normal forces with longitudinal load transfer
@@ -600,9 +592,14 @@ class AcadosDallasMPC:
             Fyf, Fyr, Fx_traction = _analytical_tire_forces(
                 self.tire_model, alpha_f, alpha_r, Fz_f_axle, Fz_r_axle, kappa)
 
+        # Unpack augmented state: previous controls (for du penalty)
+        delta_dot_prev = x[8]
+        Jx_prev = x[9]
+
         # ---- Dynamics: ẋ = f(x, u) ----
-        # δ_prev and Jx_prev follow (u - u_prev)/dt so the stage cost can
-        # penalise Δδ and ΔJx consistently across the horizon.
+        # States 8-9 carry the previous control: their continuous-time
+        # derivative (u - u_prev)/dt makes Euler integration give
+        # u_prev(k+1) = u(k), exactly replicating the CasADi du penalty.
         _dt = self.dt
         f_expl = ca.vertcat(
             u_vel * ca.cos(psi) - (v_vel + Lf * omega) * ca.sin(psi),  # ẋ
@@ -611,9 +608,10 @@ class AcadosDallasMPC:
             ax,                                                          # u̇
             (Fyf + Fyr) / M - u_vel * omega,                            # v̇
             (Fyf * Lf - Fyr * Lr) / Izz,                                # ω̇
+            delta_dot,                                                   # δ̇
             Jx,                                                          # ȧx
-            (delta_cmd - delta_prev) / _dt,                              # δ_prev
-            (Jx - Jx_prev) / _dt,                                        # Jx_prev
+            (delta_dot - delta_dot_prev) / _dt,                          # δ̇_prev → u[0]
+            (Jx - Jx_prev) / _dt,                                       # Jx_prev → u[1]
         )
 
         model.x = x
@@ -624,15 +622,24 @@ class AcadosDallasMPC:
         model.f_impl_expr = xdot - f_expl
 
         # ---- Stage cost (EXTERNAL) ----
+        # No x-error penalty (same reasoning as DallasMPC).
+        # CasADi/IPOPT multiplies control effort by dt (continuous-time integral
+        # approximation).  Use the same dt scaling for all models so the
+        # control-effort / tracking-error ratio matches the CasADi formulation
+        # and the du penalty is relatively heavy (prevents limit-cycle
+        # oscillation on straight segments with bumpy terrain).
         _ct = self.dt
-        d_delta = delta_cmd - delta_prev
-        d_jx = Jx - Jx_prev
+
+        # Control rate-of-change penalty: penalise ||u_k - u_{k-1}||^2 using
+        # the augmented state [delta_dot_prev, Jx_prev] which tracks the
+        # previous stage's control as a DECISION VARIABLE (not frozen param).
+        du = u_ctrl - ca.vertcat(delta_dot_prev, Jx_prev)
 
         stage_cost = (
-            self.w_delta_dot / _ct * d_delta**2 +
+            self.w_delta_dot * _ct * delta_dot**2 +
             self.w_Jx * _ct * Jx**2 +
-            self.w_du * d_jx**2 +
-            self.w_steer * delta_cmd**2 +
+            self.w_du * ca.dot(du, du) +
+            self.w_steer * delta**2 +
             self.w_lateral * (py - y_ref)**2 +
             self.w_heading * (psi - psi_ref)**2 +
             self.w_speed * (u_vel - v_ref)**2
@@ -677,7 +684,7 @@ class AcadosDallasMPC:
         Solve the MPC with the same interface as DallasMPC.solve().
 
         Returns:
-            delta_cmd, Jx, Z_opt, U_opt  — first control is road-wheel angle δ [rad]
+            delta_dot, Jx, Z_opt, U_opt
         """
         nx, nu, N = self.nx, self.nu, self.N
         nn = self.nn_tire_model
@@ -737,26 +744,27 @@ class AcadosDallasMPC:
             _dt = self.dt
             zk = np.array(z0, dtype=float)
             for k in range(N):
-                xk, yk, psik, uk, vk, omegak, axk, dprev, _jxprev = zk
+                xk, yk, psik, uk, vk, omegak, deltak, axk = zk[:8]
+                ddot_prev_k, jerk_prev_k = zk[8], zk[9]
                 psi_err = np.arctan2(np.sin(psi_ref[k] - psik),
                                      np.cos(psi_ref[k] - psik))
                 y_err = (y_ref[k] - yk) * np.cos(psik) - (x_ref[k] - xk) * np.sin(psik)
                 delta_des = float(np.clip(psi_err * 1.5 + y_err * 0.2,
                                           self.delta_min, self.delta_max))
-                delta_k = float(np.clip(
-                    delta_des,
-                    dprev - self.max_steer_rate * _dt,
-                    dprev + self.max_steer_rate * _dt))
+                ddot_k = float(np.clip((delta_des - deltak) / _dt,
+                                       self.delta_dot_min, self.delta_dot_max))
                 spd_err = float(v_ref[k]) - uk
                 ax_des = float(np.clip(spd_err * 0.8, self.ax_min, self.ax_max))
                 jerk_k = float(np.clip((ax_des - axk) / _dt,
                                        self.Jx_min, self.Jx_max))
 
                 self._solver.set(k, 'x', zk)
-                self._solver.set(k, 'u', np.array([delta_k, jerk_k]))
+                self._solver.set(k, 'u', np.array([ddot_k, jerk_k]))
 
                 ax_next = float(np.clip(axk + _dt * jerk_k,
                                         self.ax_min, self.ax_max))
+                delta_next = float(np.clip(deltak + _dt * ddot_k,
+                                           self.delta_min, self.delta_max))
                 u_next = max(self.u_min, uk + _dt * axk)
                 v_next = vk * 0.9
                 omega_next = omegak * 0.9
@@ -764,7 +772,8 @@ class AcadosDallasMPC:
                 x_next = xk + _dt * (uk * np.cos(psik) - vk * np.sin(psik))
                 y_next = yk + _dt * (uk * np.sin(psik) + vk * np.cos(psik))
                 zk = np.array([x_next, y_next, psi_next, u_next,
-                               v_next, omega_next, ax_next, delta_k, jerk_k])
+                               v_next, omega_next, delta_next, ax_next,
+                               ddot_k, jerk_k])
 
         for k in range(N):
             self._solver.set(k, 'p', np.array(_p_base[k]))
@@ -806,7 +815,7 @@ class AcadosDallasMPC:
         self._prev_Z = Z_opt.copy()
         self._prev_U = U_opt.copy()
 
-        delta_cmd = float(U_opt[0, 0])
+        delta_dot = float(U_opt[0, 0])
         Jx = float(U_opt[1, 0])
         self._last_u0 = U_opt[:, 0].copy()
 
@@ -822,12 +831,12 @@ class AcadosDallasMPC:
 
         # Only reject solutions with actual NaN/Inf -- ACADOS RTI commonly
         # returns non-zero status (e.g. max-iterations) with a usable solution.
-        if (not np.isfinite(delta_cmd) or not np.isfinite(Jx) or
+        if (not np.isfinite(delta_dot) or not np.isfinite(Jx) or
                 not np.isfinite(Z_opt).all() or not np.isfinite(U_opt).all()):
             self.reset_warmstart()
             return 0.0, 0.0, None, None
 
-        return delta_cmd, Jx, Z_opt, U_opt
+        return delta_dot, Jx, Z_opt, U_opt
 
 
 # ============================================================================
@@ -873,12 +882,12 @@ if __name__ == '__main__':
     v_ref = np.full(N + 1, v_target)
 
     z0 = np.zeros(mpc.nx)
-    z0[:6] = np.array([x_ref[0], y_ref[0], psi_ref[0], v_target, 0.0, 0.0])
-    # ax, δ_prev, Jx_prev remain 0
+    z0[:8] = np.array(
+        [x_ref[0], y_ref[0], psi_ref[0], v_target, 0.0, 0.0, 0.0, 0.0])
 
     # Warm up
     for _ in range(5):
-        dc, jx, Z, U = mpc.solve(z0, x_ref, y_ref, psi_ref, v_ref,
+        dd, jx, Z, U = mpc.solve(z0, x_ref, y_ref, psi_ref, v_ref,
                                    x_ref[-1], y_ref[-1], psi_ref[-1],
                                    terrain_params=tp)
 
@@ -886,7 +895,7 @@ if __name__ == '__main__':
     times = []
     for _ in range(50):
         t0 = time.perf_counter()
-        dc, jx, Z, U = mpc.solve(z0, x_ref, y_ref, psi_ref, v_ref,
+        dd, jx, Z, U = mpc.solve(z0, x_ref, y_ref, psi_ref, v_ref,
                                    x_ref[-1], y_ref[-1], psi_ref[-1],
                                    terrain_params=tp)
         times.append((time.perf_counter() - t0) * 1000)
@@ -897,4 +906,4 @@ if __name__ == '__main__':
     print(f"Median: {np.median(times):.2f} ms")
     print(f"p95:    {np.percentile(times, 95):.2f} ms")
     print(f"Hz:     {1000/np.mean(times):.1f}")
-    print(f"δ={dc:.4f} rad  Jx={jx:.4f}")
+    print(f"δ̇={dd:.4f}  Jx={jx:.4f}")

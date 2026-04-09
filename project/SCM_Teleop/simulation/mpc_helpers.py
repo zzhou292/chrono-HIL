@@ -220,9 +220,11 @@ class TrackingAnalytics:
     """Accumulates path-tracking metrics over the simulation.
 
     Tracks:
-        - Cross-track error (lateral deviation from reference path)
-        - Heading error (yaw deviation from reference heading)
-        - Speed error (actual vs target)
+        - Legacy ``y - y_ref(x)`` "CTE" (same as before; can mislead on curved paths
+          or when the vehicle barely moves — see geometric path metrics below).
+        - Geometric path error: distance to closest point on the spline + Frenet
+          lateral/longitudinal errors and heading vs path tangent there.
+        - Speed error (actual vs target) and controls for motion sanity (braking).
         - Position (x, y) for post-run analysis
     """
 
@@ -264,6 +266,12 @@ class TrackingAnalytics:
         self.y_refs: list[float] = []
         self.psi_refs: list[float] = []
 
+        # Geometric path metrics (closest point on ReferencePath spline)
+        self.path_pos_errors: list[float] = []
+        self.path_lat_errors: list[float] = []
+        self.path_lon_errors: list[float] = []
+        self.heading_path_errors: list[float] = []  # rad, vs tangent at closest point
+
         self._window: list[float] = []
 
     def record(self, t: float, x: float, y: float, psi: float, u: float):
@@ -284,6 +292,14 @@ class TrackingAnalytics:
         self.y_refs.append(y_ref)
         self.psi_refs.append(psi_ref)
         self._window.append(abs(ct_err))
+
+        cp = self.ref_path.closest_point_on_path(x, y)
+        self.path_pos_errors.append(cp["pos_err"])
+        self.path_lat_errors.append(cp["e_lat"])
+        self.path_lon_errors.append(cp["e_lon"])
+        hp = psi - cp["psi_ref"]
+        hp = (hp + np.pi) % (2 * np.pi) - np.pi
+        self.heading_path_errors.append(float(hp))
 
     def record_control(self, t: float, steering: float, throttle: float,
                        braking: float, delta: float, acceleration: float,
@@ -344,14 +360,63 @@ class TrackingAnalytics:
         rms_hd   = np.degrees(np.sqrt(np.mean(hd_m ** 2)))
         mean_sp  = np.mean(sp_m)
 
+        pp = np.array(self.path_pos_errors)
+        plat = np.array(self.path_lat_errors)
+        plon = np.array(self.path_lon_errors)
+        hdp = np.array(self.heading_path_errors)
+        pp_m = pp[mask] if mask.any() and len(pp) == len(ts) else pp
+        plat_m = plat[mask] if mask.any() and len(plat) == len(ts) else plat
+        plon_m = plon[mask] if mask.any() and len(plon) == len(ts) else plon
+        hdp_m = hdp[mask] if mask.any() and len(hdp) == len(ts) else hdp
+        us = np.array(self.us)
+        us_m = us[mask] if mask.any() and len(us) == len(ts) else us
+
+        avg_path_pos = float(np.mean(pp_m)) if len(pp_m) else float("nan")
+        rms_path_pos = float(np.sqrt(np.mean(pp_m ** 2))) if len(pp_m) else float("nan")
+        rms_plat = float(np.sqrt(np.mean(plat_m ** 2))) if len(plat_m) else float("nan")
+        rms_plon = float(np.sqrt(np.mean(plon_m ** 2))) if len(plon_m) else float("nan")
+        rms_hdp_deg = float(np.degrees(np.sqrt(np.mean(hdp_m ** 2)))) if len(hdp_m) else float("nan")
+        mean_u = float(np.mean(us_m)) if len(us_m) else float("nan")
+        spd_ratio = mean_u / self.v_target if self.v_target > 1e-6 else float("nan")
+
+        br = np.array(self.brakings) if self.brakings else np.array([])
+        if len(br) == len(ts):
+            br_m = br[mask] if mask.any() else br
+            brake_duty = float(np.mean(br_m > 0.15))
+            mean_brake = float(np.mean(br_m))
+        else:
+            brake_duty = float("nan")
+            mean_brake = float("nan")
+
+        # Combined pose-style metric (metres + radians scaled to ~metres)
+        pose_scale = 1.0  # 1 rad yaw error counts like 1 m lateral for ranking
+        if len(pp_m) and len(hdp_m) == len(pp_m):
+            pose_rms = float(
+                np.sqrt(np.mean(pp_m ** 2 + (pose_scale * hdp_m) ** 2)))
+        else:
+            pose_rms = float("nan")
+
         lines = [
             f"\n  Tracking Summary (t≥{self.rms_time_start:.1f}s):",
-            f"    Avg |CTE|:  {mean_ct:.4f} m",
-            f"    RMS CTE:    {rms_ct:.4f} m",
-            f"    Max |CTE|:  {max_ct:.4f} m",
-            f"    RMS heading:{rms_hd:.2f}°",
-            f"    Mean Δspeed:{mean_sp:+.3f} m/s",
+            f"    Legacy y−y_ref(x) (CSV crosstrack_err):",
+            f"      Avg |CTE|:  {mean_ct:.4f} m",
+            f"      RMS CTE:    {rms_ct:.4f} m",
+            f"      Max |CTE|:  {max_ct:.4f} m",
+            f"      RMS heading (y_ref from x-proj): {rms_hd:.2f}°",
+            f"    Geometric path (closest point on spline — use for ranking):",
+            f"      Avg path pos err: {avg_path_pos:.4f} m  (RMS {rms_path_pos:.4f} m)",
+            f"      RMS |Frenet lat|: {rms_plat:.4f} m   RMS |Frenet lon|: {rms_plon:.4f} m",
+            f"      RMS heading vs path tangent: {rms_hdp_deg:.2f}°",
+            f"      RMS pose (pos + 1·|ψ_err| rad): {pose_rms:.4f}",
+            f"    Motion:",
+            f"      Mean speed: {mean_u:.3f} m/s  (ratio u/u_ref = {spd_ratio:.2f})",
+            f"      Mean Δspeed (u−u_ref): {mean_sp:+.3f} m/s",
+            f"      Brake duty (>0.15): {100*brake_duty:.1f}%   mean brake cmd: {mean_brake:.3f}",
         ]
+        if np.isfinite(spd_ratio) and spd_ratio < 0.35:
+            lines.append(
+                "    *** Low speed ratio — legacy CTE can look good while not tracking (brake-hold). ***"
+            )
         return "\n".join(lines)
 
     def plot_results(self, plot_dir: str, terrain_name: str = '', model_label: str = ''):
@@ -475,6 +540,11 @@ class TireHistoryTracker:
     Maintains a sliding window of the last (K-1) observations of
     [kappa, alpha, u, Fz, steering_rate] for front and rear tires.
     The history is flattened most-recent-first for the NLP parameter vector.
+
+    Training (train_temporal_nn / temporal ResNet) builds windows with
+    dt_nn spacing (default 0.1 s) between frames. At inference, push new
+    history only at that cadence (see controller --nn-temporal-hist-dt);
+    updating every MPC step stacks nearly identical frames and breaks the model.
     """
 
     def __init__(self, K):
@@ -501,28 +571,39 @@ class TireHistoryTracker:
 
 
 class RateTracker:
-    """Track per-axle operating condition rates (finite differences).
+    """Finite-difference rates over simulation time for rate-augmented NNs.
 
-    Computes [dkappa/dt, dalpha/dt, du/dt] for front and rear axles
-    from consecutive MPC iterations.
+    train_rate_nn.py uses diff(rows)/effective_dt with effective_dt =
+    record_dt * subsample (defaults 0.005 * 10 = 0.05 s). Differencing every
+    MPC step (~2–4 ms) divides tiny deltas by a tiny dt → huge spikes and
+    OOD inputs. This class anchors samples in sim time and refreshes rates
+    only when at least *sample_dt* seconds have elapsed.
     """
 
-    def __init__(self, dt):
-        self.dt = dt
-        self._prev_front = None
-        self._prev_rear = None
+    def __init__(self, sample_dt: float = 0.05):
+        self.sample_dt = float(sample_dt)
+        self._anchor_t = None
+        self._anchor_f = None
+        self._anchor_r = None
         self._rates_front = np.zeros(3)
         self._rates_rear = np.zeros(3)
 
-    def update(self, kappa_f, alpha_f, u_f,
-               kappa_r, alpha_r, u_r):
-        cur_f = np.array([kappa_f, alpha_f, u_f])
-        cur_r = np.array([kappa_r, alpha_r, u_r])
-        if self._prev_front is not None:
-            self._rates_front = (cur_f - self._prev_front) / self.dt
-            self._rates_rear = (cur_r - self._prev_rear) / self.dt
-        self._prev_front = cur_f
-        self._prev_rear = cur_r
+    def update(self, t, kappa_f, alpha_f, u_f, kappa_r, alpha_r, u_r):
+        cur_f = np.array([kappa_f, alpha_f, u_f], dtype=float)
+        cur_r = np.array([kappa_r, alpha_r, u_r], dtype=float)
+        if self._anchor_t is None:
+            self._anchor_f = cur_f
+            self._anchor_r = cur_r
+            self._anchor_t = float(t)
+            return
+        dt_e = float(t) - self._anchor_t
+        if dt_e >= self.sample_dt:
+            dt_e = max(dt_e, 1e-6)
+            self._rates_front = (cur_f - self._anchor_f) / dt_e
+            self._rates_rear = (cur_r - self._anchor_r) / dt_e
+            self._anchor_f = cur_f
+            self._anchor_r = cur_r
+            self._anchor_t = float(t)
 
     @property
     def front(self):

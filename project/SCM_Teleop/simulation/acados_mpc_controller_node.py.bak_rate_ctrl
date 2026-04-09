@@ -27,7 +27,6 @@ import collections
 import csv
 import math
 import sys
-from typing import Optional
 import time as wall_time
 from datetime import datetime
 from pathlib import Path
@@ -81,77 +80,6 @@ _DEFAULT_TERRAIN_CLASS = "dirt"
 from path_utils import make_path_function
 
 
-def _config_dict_from_cli(args) -> dict:
-    """Authoritative bootstrap for ACADOS (do not block on sim)."""
-    vehicle_params = get_vehicle_params_for_demo()
-    tp = get_terrain_preset(args.terrain)
-    terrain_params = terrain_preset_to_internal(tp)
-    return {
-        "vehicle_params": vehicle_params,
-        "terrain_params": terrain_params,
-        "terrain_preset": args.terrain,
-        "path_type": args.path,
-        "v_target": args.speed,
-        "sim_time": args.time,
-        "sine_amplitude": args.sine_amplitude,
-        "sine_wavelength": args.sine_wavelength,
-        "lead_in": args.lead_in,
-    }
-
-
-def _unpack_run_config(config: dict, args) -> tuple:
-    vehicle_params = config["vehicle_params"]
-    terrain_params = config["terrain_params"]
-    v_target = float(config.get("v_target", args.speed))
-    path_type = config.get("path_type", args.path)
-    sine_amp = float(config.get("sine_amplitude", args.sine_amplitude))
-    sine_wl = float(config.get("sine_wavelength", args.sine_wavelength))
-    lead_in = float(config.get("lead_in", args.lead_in))
-    terrain_name = config.get("terrain_preset", args.terrain)
-    return (
-        vehicle_params,
-        terrain_params,
-        v_target,
-        path_type,
-        sine_amp,
-        sine_wl,
-        lead_in,
-        terrain_name,
-    )
-
-
-def _drain_latest_sim_config(state_sub) -> Optional[dict]:
-    """Non-blocking: return the most recent SimStatus config payload in the queue, if any."""
-    latest = None
-    while True:
-        result = state_sub.recv(timeout_ms=0)
-        if result is None:
-            break
-        _, msg = result
-        if isinstance(msg, SimStatus) and msg.event == "config" and msg.config:
-            latest = msg.config
-    return latest
-
-
-def _send_ready_control_ping(ctrl_pub, integrator: ControlIntegrator) -> None:
-    """Neutral command so chrono_sim_node can exit --wait-for-controller before VehicleState exists."""
-    cmd = ControlCommand(
-        time=0.0,
-        wall_time=wall_time.time(),
-        seq=0,
-        steering=0.0,
-        throttle=0.0,
-        braking=0.0,
-        delta=float(integrator.steering_angle),
-        acceleration=float(integrator.acceleration),
-        delta_dot=0.0,
-        jerk=0.0,
-        solve_time_ms=0.0,
-        mpc_cost=0.0,
-    )
-    ctrl_pub.send(cmd)
-
-
 # =============================================================================
 # Main controller loop
 # =============================================================================
@@ -162,24 +90,58 @@ def run_controller_node(args):
     print("=" * 60)
 
     # ------------------------------------------------------------------
-    # ZMQ: subscribe first; ACADOS builds from CLI without waiting for sim.
-    # If chrono already published config, we merge it after warmup (queue drain).
+    # Wait for config from sim node
     # ------------------------------------------------------------------
     state_sub = ZMQSubscriber(sim_sub_endpoint(args.sim_host, args.sim_port))
     print(f"  Subscribing to state from {args.sim_host}:{args.sim_port}")
-    print("  ACADOS will compile from CLI now (no wait for sim config).")
 
-    config = _config_dict_from_cli(args)
-    (
-        vehicle_params,
-        terrain_params,
-        v_target,
-        path_type,
-        sine_amp,
-        sine_wl,
-        lead_in,
-        terrain_name,
-    ) = _unpack_run_config(config, args)
+    config = None
+    print("  Waiting for sim config...", end="", flush=True)
+    for _ in range(200):
+        result = state_sub.recv(timeout_ms=100)
+        if result is not None:
+            topic, msg = result
+            if isinstance(msg, SimStatus) and msg.event == "config":
+                config = msg.config
+                print(" received!")
+                break
+    if config is None:
+        print(" timeout — using CLI arguments for config.")
+        vehicle_params = get_vehicle_params_for_demo()
+        tp = get_terrain_preset(args.terrain)
+        terrain_params = terrain_preset_to_internal(tp)
+        config = {
+            "vehicle_params": vehicle_params,
+            "terrain_params": terrain_params,
+            "terrain_preset": args.terrain,
+            "path_type": args.path,
+            "v_target": args.speed,
+            "sim_time": args.time,
+            "sine_amplitude": args.sine_amplitude,
+            "sine_wavelength": args.sine_wavelength,
+            "lead_in": args.lead_in,
+        }
+
+    vehicle_params = config["vehicle_params"]
+    terrain_params = config["terrain_params"]
+    v_target = config.get("v_target", args.speed)
+    path_type = config.get("path_type", args.path)
+    sine_amp = config.get("sine_amplitude", args.sine_amplitude)
+    sine_wl = config.get("sine_wavelength", args.sine_wavelength)
+    lead_in = config.get("lead_in", args.lead_in)
+    terrain_name = config.get("terrain_preset", args.terrain)
+
+    # When terrain classifier is active, override terrain_params with default
+    if args.terrain_classifier:
+        default_tp = get_terrain_preset(_DEFAULT_TERRAIN_CLASS)
+        terrain_params = terrain_preset_to_internal(default_tp)
+        print(f"  Terrain: classifier mode (default={_DEFAULT_TERRAIN_CLASS}, "
+              f"GT={terrain_name} hidden from MPC)")
+    else:
+        print(f"  Terrain: {terrain_name}")
+    print(f"  Path: {path_type}, v_target: {v_target} m/s")
+    if lead_in > 0:
+        print(f"  Lead-in: {lead_in:.0f}m straight before path")
 
     # ------------------------------------------------------------------
     # Build MPC (ACADOS)
@@ -237,24 +199,17 @@ def run_controller_node(args):
         for _ in range(K_t - 1):
             tire_hist.update(0.0, 0.0, 0.5, Fz_f0, 0.0,
                              0.0, 0.0, Fz_r0, 0.0)
-        print(
-            f"  Temporal history: K={K_t}, {K_t - 1} past frames, "
-            f"push every {args.nn_temporal_hist_dt:g}s sim time (match training dt_nn)"
-        )
+        print(f"  Temporal history: K={K_t}, tracking {K_t - 1} past observations per tire")
 
     # Rate tracker for rate-augmented NN
     rate_tracker = None
     if mpc._rate_mode:
-        rate_tracker = RateTracker(sample_dt=args.nn_rate_sample_dt)
-        print(
-            f"  Rate-augmented NN: dkappa/dt, dalpha/dt, du/dt over "
-            f">={args.nn_rate_sample_dt:g}s sim intervals (match train_rate_nn effective_dt)"
-        )
+        rate_tracker = RateTracker(dt_mpc)
+        print(f"  Rate-augmented NN: tracking dkappa/dt, dalpha/dt, du/dt per axle")
 
     # Warmup ACADOS solver (first solves trigger JIT)
     print("  Warming up ACADOS solver...", end="", flush=True)
-    z0_warm = np.zeros(mpc.nx)
-    z0_warm[3] = 5.0
+    z0_warm = np.array([0, 0, 0, 5.0, 0, 0, 0, 0, 0, 0])
     x_ref_w = np.linspace(0, 20, N_horizon + 1)
     y_ref_w = np.zeros(N_horizon + 1)
     psi_ref_w = np.zeros(N_horizon + 1)
@@ -269,37 +224,6 @@ def run_controller_node(args):
         print(".", end="", flush=True)
     mpc.reset_warmstart()  # force kinematic rollout from real z0
     print(" done!")
-
-    # Merge sim-published config if it is already in the ZMQ queue (sim started first).
-    sim_cfg = _drain_latest_sim_config(state_sub)
-    if sim_cfg:
-        config.update(sim_cfg)
-        (
-            vehicle_params,
-            terrain_params,
-            v_target,
-            path_type,
-            sine_amp,
-            sine_wl,
-            lead_in,
-            terrain_name,
-        ) = _unpack_run_config(config, args)
-        print("  Merged sim config from ZMQ queue (chrono published before/during ACADOS init).")
-    else:
-        print("  No sim config in queue yet — using CLI. Match --terrain/--path/--speed/--lead-in to chrono, "
-              "or start sim before controller so config is buffered.")
-
-    # When terrain classifier is active, override terrain_params with default
-    if args.terrain_classifier:
-        default_tp = get_terrain_preset(_DEFAULT_TERRAIN_CLASS)
-        terrain_params = terrain_preset_to_internal(default_tp)
-        print(f"  Terrain: classifier mode (default={_DEFAULT_TERRAIN_CLASS}, "
-              f"GT={terrain_name} hidden from MPC)")
-    else:
-        print(f"  Terrain: {terrain_name}")
-    print(f"  Path: {path_type}, v_target: {v_target} m/s")
-    if lead_in > 0:
-        print(f"  Lead-in: {lead_in:.0f}m straight before path")
 
     # ------------------------------------------------------------------
     # Timestamped run directory
@@ -369,8 +293,9 @@ def run_controller_node(args):
     last_state: VehicleState = None
     solve_times = []
     last_sim_time = None
-    # Effective δ̇ for delay predictor buffer and NN steering_rate feature
-    # (finite difference of commanded δ vs current road-wheel angle).
+    # Steering-rate input to NN (matches 'steering_rate' feature used in training).
+    # We don't get measured road-wheel rate from the sim, so we feed the most
+    # recent MPC command (delta_dot) as a consistent proxy.
     last_delta_dot_cmd = 0.0
     last_Jx_cmd = 0.0
     if args.terrain_classifier:
@@ -388,8 +313,6 @@ def run_controller_node(args):
     # ------------------------------------------------------------------
     csv_file = None
     csv_writer = None
-    tire_csv_file = None
-    tire_csv_writer = None
     if not args.no_csv:
         csv_path = run_dir / f"diag_{terrain_name}_{path_type}_{model_tag}.csv"
         csv_file = open(csv_path, "w", newline="")
@@ -398,7 +321,7 @@ def run_controller_node(args):
             "x_fa_meas", "y_fa_meas", "psi_meas", "u_meas", "v_meas", "omega_meas",
             "x_fa_true", "y_fa_true", "psi_true", "u_true",
             "x_fa_comp", "y_fa_comp", "psi_comp", "u_comp", "v_comp", "omega_comp",
-            "ax_state", "delta_prev_state",
+            "delta_state", "ax_state",
             "x_ref_0", "y_ref_0", "psi_ref_0", "v_ref_0",
             "delta_dot", "Jx", "mpc_cost", "solver_status", "solver_iters",
             "steering", "throttle", "braking", "steering_angle", "acceleration",
@@ -411,40 +334,12 @@ def run_controller_node(args):
         csv_writer.writerow(csv_header)
         print(f"  Diagnostic CSV: {csv_path}")
 
-    if args.log_tire_csv:
-        tire_csv_path = Path(args.log_tire_csv).expanduser().resolve()
-        tire_csv_path.parent.mkdir(parents=True, exist_ok=True)
-        tire_csv_file = open(tire_csv_path, "w", newline="")
-        tire_csv_writer = csv.writer(tire_csv_file)
-        tire_csv_writer.writerow([
-            "scenario_id", "timestep", "slip_ratio", "slip_angle", "velocity",
-            "vertical_load", "steering_rate",
-            "bekker_Kphi", "bekker_Kc", "bekker_n",
-            "mohr_cohesion", "mohr_friction", "janosi_shear",
-            "mesh_spacing", "Fx", "Fy",
-        ])
-        print(f"  MPC-aligned tire training CSV: {tire_csv_path}")
-
     print(f"  Delay compensation: {'ON' if not args.no_delay_comp else 'OFF'} "
           f"(initial τ={args.initial_delay * 1000:.0f}ms)")
     print(f"  Running ACADOS controller loop...")
-    print("  ACADOS init complete — sending ready signal(s) to sim (then waiting for VehicleState)...")
-
-    # Unblock chrono_sim_node --wait-for-controller before any VehicleState is published.
-    for _ in range(3):
-        _send_ready_control_ping(ctrl_pub, integrator)
-        wall_time.sleep(0.05)
 
     running = True
-    last_ready_ping = wall_time.time()
-    READY_PING_INTERVAL_S = 0.25
-    last_tire_hist_time = None  # sim time of last temporal history push
     while running:
-        now = wall_time.time()
-        if last_state is None and now - last_ready_ping >= READY_PING_INTERVAL_S:
-            _send_ready_control_ping(ctrl_pub, integrator)
-            last_ready_ping = now
-
         # --- Receive state ---
         result = state_sub.recv(timeout_ms=200)
         if result is None:
@@ -457,49 +352,6 @@ def run_controller_node(args):
                 print("  Received stop signal from sim node.")
                 running = False
                 break
-            if (
-                msg.event == "config"
-                and msg.config
-                and last_state is None
-            ):
-                # Sim published config after our post-warmup drain (e.g. very fast ACADOS cache).
-                config.update(msg.config)
-                (
-                    vehicle_params,
-                    terrain_params,
-                    v_target,
-                    path_type,
-                    sine_amp,
-                    sine_wl,
-                    lead_in,
-                    terrain_name,
-                ) = _unpack_run_config(config, args)
-                state_predictor = StatePredictor(vehicle_params, dt_prop=0.005)
-                ref_path = make_path_function(
-                    path_type=path_type,
-                    v_target=v_target,
-                    sine_amplitude=sine_amp,
-                    sine_wavelength=sine_wl,
-                    use_closest_point=not args.no_path_reindex,
-                    lead_in=lead_in,
-                    csv_dir=str(run_dir),
-                )
-                path_func = ref_path.get_reference
-                analytics.ref_path = ref_path
-                analytics.v_target = v_target
-                analytics.path_type = path_type
-                integrator.v_target = v_target
-                if args.terrain_classifier:
-                    terrain_class_est = _DEFAULT_TERRAIN_CLASS
-                    n_terrain_est = _TERRAIN_N_LOOKUP[_DEFAULT_TERRAIN_CLASS]
-                    terrain_params_est = dict(_TERRAIN_PARAMS_LOOKUP[_DEFAULT_TERRAIN_CLASS])
-                else:
-                    terrain_class_est = terrain_name
-                    n_terrain_est = terrain_params.get("n", 1.1)
-                    terrain_params_est = {
-                        k: terrain_params[k] for k in ("Kphi", "Kc", "n", "c", "phi", "k")
-                    }
-                print("  Applied sim config from stream (received after ACADOS init).")
             continue
 
         if not isinstance(msg, VehicleState):
@@ -543,34 +395,23 @@ def run_controller_node(args):
         x_fa = msg.x_cg + Lf * np.cos(psi)
         y_fa = msg.y_cg + Lf * np.sin(psi)
 
-        # MPC state [x,y,ψ,u,v,ω, ax, δ_prev, Jx_prev] (direct δ control)
         z0_measured = np.array([
             x_fa, y_fa, psi,
             max(msg.u, 0.5),
             msg.v, msg.omega,
-            integrator.acceleration,
             integrator.steering_angle,
+            integrator.acceleration,
+            last_delta_dot_cmd,
             last_Jx_cmd,
         ])
 
         # --- Delay compensation ---
-        # StatePredictor: 8-state [x,y,ψ,u,v,ω, δ, ax]; carry Jx_prev through.
+        # StatePredictor works on the 8 vehicle states; the 2 augmented
+        # u_prev states are carried through unchanged.
         if not args.no_delay_comp:
             tau = delay_est.compensation_delay
-            z8 = np.array([
-                z0_measured[0], z0_measured[1], z0_measured[2],
-                z0_measured[3], z0_measured[4], z0_measured[5],
-                z0_measured[7],  # δ
-                z0_measured[6],  # ax
-            ])
-            z8_pred = state_predictor.propagate(z8, control_buffer, tau)
-            z0 = np.array([
-                z8_pred[0], z8_pred[1], z8_pred[2],
-                z8_pred[3], z8_pred[4], z8_pred[5],
-                z8_pred[7],  # ax
-                z8_pred[6],  # δ_prev
-                z0_measured[8],  # Jx_prev
-            ])
+            z0_veh = state_predictor.propagate(z0_measured[:8], control_buffer, tau)
+            z0 = np.concatenate([z0_veh, z0_measured[8:]])
         else:
             z0 = z0_measured
             tau = 0.0
@@ -598,8 +439,7 @@ def run_controller_node(args):
             kappa_h = float(np.clip(ax_h / (0.4 * 9.81), -0.3, 0.3))
         else:
             kappa_h = 0.0
-        # No measured road-wheel rate in sim; 0.0 matches prior direct-δ stack.
-        sr_h = 0.0
+        sr_h = float(last_delta_dot_cmd)
 
         # --- Solve MPC ---
         t0_solve = wall_time.time()
@@ -614,7 +454,7 @@ def run_controller_node(args):
         if rate_tracker is not None:
             solve_kwargs['rates_front'] = rate_tracker.front
             solve_kwargs['rates_rear'] = rate_tracker.rear
-        delta_cmd, Jx, Z_opt, U_opt = mpc.solve(
+        delta_dot, Jx, Z_opt, U_opt = mpc.solve(
             z0, x_ref, y_ref, psi_ref, v_ref,
             x_goal, y_goal, psi_goal,
             **solve_kwargs,
@@ -624,70 +464,40 @@ def run_controller_node(args):
         delay_est.update_solve(t_solve)
 
         if Z_opt is None:
-            delta_cmd = integrator.steering_angle
-            Jx = 0.0
+            delta_dot, Jx = 0.0, 0.0
 
-        if not np.isfinite(delta_cmd):
-            delta_cmd = integrator.steering_angle
+        if not np.isfinite(delta_dot):
+            delta_dot = 0.0
         if not np.isfinite(Jx):
             Jx = 0.0
 
         # Suppress steering during lead-in acceleration phase
         if lead_in > 0 and z0[0] < lead_in and msg.u < 0.8 * v_target:
-            delta_cmd = 0.0
+            delta_dot = 0.0
 
-        # Effective δ̇ for delay buffer, diagnostics, and NN steering_rate feature
-        delta_dot = (delta_cmd - integrator.steering_angle) / max(dt_ctrl, 1e-4)
         last_delta_dot_cmd = float(delta_dot)
         last_Jx_cmd = float(Jx)
 
-        if tire_csv_writer is not None and msg.tire_forces:
-            tfw = msg.tire_forces
-            req = ("front_left_Fx", "front_right_Fx", "front_left_Fy", "front_right_Fy")
-            if all(k in tfw for k in req):
-                fxm = 0.5 * (tfw["front_left_Fx"] + tfw["front_right_Fx"])
-                fym = 0.5 * (tfw["front_left_Fy"] + tfw["front_right_Fy"])
-                tp = terrain_params_est
-                tire_csv_writer.writerow([
-                    int(args.log_scenario_id),
-                    float(msg.time),
-                    float(kappa_h), float(alpha_f_h), float(u_safe_h), float(Fz_f_h), float(delta_dot),
-                    float(tp["Kphi"]), float(tp["Kc"]), float(tp["n"]),
-                    float(tp["c"]), float(tp["phi"]), float(tp["k"]),
-                    0.04,
-                    float(fxm), float(fym),
-                ])
-
-        # --- Update tire history after solve (training uses ~dt_nn between frames) ---
+        # --- Update tire history after solve ---
         if tire_hist is not None:
-            sr_feat = float(delta_dot)
-            t_sim = float(msg.time)
-            if (
-                last_tire_hist_time is None
-                or (t_sim - last_tire_hist_time) >= args.nn_temporal_hist_dt
-            ):
-                tire_hist.update(
-                    kappa_h, alpha_f_h, u_safe_h, Fz_f_h, sr_feat,
-                    kappa_h, alpha_r_h, Fz_r_h, sr_feat,
-                )
-                last_tire_hist_time = t_sim
+            tire_hist.update(
+                kappa_h, alpha_f_h, u_safe_h, Fz_f_h, sr_h,
+                kappa_h, alpha_r_h, Fz_r_h, sr_h,
+            )
 
-        # --- Update rate tracker (training uses record_dt×subsample between diffs) ---
+        # --- Update rate tracker after solve ---
         if rate_tracker is not None:
+            # Keep finite-difference rates consistent with actual controller cadence.
+            rate_tracker.dt = dt_ctrl
             rate_tracker.update(
-                float(msg.time),
                 kappa_h, alpha_f_h, u_safe_h,
                 kappa_h, alpha_r_h, u_safe_h,
             )
 
-        # --- Apply controls: set δ directly, integrate ax from Jx ---
-        integrator.steering_angle = float(np.clip(
-            delta_cmd, -mpc.delta_max, mpc.delta_max))
-        _saved_delta = integrator.steering_angle
-        _, throttle, braking = integrator.update(0.0, Jx, dt_ctrl, msg.u)
-        integrator.steering_angle = _saved_delta
-        steering = float(np.clip(
-            integrator.steering_angle * integrator.steering_gain, -1.0, 1.0))
+        # --- Integrate controls ---
+        steering, throttle, braking = integrator.update(
+            delta_dot, Jx, dt_ctrl, msg.u
+        )
 
         # --- Record in control buffer for delay compensation ---
         control_buffer.append((msg.time, delta_dot, Jx))
@@ -878,8 +688,6 @@ def run_controller_node(args):
     # Close CSV
     if csv_file is not None:
         csv_file.close()
-    if tire_csv_file is not None:
-        tire_csv_file.close()
         print(f"  Diagnostic CSV written: {csv_path} ({seq} rows)")
 
     if not args.no_plot:
@@ -911,20 +719,6 @@ def main():
     p.add_argument("--kappa", default="zero", choices=["zero", "approx"])
     p.add_argument("--no-lat-transfer", action="store_true",
                    help="Disable lateral load transfer (2 NN calls vs 4)")
-    p.add_argument(
-        "--nn-temporal-hist-dt",
-        type=float,
-        default=0.1,
-        help="Sim seconds between temporal NN history pushes; must match "
-             "train_temporal_nn / temporal ResNet dt_nn (default 0.1)",
-    )
-    p.add_argument(
-        "--nn-rate-sample-dt",
-        type=float,
-        default=0.05,
-        help="Sim seconds between rate-NN finite-difference anchors; match "
-             "train_rate_nn record_dt×subsample (default 0.005×10=0.05)",
-    )
 
     # Path
     p.add_argument("--path", default="lane_change",
@@ -953,20 +747,6 @@ def main():
                    help="Skip generating end-of-run plots")
     p.add_argument("--no-csv", action="store_true",
                    help="Skip diagnostic CSV output")
-    p.add_argument(
-        "--log-tire-csv",
-        default=None,
-        metavar="PATH",
-        help="Append MPC-aligned tire rows (temporal CSV schema) for retraining; "
-             "one row per control step with kappa, bicycle alpha_f, Fz_f, delta_dot, "
-             "and mean front-wheel Fx/Fy from Chrono when available",
-    )
-    p.add_argument(
-        "--log-scenario-id",
-        type=int,
-        default=0,
-        help="scenario_id column for --log-tire-csv (one run = one scenario)",
-    )
     p.add_argument("--plot-dir", default="plots",
                    help="Directory for output plots (default: plots/)")
 

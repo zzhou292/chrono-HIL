@@ -287,10 +287,13 @@ Examples:
                 tc_proc = subprocess.Popen(tc_cmd, cwd=str(script_dir))
                 procs.append(tc_proc)
 
-            # Brief delay, then start simulation
+            # Brief delay, then start simulation.  Wait for first control so ACADOS
+            # codegen does not consume --time; controller sends ready-pings until
+            # VehicleState arrives (see acados_mpc_controller_node).
             time.sleep(0.5)
             print(f"[launch] Starting simulation...")
-            sim_proc = subprocess.Popen(sim_cmd)
+            sim_cmd_both = sim_cmd + ["--wait-for-controller", "300"]
+            sim_proc = subprocess.Popen(sim_cmd_both)
             procs.append(sim_proc)
 
             # Wait for simulation to finish
