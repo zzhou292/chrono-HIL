@@ -95,7 +95,7 @@ def load_terrain_config(config_path):
 
 def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand',
                       terrain_config=None, mesh_resolution=None,
-                      bumpiness=0, bump_seed=12345):
+                      bumpiness=0, bump_seed=12345, texture=False):
     """Setup SCM deformable terrain
     
     Args:
@@ -109,6 +109,7 @@ def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand
         bumpiness: Terrain bumpiness level 0-10 (0=flat, 10=extreme).
                    Maps to TOPOLOGY_LEVELS in param_consistency.
         bump_seed: Random seed for reproducibility
+        texture: Apply dirt texture to terrain mesh
     """
     import tempfile
     
@@ -196,14 +197,20 @@ def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand
     else:
         terrain.Initialize(length, width, delta)
     
-    # Moving patch: only compute SCM deformation near the vehicle (huge speedup)
+    # Per-wheel active domains: tighter boxes = fewer SCM nodes evaluated per step
     if vehicle is not None:
-        terrain.AddActiveDomain(vehicle.GetChassisBody(),
-                               chrono.ChVector3d(0, 0, 0),
-                               chrono.ChVector3d(6, 3, 1))
+        for ax in vehicle.GetVehicle().GetAxles():
+            terrain.AddActiveDomain(ax.m_wheels[0].GetSpindle(),
+                                    chrono.ChVector3d(0, 0, 0),
+                                    chrono.ChVector3d(1, 0.5, 1))
+            terrain.AddActiveDomain(ax.m_wheels[1].GetSpindle(),
+                                    chrono.ChVector3d(0, 0, 0),
+                                    chrono.ChVector3d(1, 0.5, 1))
     
     if visualize:
         terrain.SetPlotType(veh.SCMTerrain.PLOT_SINKAGE, 0, 0.1)
+        if texture:
+            terrain.SetTexture(veh.GetDataFile("terrain/textures/dirt.jpg"), 10, 10)
     
     print(f"  SCM mesh: {delta}m, terrain: {length}x{width}m"
           + (", moving patch ON" if vehicle else ""))
