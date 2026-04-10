@@ -339,7 +339,7 @@ def run_sim_node(args):
         try:
             vis = veh.ChWheeledVehicleVisualSystemIrrlicht()
             vis.SetWindowTitle("Chrono Sim Node (decoupled)")
-            vis.SetWindowSize(1920, 1080)
+            vis.SetWindowSize(4320, 720)
             vis.SetChaseCamera(chrono.ChVector3d(0, 0, 1.5), 6.0, 0.5)
             vis.Initialize()
             vis.AddLightDirectional()
@@ -376,18 +376,17 @@ def run_sim_node(args):
             )
             driver_cam = sens.ChCameraSensor(
                 vehicle.GetChassisBody(),  # attached body
-                30,                        # update rate (Hz)
+                30,                        # update rate (Hz) — matches C++ SCM teleop
                 cam_offset,                # offset pose
-                3440,                      # image width
-                1440,                      # image height
-                1.92,                      # horizontal FOV (~110°, natural for ultrawide)
+                4320,                      # image width
+                1080,                      # image height
+                1.92,                      # horizontal FOV (~110° ultrawide)
             )
             driver_cam.SetName("DriverPOV")
             driver_cam.SetLag(0.0)
             driver_cam.PushFilter(sens.ChFilterVisualize(
-                3440, 1440, "Driver POV", False
+                4320, 1080, "Driver POV", False
             ))
-            driver_cam.PushFilter(sens.ChFilterRGBA8Access())
             sensor_manager.AddSensor(driver_cam)
             print("  Chrono Sensor: driver POV camera active")
         except Exception as e:
@@ -481,6 +480,9 @@ def run_sim_node(args):
 
     render_interval = 1.0 / 35.0
     last_render_time = -render_interval
+    # Gate sensor manager to camera FPS to avoid ~0.8ms overhead per physics step
+    sensor_interval = 1.0 / 30.0  # Match sensor camera update rate
+    last_sensor_time = -sensor_interval
     last_report_time = 0.0
     start_wall = wall_time.time()
     cmd_count = 0
@@ -494,7 +496,15 @@ def run_sim_node(args):
     else:
         print(f"  Running {args.time}s simulation...")
 
+    # --- Timing accumulators (debug) ---
+    _t_irr = 0.0; _t_sensor = 0.0; _t_terrain_sync = 0.0; _t_terrain_adv = 0.0
+    _t_veh_sync = 0.0; _t_veh_adv = 0.0; _t_driver = 0.0; _t_safety = 0.0
+    _t_zmq = 0.0; _t_vis_sync = 0.0; _t_vis_adv = 0.0
+    _t_loop_total = 0.0; _t_state_extract = 0.0; _t_rt_sleep = 0.0
+    _t_report_steps = 0; _sensor_calls = 0
+
     while True:
+        _t_loop_start = wall_time.time()
         time_chrono = vehicle.GetSystem().GetChTime()
 
         if not args.manual and time_chrono >= args.time:
@@ -504,14 +514,12 @@ def run_sim_node(args):
 
         # --- Render Irrlicht (frame-skipped) ---
         if vis is not None and (time_chrono - last_render_time >= render_interval):
+            _tw = wall_time.time()
             vis.BeginScene()
             vis.Render()
             vis.EndScene()
+            _t_irr += wall_time.time() - _tw
             last_render_time = time_chrono
-
-        # --- Update Chrono Sensor manager ---
-        if sensor_manager is not None:
-            sensor_manager.Update()
 
         # --- Receive latest control command (non-blocking) ---
         if ctrl_sub is not None:
@@ -526,12 +534,14 @@ def run_sim_node(args):
                         safety_filter.update_command_age(msg.wall_time)
 
         # --- Synchronize ---
+        _tw = wall_time.time()
         driver.Synchronize(time_chrono)
 
         driver_inputs = veh.DriverInputs()
         driver_inputs.m_steering = driver.GetSteering()
         driver_inputs.m_throttle = driver.GetThrottle()
         driver_inputs.m_braking = driver.GetBraking()
+        _t_driver += wall_time.time() - _tw
 
         # --- Safety Filter ---
         # Safety filter at ~10Hz
@@ -579,19 +589,46 @@ def run_sim_node(args):
                 driver_inputs.m_throttle = cached.throttle
                 driver_inputs.m_braking = cached.braking
 
+        _tw = wall_time.time()
         terrain.Synchronize(time_chrono)
+        _t_terrain_sync += wall_time.time() - _tw
+
+        _tw = wall_time.time()
         vehicle.Synchronize(time_chrono, driver_inputs, terrain)
+        _t_veh_sync += wall_time.time() - _tw
+
         if vis is not None:
+            _tw = wall_time.time()
             vis.Synchronize(time_chrono, driver_inputs)
+            _t_vis_sync += wall_time.time() - _tw
 
         # --- Advance ---
         driver.Advance(step_size)
+
+        _tw = wall_time.time()
         terrain.Advance(step_size)
+        _t_terrain_adv += wall_time.time() - _tw
+
+        _tw = wall_time.time()
         vehicle.Advance(step_size)
+        _t_veh_adv += wall_time.time() - _tw
+
         if vis is not None:
+            _tw = wall_time.time()
             vis.Advance(step_size)
+            _t_vis_adv += wall_time.time() - _tw
+
+        # --- Update Chrono Sensor manager (gated to camera FPS) ---
+        if sensor_manager is not None and (time_chrono - last_sensor_time >= sensor_interval):
+            _tw = wall_time.time()
+            sensor_manager.Update()
+            _dt_s = wall_time.time() - _tw
+            _t_sensor += _dt_s
+            _sensor_calls += 1
+            last_sensor_time = time_chrono
 
         step_count += 1
+        _t_report_steps += 1
 
         # --- Re-publish config during first 2s (CONFLATE can drop it) ---
         if state_pub is not None and time_chrono < 2.0 and time_chrono - last_config_resend >= 0.2:
@@ -601,11 +638,14 @@ def run_sim_node(args):
 
         # --- Publish vehicle state at decimated rate ---
         if state_pub is not None and time_chrono - last_state_pub_time >= state_pub_interval:
+            _tw = wall_time.time()
             state_msg = extract_vehicle_state(
-                vehicle, time_chrono, terrain=terrain,
+                vehicle, time_chrono,
+                terrain=None if args.no_tire_forces else terrain,
                 noise=noise_cfg,
             )
             state_pub.send(state_msg)
+            _t_state_extract += wall_time.time() - _tw
             last_state_pub_time = time_chrono
 
         # --- Real-time pacing (always on unless --no-rt) ---
@@ -615,7 +655,10 @@ def run_sim_node(args):
             target_wall = start_wall + time_chrono
             remaining = target_wall - wall_time.time()
             if remaining > 0:
+                _t_rt_sleep += remaining
                 wall_time.sleep(remaining)
+
+        _t_loop_total += wall_time.time() - _t_loop_start
 
         # --- Progress report ---
         if time_chrono - last_report_time >= 2.0:
@@ -625,6 +668,28 @@ def run_sim_node(args):
             pos = vehicle.GetChassisBody().GetPos()
             print(f"  t={time_chrono:.1f}s  pos=({pos.x:.1f},{pos.y:.1f})  "
                   f"RT={rt:.2f}x  cmds_recv={cmd_count}")
+            # --- Timing breakdown (per 2s window) ---
+            n = max(_t_report_steps, 1)
+            accounted = (_t_terrain_sync + _t_terrain_adv + _t_veh_sync + _t_veh_adv +
+                         _t_irr + _t_sensor + _t_driver + _t_safety +
+                         _t_vis_sync + _t_vis_adv + _t_state_extract + _t_rt_sleep)
+            unaccounted = _t_loop_total - accounted
+            sensor_avg_ms = (_t_sensor / max(_sensor_calls, 1)) * 1000
+            print(f"    [TIMING] steps={n}  loop_total={_t_loop_total:.3f}s  "
+                  f"rt_sleep={_t_rt_sleep:.3f}s  unaccounted={unaccounted:.3f}s")
+            print(f"    [TIMING] terrain_sync={_t_terrain_sync:.3f}s  "
+                  f"terrain_adv={_t_terrain_adv:.3f}s  veh_sync={_t_veh_sync:.3f}s  "
+                  f"veh_adv={_t_veh_adv:.3f}s")
+            print(f"    [TIMING] irrlicht={_t_irr:.3f}s  sensor={_t_sensor:.3f}s "
+                  f"({_sensor_calls} calls, avg={sensor_avg_ms:.1f}ms)  "
+                  f"state_extract={_t_state_extract:.3f}s")
+            print(f"    [TIMING] driver={_t_driver:.3f}s  safety={_t_safety:.3f}s  "
+                  f"vis_sync={_t_vis_sync:.3f}s  vis_adv={_t_vis_adv:.3f}s")
+            _t_irr = 0.0; _t_sensor = 0.0; _t_terrain_sync = 0.0; _t_terrain_adv = 0.0
+            _t_veh_sync = 0.0; _t_veh_adv = 0.0; _t_driver = 0.0; _t_safety = 0.0
+            _t_zmq = 0.0; _t_vis_sync = 0.0; _t_vis_adv = 0.0
+            _t_loop_total = 0.0; _t_state_extract = 0.0; _t_rt_sleep = 0.0
+            _t_report_steps = 0; _sensor_calls = 0
 
     # ------------------------------------------------------------------
     # Shutdown
