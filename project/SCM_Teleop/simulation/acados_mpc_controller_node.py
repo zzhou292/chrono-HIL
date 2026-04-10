@@ -60,6 +60,7 @@ from mpc_helpers import (
 # ACADOS solver + unified NN loader
 from acados_mpc_solver import AcadosDallasMPC
 from nn_tire_model import load_nn_tire_model
+from analytical_tire_models import get_tire_forces as analytical_tire_forces
 
 # Terrain classifier (optional)
 try:
@@ -79,6 +80,14 @@ _TERRAIN_PARAMS_LOOKUP = {
 _DEFAULT_TERRAIN_CLASS = "dirt"
 
 from path_utils import make_path_function
+from tire_input_features import (
+    VehicleGeometry,
+    compute_bicycle_operating_point,
+    fz_with_lateral_transfer,
+    lateral_load_transfer_dFz,
+    pack_vehicle_tire_csv_row,
+    write_vehicle_tire_csv_header,
+)
 
 
 def _config_dict_from_cli(args) -> dict:
@@ -416,14 +425,16 @@ def run_controller_node(args):
         tire_csv_path.parent.mkdir(parents=True, exist_ok=True)
         tire_csv_file = open(tire_csv_path, "w", newline="")
         tire_csv_writer = csv.writer(tire_csv_file)
-        tire_csv_writer.writerow([
-            "scenario_id", "timestep", "slip_ratio", "slip_angle", "velocity",
-            "vertical_load", "steering_rate",
-            "bekker_Kphi", "bekker_Kc", "bekker_n",
-            "mohr_cohesion", "mohr_friction", "janosi_shear",
-            "mesh_spacing", "Fx", "Fy",
-        ])
+        tire_csv_writer.writerow(write_vehicle_tire_csv_header())
         print(f"  MPC-aligned tire training CSV: {tire_csv_path}")
+
+    tire_geom = VehicleGeometry(
+        Lf=float(mpc.Lf),
+        Lr=float(mpc.Lr),
+        M=float(mpc.M),
+        h_cg=float(mpc.h_cg),
+        T=float(mpc.T),
+    )
 
     print(f"  Delay compensation: {'ON' if not args.no_delay_comp else 'OFF'} "
           f"(initial τ={args.initial_delay * 1000:.0f}ms)")
@@ -580,24 +591,18 @@ def run_controller_node(args):
             msg.time, z0, mpc.N, mpc.dt
         )
 
-        # --- Compute per-tire operating conditions ---
-        u_safe_h = max(abs(msg.u), 0.5)
-        alpha_f_h = integrator.steering_angle - math.atan2(
-            msg.v + mpc.Lf * msg.omega, u_safe_h)
-        alpha_r_h = -math.atan2(
-            msg.v - mpc.Lr * msg.omega, u_safe_h)
-        g_h = 9.81
-        ax_h = integrator.acceleration
-        L_h = mpc.Lf + mpc.Lr
-        Fz_f_h = (mpc.M * g_h * mpc.Lr - mpc.M * ax_h * mpc.h_cg) / L_h / 2.0
-        Fz_r_h = (mpc.M * g_h * mpc.Lf + mpc.M * ax_h * mpc.h_cg) / L_h / 2.0
-        # Slip ratio estimate to match the solver's internal convention.
-        # This is critical for rate-augmented and temporal models that expect
-        # consistent (kappa, dkappa/dt) features.
-        if args.kappa == "approx":
-            kappa_h = float(np.clip(ax_h / (0.4 * 9.81), -0.3, 0.3))
-        else:
-            kappa_h = 0.0
+        # --- Compute per-tire operating conditions (shared tire_input_features.py) ---
+        kappa_h, alpha_f_h, alpha_r_h, u_safe_h, Fz_f_h, Fz_r_h = (
+            compute_bicycle_operating_point(
+                integrator.steering_angle,
+                msg.u,
+                msg.v,
+                msg.omega,
+                integrator.acceleration,
+                geom=tire_geom,
+                kappa_mode=args.kappa,
+            )
+        )
         # No measured road-wheel rate in sim; 0.0 matches prior direct-δ stack.
         sr_h = 0.0
 
@@ -647,16 +652,20 @@ def run_controller_node(args):
             if all(k in tfw for k in req):
                 fxm = 0.5 * (tfw["front_left_Fx"] + tfw["front_right_Fx"])
                 fym = 0.5 * (tfw["front_left_Fy"] + tfw["front_right_Fy"])
-                tp = terrain_params_est
-                tire_csv_writer.writerow([
-                    int(args.log_scenario_id),
-                    float(msg.time),
-                    float(kappa_h), float(alpha_f_h), float(u_safe_h), float(Fz_f_h), float(delta_dot),
-                    float(tp["Kphi"]), float(tp["Kc"]), float(tp["n"]),
-                    float(tp["c"]), float(tp["phi"]), float(tp["k"]),
-                    0.04,
-                    float(fxm), float(fym),
-                ])
+                tire_csv_writer.writerow(
+                    pack_vehicle_tire_csv_row(
+                        int(args.log_scenario_id),
+                        float(msg.time),
+                        kappa_h,
+                        alpha_f_h,
+                        u_safe_h,
+                        Fz_f_h,
+                        float(delta_dot),
+                        terrain_params_est,
+                        float(fxm),
+                        float(fym),
+                    )
+                )
 
         # --- Update tire history after solve (training uses ~dt_nn between frames) ---
         if tire_hist is not None:
@@ -715,31 +724,28 @@ def run_controller_node(args):
             actual_Fy_f = tf.get('front_left_Fy', 0) + tf.get('front_right_Fy', 0)
             actual_Fy_r = tf.get('rear_left_Fy', 0) + tf.get('rear_right_Fy', 0)
 
-            u_safe = max(abs(msg.u), 0.5)
-            alpha_f = integrator.steering_angle - math.atan2(
-                msg.v + mpc.Lf * msg.omega, u_safe)
-            alpha_r = -math.atan2(
-                msg.v - mpc.Lr * msg.omega, u_safe)
+            kappa_diag, alpha_f, alpha_r, u_safe, Fz_f_mean, Fz_r_mean = (
+                compute_bicycle_operating_point(
+                    integrator.steering_angle,
+                    msg.u,
+                    msg.v,
+                    msg.omega,
+                    integrator.acceleration,
+                    geom=tire_geom,
+                    kappa_mode=args.kappa,
+                )
+            )
 
-            g = 9.81
-            ax = integrator.acceleration
-            L = mpc.Lf + mpc.Lr
-            Fz_f_mean = (mpc.M * g * mpc.Lr - mpc.M * ax * mpc.h_cg) / L / 2.0
-            Fz_r_mean = (mpc.M * g * mpc.Lf + mpc.M * ax * mpc.h_cg) / L / 2.0
-
-            # NN prediction for diagnostic comparison (only when using NN tire model)
             if nn_tire is not None:
                 hist_f = tire_hist.front if tire_hist is not None else None
                 hist_r = tire_hist.rear if tire_hist is not None else None
                 rates_f = rate_tracker.front if rate_tracker is not None else None
                 rates_r = rate_tracker.rear if rate_tracker is not None else None
                 if mpc.lateral_load_transfer:
-                    ay = msg.u * msg.omega
-                    dFz = mpc.M * ay * mpc.h_cg / mpc.T / 2.0
-                    Fz_fo = min(Fz_f_mean + dFz, 1.9 * Fz_f_mean)
-                    Fz_fi = max(Fz_f_mean - dFz, 0.1 * Fz_f_mean)
-                    Fz_ro = min(Fz_r_mean + dFz, 1.9 * Fz_r_mean)
-                    Fz_ri = max(Fz_r_mean - dFz, 0.1 * Fz_r_mean)
+                    dFz = lateral_load_transfer_dFz(msg.u, msg.omega, geom=tire_geom)
+                    Fz_fo, Fz_fi, Fz_ro, Fz_ri = fz_with_lateral_transfer(
+                        Fz_f_mean, Fz_r_mean, dFz
+                    )
                     _, Fy_fo = nn_tire.predict_numeric(
                         alpha_f, Fz_fo, u_safe, n_terrain=n_terrain_est,
                         terrain_params=terrain_params_est, hist=hist_f, rates=rates_f)
@@ -763,9 +769,17 @@ def run_controller_node(args):
                         terrain_params=terrain_params_est, hist=hist_r, rates=rates_r)
                     pred_Fy_f = -2.0 * Fy_fw
                     pred_Fy_r = -2.0 * Fy_rw
+            else:
+                # Analytical tire model (pacejka, tmeasy, linear)
+                Fyf, Fyr, _ = analytical_tire_forces(
+                    tire_model, alpha_f, alpha_r,
+                    2.0 * Fz_f_mean, 2.0 * Fz_r_mean, kappa_diag,
+                )
+                pred_Fy_f = float(Fyf)
+                pred_Fy_r = float(Fyr)
 
-                analytics.record_tire_forces(
-                    msg.time, actual_Fy_f, actual_Fy_r, pred_Fy_f, pred_Fy_r)
+            analytics.record_tire_forces(
+                msg.time, actual_Fy_f, actual_Fy_r, pred_Fy_f, pred_Fy_r)
 
         # --- Publish command ---
         cmd = ControlCommand(
@@ -807,15 +821,17 @@ def run_controller_node(args):
             fy_nf = analytics.pred_Fy_front[-1] if analytics.pred_Fy_front else ''
             fy_nr = analytics.pred_Fy_rear[-1] if analytics.pred_Fy_rear else ''
 
-            u_safe_csv = max(abs(msg.u), 0.5)
-            alpha_f_csv = integrator.steering_angle - math.atan2(
-                msg.v + mpc.Lf * msg.omega, u_safe_csv)
-            alpha_r_csv = -math.atan2(
-                msg.v - mpc.Lr * msg.omega, u_safe_csv)
-            g_csv = 9.81
-            L_csv = mpc.Lf + mpc.Lr
-            Fz_f_csv = (mpc.M * g_csv * mpc.Lr - mpc.M * integrator.acceleration * mpc.h_cg) / L_csv / 2.0
-            Fz_r_csv = (mpc.M * g_csv * mpc.Lf + mpc.M * integrator.acceleration * mpc.h_cg) / L_csv / 2.0
+            _, alpha_f_csv, alpha_r_csv, _, Fz_f_csv, Fz_r_csv = (
+                compute_bicycle_operating_point(
+                    integrator.steering_angle,
+                    msg.u,
+                    msg.v,
+                    msg.omega,
+                    integrator.acceleration,
+                    geom=tire_geom,
+                    kappa_mode=args.kappa,
+                )
+            )
 
             mpc_cost = getattr(mpc, 'last_cost', float('nan'))
             solver_status = getattr(mpc, 'last_solver_status', '')

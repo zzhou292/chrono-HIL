@@ -3,7 +3,7 @@
 Parameter consistency for SCM_Teleop: NN training, data collection, and MPC/demo.
 ================================================================================
 **THE** single source of truth for:
-- NN training data ranges (must match cpp_collect/collect_scm_data_fast.cpp ParameterRanges)
+- NN training data ranges (must match data_collection/collect_scm_data_fast.cpp ParameterRanges)
 - Vehicle parameters (must match MPC and Chrono HMMWV usage)
 - Terrain presets (all hardcoded terrain configs live here)
 - Terrain config validation (ensure demo soil is within training range)
@@ -15,11 +15,12 @@ Import from here instead of hardcoding values in individual files.
 from __future__ import annotations
 
 import math
-from typing import Dict, Any, List, Tuple
+import random
+from typing import Dict, Any, List, Sequence, Tuple
 
 # =============================================================================
 # NN training data ranges — v6 format (Dallas et al.)
-# Must match cpp_collect/collect_scm_data_fast.cpp ParameterRanges struct EXACTLY.
+# Must match data_collection/collect_scm_data_fast.cpp ParameterRanges struct EXACTLY.
 # These are the ranges used during Latin Hypercube sampling for data collection.
 # =============================================================================
 TRAINING_RANGES_V6 = {
@@ -39,8 +40,8 @@ TRAINING_RANGES_V6 = {
     "mohr_cohesion":  (650.0, 20700.0),       # Pa — Dallas et al. Table I
     "mohr_friction":  (0.105, 0.66),          # RADIANS in v6 CSV (6° to 37.8°)
 
-    # Janosi
-    "janosi_shear":   (0.01, 0.024),          # m — Dallas et al. Table I
+    # Janosi (upper 0.025 m matches sand/dirt presets; Dallas Table I lists 0.024)
+    "janosi_shear":   (0.01, 0.025),          # m
 }
 
 # Legacy v3 ranges (kept for backward compatibility with older models)
@@ -156,6 +157,17 @@ TERRAIN_PRESETS = {
     },
 }
 
+# Latin hypercube axis order: same six soil parameters as TRAINING_RANGES_V6 / rig LHS.
+# The box encloses clay, sand, and dirt presets (see __main__ checks).
+TERRAIN_LHS_V6_ORDER: Tuple[str, ...] = (
+    "bekker_Kphi",
+    "bekker_Kc",
+    "bekker_n",
+    "mohr_cohesion",
+    "mohr_friction",
+    "janosi_shear",
+)
+
 # =============================================================================
 # =============================================================================
 # Terrain topology presets — bumpiness levels 1–10.
@@ -229,6 +241,90 @@ def get_terrain_preset(name: str) -> Dict[str, Any]:
         raise KeyError(f"Unknown terrain preset '{name}'. "
                        f"Available: {list(TERRAIN_PRESETS.keys())}")
     return dict(TERRAIN_PRESETS[name])
+
+
+def latin_hypercube_unit(n: int, d: int, rng: random.Random) -> List[List[float]]:
+    """Classic LHS on the unit hypercube: n points in dimension d, one per stratum per axis."""
+    if n < 1 or d < 1:
+        raise ValueError("n and d must be positive")
+    u = [[rng.random() for _ in range(d)] for _ in range(n)]
+    per_dim = [list(range(n)) for _ in range(d)]
+    for j in range(d):
+        rng.shuffle(per_dim[j])
+    out: List[List[float]] = []
+    for i in range(n):
+        row = []
+        for j in range(d):
+            a = per_dim[j][i]
+            row.append((a + u[i][j]) / n)
+        out.append(row)
+    return out
+
+
+def terrain_yaml_dict_from_lhs_unit_row(
+    unit_row: Sequence[float],
+    *,
+    elastic_stiffness: float = 2e8,
+    damping: float = 3e4,
+    description: str = "",
+) -> Dict[str, Any]:
+    """
+    Map one LHS sample in [0,1]^6 (order TERRAIN_LHS_V6_ORDER) to keys expected by
+    ``chrono_setup.load_terrain_config`` / SCM YAML (friction in degrees).
+    """
+    if len(unit_row) != len(TERRAIN_LHS_V6_ORDER):
+        raise ValueError(
+            f"unit_row must have length {len(TERRAIN_LHS_V6_ORDER)}, got {len(unit_row)}"
+        )
+    out: Dict[str, Any] = {
+        "elastic_stiffness": elastic_stiffness,
+        "damping": damping,
+    }
+    if description:
+        out["description"] = description
+    for u, key in zip(unit_row, TERRAIN_LHS_V6_ORDER):
+        lo, hi = TRAINING_RANGES_V6[key]
+        v = lo + float(u) * (hi - lo)
+        if key == "bekker_Kphi":
+            out["Kphi"] = v
+        elif key == "bekker_Kc":
+            out["Kc"] = v
+        elif key == "bekker_n":
+            out["n"] = v
+        elif key == "mohr_cohesion":
+            out["cohesion"] = v
+        elif key == "mohr_friction":
+            out["friction_angle"] = math.degrees(v)
+        elif key == "janosi_shear":
+            out["janosi_shear"] = v
+    return out
+
+
+def generate_lhs_terrain_yaml_dicts(
+    n_samples: int,
+    *,
+    seed: int = 0,
+    elastic_stiffness: float = 2e8,
+    damping: float = 3e4,
+) -> List[Dict[str, Any]]:
+    """
+    ``n_samples`` Latin-hypercube draws over TRAINING_RANGES_V6 soil parameters.
+
+    Same hull as ``data_collection`` / Dallas v6 rig sampling; includes the region around
+    clay, sand, and dirt presets in ``TERRAIN_PRESETS``.
+    """
+    rng = random.Random(seed)
+    d = len(TERRAIN_LHS_V6_ORDER)
+    unit = latin_hypercube_unit(n_samples, d, rng)
+    return [
+        terrain_yaml_dict_from_lhs_unit_row(
+            row,
+            elastic_stiffness=elastic_stiffness,
+            damping=damping,
+            description=f"LHS v6 soil sample {i + 1}/{n_samples} (seed={seed})",
+        )
+        for i, row in enumerate(unit)
+    ]
 
 
 def terrain_preset_to_internal(preset: Dict[str, Any]) -> Dict[str, Any]:

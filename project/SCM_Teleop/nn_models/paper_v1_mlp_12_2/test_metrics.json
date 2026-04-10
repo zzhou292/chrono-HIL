@@ -1,0 +1,21 @@
+{
+  "architecture": {
+    "architecture_type": "mlp",
+    "hidden_sizes": [
+      12,
+      2
+    ],
+    "temporal_K": 1,
+    "rate_augmented": false,
+    "torch_seed": 100,
+    "n_params": 176
+  },
+  "test": {
+    "r2_fx": 0.7994568310883815,
+    "r2_fy": 0.8498557756560231,
+    "rmse_fx": 905.3195136496727,
+    "rmse_fy": 368.2824840902353,
+    "mae_fx": 608.4340035262554,
+    "mae_fy": 211.23264679523126
+  }
+}

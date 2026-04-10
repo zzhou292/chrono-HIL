@@ -94,6 +94,18 @@ Examples:
                    help="Skip generating end-of-run plots")
     p.add_argument("--no-csv", action="store_true",
                    help="Skip diagnostic CSV output")
+    p.add_argument(
+        "--log-tire-csv",
+        default=None,
+        metavar="PATH",
+        help="Forward to controller: append MPC-aligned tire training rows (see tire_input_features.py)",
+    )
+    p.add_argument(
+        "--log-scenario-id",
+        type=int,
+        default=0,
+        help="scenario_id column when using --log-tire-csv",
+    )
     p.add_argument("--plot-dir", default="plots",
                    help="Directory for output plots")
 
@@ -233,6 +245,9 @@ Examples:
         ctrl_cmd.append("--no-plot")
     if args.no_csv:
         ctrl_cmd.append("--no-csv")
+    if args.log_tire_csv:
+        ctrl_cmd.extend(["--log-tire-csv", args.log_tire_csv])
+        ctrl_cmd.extend(["--log-scenario-id", str(args.log_scenario_id)])
     if args.terrain_classifier:
         ctrl_cmd.append("--terrain-classifier")
         ctrl_cmd.extend(["--tc-port", str(args.tc_port)])

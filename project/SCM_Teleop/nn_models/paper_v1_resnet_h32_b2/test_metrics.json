@@ -1,0 +1,18 @@
+{
+  "architecture": {
+    "architecture_type": "resnet",
+    "hidden_dim": 32,
+    "n_blocks": 2,
+    "temporal_K": 1,
+    "rate_augmented": false,
+    "n_params": 4674
+  },
+  "test": {
+    "r2_fx": 0.8054520573126702,
+    "r2_fy": 0.8556850815159667,
+    "rmse_fx": 891.6845999388797,
+    "rmse_fy": 361.06248154766314,
+    "mae_fx": 590.9815801631983,
+    "mae_fy": 204.9749329979164
+  }
+}

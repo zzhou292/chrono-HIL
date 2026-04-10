@@ -44,15 +44,15 @@ def setup_chrono_vehicle(visualize=True):
     
     if visualize:
         # MESH for visual quality, PRIMITIVES for less important parts
-        vehicle.SetChassisVisualizationType(veh.VisualizationType_MESH)
-        vehicle.SetSuspensionVisualizationType(veh.VisualizationType_PRIMITIVES)
-        vehicle.SetSteeringVisualizationType(veh.VisualizationType_PRIMITIVES)
-        vehicle.SetWheelVisualizationType(veh.VisualizationType_MESH)
-        vehicle.SetTireVisualizationType(veh.VisualizationType_MESH)
+        vehicle.SetChassisVisualizationType(chrono.VisualizationType_MESH)
+        vehicle.SetSuspensionVisualizationType(chrono.VisualizationType_PRIMITIVES)
+        vehicle.SetSteeringVisualizationType(chrono.VisualizationType_PRIMITIVES)
+        vehicle.SetWheelVisualizationType(chrono.VisualizationType_MESH)
+        vehicle.SetTireVisualizationType(chrono.VisualizationType_MESH)
     else:
-        vehicle.SetChassisVisualizationType(veh.VisualizationType_PRIMITIVES)
-        vehicle.SetWheelVisualizationType(veh.VisualizationType_PRIMITIVES)
-        vehicle.SetTireVisualizationType(veh.VisualizationType_PRIMITIVES)
+        vehicle.SetChassisVisualizationType(chrono.VisualizationType_PRIMITIVES)
+        vehicle.SetWheelVisualizationType(chrono.VisualizationType_PRIMITIVES)
+        vehicle.SetTireVisualizationType(chrono.VisualizationType_PRIMITIVES)
     
     return system, vehicle
 
@@ -198,7 +198,7 @@ def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand
     
     # Moving patch: only compute SCM deformation near the vehicle (huge speedup)
     if vehicle is not None:
-        terrain.AddMovingPatch(vehicle.GetChassisBody(),
+        terrain.AddActiveDomain(vehicle.GetChassisBody(),
                                chrono.ChVector3d(0, 0, 0),
                                chrono.ChVector3d(6, 3, 1))
     

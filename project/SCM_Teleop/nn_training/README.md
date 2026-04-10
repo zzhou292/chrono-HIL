@@ -88,7 +88,7 @@ Training data CSV should have columns:
 - `Fy` - Lateral force (target, N)
 - `Fx` - Longitudinal force (target, N)
 
-See [cpp_collect/README.md](../cpp_collect/README.md) for data generation tools:
+See [data_collection/README.md](../data_collection/README.md) for data generation tools:
 - `collect_scm_data_fast` - Recommended (parallel, 5-10x faster)
 - `collect_scm_data` - Original (supports visualization)
 

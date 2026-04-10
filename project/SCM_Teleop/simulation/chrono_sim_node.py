@@ -118,17 +118,25 @@ DEFAULT_MEAS_NOISE = {
 
 
 def extract_tire_forces(vehicle, terrain) -> dict:
-    """Extract per-wheel tire forces and slips from Chrono."""
+    """Extract per-wheel tire forces and slips from Chrono.
+
+    Forces are rotated from the global frame into the vehicle body frame
+    so that Fx/Fy/Fz align with the bicycle-model convention used by MPC.
+    """
     tf = {}
     veh_obj = vehicle.GetVehicle()
+    chassis = vehicle.GetChassisBody()
+    rot = chassis.GetRot()
     for axle_idx, axle_name in enumerate(['front', 'rear']):
         for side_idx, side_name in [(veh.LEFT, 'left'), (veh.RIGHT, 'right')]:
             tire = veh_obj.GetTire(axle_idx, side_idx)
-            force = tire.ReportTireForce(terrain)
+            force_global = tire.ReportTireForce(terrain)
+            # Rotate global-frame force into body frame
+            f_body = rot.RotateBack(force_global.force)
             key = f'{axle_name}_{side_name}'
-            tf[f'{key}_Fx'] = force.force.x
-            tf[f'{key}_Fy'] = force.force.y
-            tf[f'{key}_Fz'] = force.force.z
+            tf[f'{key}_Fx'] = f_body.x
+            tf[f'{key}_Fy'] = f_body.y
+            tf[f'{key}_Fz'] = f_body.z
             tf[f'{key}_slip_angle'] = tire.GetSlipAngle()
             tf[f'{key}_long_slip'] = tire.GetLongitudinalSlip()
     return tf
@@ -406,6 +414,11 @@ def run_sim_node(args):
         internal_terrain = terrain_preset_to_internal(
             terrain_config if terrain_config else get_terrain_preset(args.terrain)
         )
+        # Named preset string is for logging/telemetry; YAML soil overrides physics.
+        terrain_label = args.terrain
+        if terrain_config is not None:
+            terrain_label = "custom"
+
         config_msg = SimStatus(
             event="config",
             time=0.0,
@@ -413,7 +426,7 @@ def run_sim_node(args):
             config={
                 "vehicle_params": vehicle_params,
                 "terrain_params": internal_terrain,
-                "terrain_preset": args.terrain,
+                "terrain_preset": terrain_label,
                 "path_type": args.path,
                 "v_target": args.speed,
                 "sim_time": args.time,

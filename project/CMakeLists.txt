@@ -5,12 +5,12 @@ if(ENABLE_PROJECTS)
 
     # 1. Check if Chrono::Sensor was actually found/built
     if(CHRONO_SENSOR_FOUND)
-        add_subdirectory(Teleop)
+        # add_subdirectory(Teleop)
         #add_subdirectory(Iowa_Highway)
         #add_subdirectory(SanFran_City)
         #add_subdirectory(Ring_Exp)
         #add_subdirectory(Rom_Models)
-        #add_subdirectory(SCM_Teleop)
+        add_subdirectory(SCM_Teleop)
 
         # 2. Check for fastcdr using the Package Found variable or the Target.
         # Chrono's SynChrono module exports the fastcdr dependency.

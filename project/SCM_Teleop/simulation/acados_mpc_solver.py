@@ -154,6 +154,14 @@ class AcadosDallasMPC:
         self._lm = 1e-3
         self._qp_iter_max = 50
         self._nlp_max_iter = 1
+        # Static NN: scale Levenberg-Marquardt regularisation with model
+        # complexity.  Larger networks produce sharper Jacobians whose
+        # Gauss-Newton Hessian is more ill-conditioned for HPIPM, causing
+        # QP_FAILURE (status 4) especially at low-speed start-up.
+        if (self.use_nn and not self._temporal_mode and not self._rate_mode
+                and nn_tire_model is not None):
+            n_p = nn_tire_model.n_params
+            self._lm = min(max(1e-3, n_p / 400.0 * 1e-3), 1e-2)
         # ResNet temporal models have deeper expression trees → more
         # regularisation and extra SQP iterations to help convergence.
         if self._temporal_mode and nn_tire_model is not None:
@@ -316,6 +324,16 @@ class AcadosDallasMPC:
         ocp.solver_options.qp_solver_warm_start = 2     # full warm-start QP
         ocp.solver_options.print_level = 0             # suppress MINSTEP warnings
 
+        # Large NN models (>5k params) generate huge CasADi C files that
+        # cause gcc ICE at -O2.  Use -O0 + system gcc for those; let
+        # small models compile normally with -O2 for better runtime perf.
+        _NN_PARAM_THRESHOLD = 5000
+        nn_params = self.nn_tire_model.n_params if self.use_nn else 0
+        use_O0_workaround = nn_params > _NN_PARAM_THRESHOLD
+
+        if use_O0_workaround:
+            ocp.solver_options.ext_fun_compile_flags = '-O0'
+
         # Code generation
         ocp.code_export_directory = str(self._build_dir / 'c_generated_code')
 
@@ -329,7 +347,35 @@ class AcadosDallasMPC:
         old_cwd = os.getcwd()
         os.chdir(str(self._build_dir))
         try:
-            self._solver = AcadosOcpSolver(ocp, json_file=str(json_file))
+            if use_O0_workaround:
+                # Two-phase build: generate code, patch Makefile to -O0,
+                # compile with system gcc.  Conda's cc wrapper injects
+                # hard-coded -O2 that causes ICE on large C files.
+                import subprocess
+                self._solver = AcadosOcpSolver(
+                    ocp, json_file=str(json_file),
+                    generate=True, build=False)
+                makefile = self._build_dir / 'c_generated_code' / 'Makefile'
+                if makefile.exists():
+                    txt = makefile.read_text()
+                    makefile.write_text(txt.replace('-O2', '-O0'))
+                cgen = self._build_dir / 'c_generated_code'
+                env = os.environ.copy()
+                env.pop('CFLAGS', None)
+                env.pop('CXXFLAGS', None)
+                subprocess.check_call(
+                    ['make', 'CC=/usr/bin/gcc',
+                     'CFLAGS=-fPIC -std=c99 -O0', 'shared_lib'],
+                    cwd=str(cgen), env=env)
+                self._solver = AcadosOcpSolver(
+                    None, json_file=str(json_file),
+                    build=False, generate=False)
+                print(f"  (used -O0 workaround for large model: {nn_params} params)")
+            else:
+                # Normal compilation — works for small/medium models and
+                # analytical tire models. Compiler uses default -O2.
+                self._solver = AcadosOcpSolver(
+                    ocp, json_file=str(json_file))
         finally:
             os.chdir(old_cwd)
 
@@ -372,6 +418,7 @@ class AcadosDallasMPC:
             'w_steer': self.w_steer,
             'w_terminal': self.w_terminal,
             'use_nn': self.use_nn,
+            'ext_fun_compile_flags': '-O0' if (self.use_nn and self.nn_tire_model.n_params > 5000) else '',
         }, sort_keys=True)
         h.update(cfg.encode())
         # NN weights
@@ -664,6 +711,48 @@ class AcadosDallasMPC:
         return model
 
     # ------------------------------------------------------------------
+    # Trajectory initialisation helpers
+    # ------------------------------------------------------------------
+
+    def _init_kinematic_rollout(self, z0, x_ref, y_ref, psi_ref, v_ref):
+        """Initialise solver stages with a kinematic rollout along the reference.
+
+        Used for cold start and as a retry fallback after QP failure.
+        """
+        N, _dt = self.N, self.dt
+        zk = np.array(z0, dtype=float)
+        for k in range(N):
+            xk, yk, psik, uk, vk, omegak, axk, dprev, _jxprev = zk
+            psi_err = np.arctan2(np.sin(psi_ref[k] - psik),
+                                 np.cos(psi_ref[k] - psik))
+            y_err = (y_ref[k] - yk) * np.cos(psik) - (x_ref[k] - xk) * np.sin(psik)
+            delta_des = float(np.clip(psi_err * 1.5 + y_err * 0.2,
+                                      self.delta_min, self.delta_max))
+            delta_k = float(np.clip(
+                delta_des,
+                dprev - self.max_steer_rate * _dt,
+                dprev + self.max_steer_rate * _dt))
+            spd_err = float(v_ref[k]) - uk
+            ax_des = float(np.clip(spd_err * 0.8, self.ax_min, self.ax_max))
+            jerk_k = float(np.clip((ax_des - axk) / _dt,
+                                   self.Jx_min, self.Jx_max))
+
+            self._solver.set(k, 'x', zk)
+            self._solver.set(k, 'u', np.array([delta_k, jerk_k]))
+
+            ax_next = float(np.clip(axk + _dt * jerk_k,
+                                    self.ax_min, self.ax_max))
+            u_next = max(self.u_min, uk + _dt * axk)
+            v_next = vk * 0.9
+            omega_next = omegak * 0.9
+            psi_next = psik + _dt * omegak
+            x_next = xk + _dt * (uk * np.cos(psik) - vk * np.sin(psik))
+            y_next = yk + _dt * (uk * np.sin(psik) + vk * np.cos(psik))
+            zk = np.array([x_next, y_next, psi_next, u_next,
+                           v_next, omega_next, ax_next, delta_k, jerk_k])
+        self._solver.set(N, 'x', zk)
+
+    # ------------------------------------------------------------------
     # Solve
     # ------------------------------------------------------------------
 
@@ -730,41 +819,9 @@ class AcadosDallasMPC:
                 idx = min(k + 1, N - 1)
                 self._solver.set(k, 'x', self._prev_Z[:, idx])
                 self._solver.set(k, 'u', self._prev_U[:, idx])
+            self._solver.set(N, 'x', self._prev_Z[:, -1])
         else:
-            # Cold start: kinematic rollout along reference (critical for
-            # Pacejka/TMeasy — without this ACADOS starts from zeros and
-            # the limited SQP iterations can't converge).
-            _dt = self.dt
-            zk = np.array(z0, dtype=float)
-            for k in range(N):
-                xk, yk, psik, uk, vk, omegak, axk, dprev, _jxprev = zk
-                psi_err = np.arctan2(np.sin(psi_ref[k] - psik),
-                                     np.cos(psi_ref[k] - psik))
-                y_err = (y_ref[k] - yk) * np.cos(psik) - (x_ref[k] - xk) * np.sin(psik)
-                delta_des = float(np.clip(psi_err * 1.5 + y_err * 0.2,
-                                          self.delta_min, self.delta_max))
-                delta_k = float(np.clip(
-                    delta_des,
-                    dprev - self.max_steer_rate * _dt,
-                    dprev + self.max_steer_rate * _dt))
-                spd_err = float(v_ref[k]) - uk
-                ax_des = float(np.clip(spd_err * 0.8, self.ax_min, self.ax_max))
-                jerk_k = float(np.clip((ax_des - axk) / _dt,
-                                       self.Jx_min, self.Jx_max))
-
-                self._solver.set(k, 'x', zk)
-                self._solver.set(k, 'u', np.array([delta_k, jerk_k]))
-
-                ax_next = float(np.clip(axk + _dt * jerk_k,
-                                        self.ax_min, self.ax_max))
-                u_next = max(self.u_min, uk + _dt * axk)
-                v_next = vk * 0.9
-                omega_next = omegak * 0.9
-                psi_next = psik + _dt * omegak
-                x_next = xk + _dt * (uk * np.cos(psik) - vk * np.sin(psik))
-                y_next = yk + _dt * (uk * np.sin(psik) + vk * np.cos(psik))
-                zk = np.array([x_next, y_next, psi_next, u_next,
-                               v_next, omega_next, ax_next, delta_k, jerk_k])
+            self._init_kinematic_rollout(z0, x_ref, y_ref, psi_ref, v_ref)
 
         for k in range(N):
             self._solver.set(k, 'p', np.array(_p_base[k]))
@@ -784,14 +841,16 @@ class AcadosDallasMPC:
 
         self._solver.set(N, 'p', np.array(p_e))
 
-        if self._prev_Z is not None:
-            self._solver.set(N, 'x', self._prev_Z[:, -1])
-        elif 'zk' in dir():
-            # Use the last state from kinematic rollout for cold start
-            self._solver.set(N, 'x', zk)
-
         # Solve
         status = self._solver.solve()
+
+        # On QP failure (status 4) with warm-start, retry from kinematic
+        # rollout.  The warm-start trajectory from a previously failed QP
+        # is often the root cause of cascading failures.
+        if status == 4 and _have_prev:
+            self._init_kinematic_rollout(z0, x_ref, y_ref, psi_ref, v_ref)
+            status = self._solver.solve()
+
         self.last_solver_status = str(status)
 
         # Extract solution
@@ -802,9 +861,15 @@ class AcadosDallasMPC:
             U_opt[:, k] = self._solver.get(k, 'u')
         Z_opt[:, N] = self._solver.get(N, 'x')
 
-        # Cache for warm-start
-        self._prev_Z = Z_opt.copy()
-        self._prev_U = U_opt.copy()
+        # Cache for warm-start.  On QP failure (status 4), purge the
+        # cache so the next call uses a kinematic rollout instead of
+        # propagating a poor solution that causes more QP failures.
+        if status == 4:
+            self._prev_Z = None
+            self._prev_U = None
+        else:
+            self._prev_Z = Z_opt.copy()
+            self._prev_U = U_opt.copy()
 
         delta_cmd = float(U_opt[0, 0])
         Jx = float(U_opt[1, 0])

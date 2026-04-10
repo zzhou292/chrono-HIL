@@ -90,6 +90,8 @@ def parse_model_name(name: str) -> dict:
     # --- Detect architecture ---
     if '_resnet_' in name or name.startswith('resnet_'):
         info['arch'] = 'resnet'
+    elif '_densenet_' in name or name.startswith('densenet_'):
+        info['arch'] = 'densenet'
     elif '_mlp_' in name or name.startswith('mlp_'):
         info['arch'] = 'mlp'
 
@@ -303,6 +305,39 @@ def _resnet_forward_casadi(weights: dict, n_blocks: int, x_scaled, ncols: int = 
         return ca.mtimes(Wo, h) + ca.repmat(bo, 1, ncols)
     else:
         return ca.mtimes(Wo, h) + bo
+
+
+# ============================================================================
+# DenseNet forward-pass helper
+# ============================================================================
+
+def _densenet_forward_casadi(weights: dict, n_dense_layers: int, x_scaled, ncols: int = 1):
+    """Evaluate a DenseNet (input_proj → dense_layers with concat → output_proj) in CasADi."""
+    Wi = ca.DM(weights['input_proj.weight'])
+    bi = ca.DM(weights['input_proj.bias']).reshape((-1, 1))
+    if ncols > 1:
+        h = ca.tanh(ca.mtimes(Wi, x_scaled) + ca.repmat(bi, 1, ncols))
+    else:
+        h = ca.tanh(ca.mtimes(Wi, x_scaled) + bi)
+
+    features = [h]
+    for i in range(n_dense_layers):
+        concat = ca.vertcat(*features)
+        W = ca.DM(weights[f'dense_layers.{i}.weight'])
+        b = ca.DM(weights[f'dense_layers.{i}.bias']).reshape((-1, 1))
+        if ncols > 1:
+            h = ca.tanh(ca.mtimes(W, concat) + ca.repmat(b, 1, ncols))
+        else:
+            h = ca.tanh(ca.mtimes(W, concat) + b)
+        features.append(h)
+
+    final_concat = ca.vertcat(*features)
+    Wo = ca.DM(weights['output_proj.weight'])
+    bo = ca.DM(weights['output_proj.bias']).reshape((-1, 1))
+    if ncols > 1:
+        return ca.mtimes(Wo, final_concat) + ca.repmat(bo, 1, ncols)
+    else:
+        return ca.mtimes(Wo, final_concat) + bo
 
 
 # ============================================================================
@@ -660,6 +695,66 @@ class RateResNet(NNTireModel):
 
 
 # ============================================================================
+# DenseNet concrete class
+# ============================================================================
+
+class StaticDenseNet(NNTireModel):
+    """Static DenseNet tire model (11 inputs → 2 outputs)."""
+
+    model_type = 'static_densenet'
+    model_format = 'v6'
+
+    def _build(self):
+        ckpt = self._checkpoint
+        self._dense_dim = ckpt.get('dense_dim', 32) if isinstance(ckpt, dict) else 32
+        self._n_dense_layers = ckpt.get('n_dense_layers', 4) if isinstance(ckpt, dict) else 4
+        self.input_dim = 11
+
+        # scalar
+        alpha = ca.SX.sym('alpha'); Fz = ca.SX.sym('Fz'); u = ca.SX.sym('u')
+        kap = ca.SX.sym('kappa'); n_t = ca.SX.sym('n_terrain'); sr = ca.SX.sym('sr')
+        Kphi = ca.SX.sym('Kphi'); Kc = ca.SX.sym('Kc')
+        c = ca.SX.sym('c'); phi = ca.SX.sym('phi'); k = ca.SX.sym('k')
+
+        x_in = ca.vertcat(kap, alpha, u, Fz, sr, Kphi, Kc, n_t, c, phi, k)
+        x_s = (x_in - self._X_mean.reshape(-1, 1)) / self._X_scale.reshape(-1, 1)
+        y_s = _densenet_forward_casadi(self._weights, self._n_dense_layers, x_s)
+        y_out = y_s * self._y_scale.reshape(-1, 1) + self._y_mean.reshape(-1, 1)
+
+        self.predict_tire_force = ca.Function(
+            'nn_tire_densenet', [alpha, Fz, u, kap, n_t, sr, Kphi, Kc, c, phi, k],
+            [y_out[0], y_out[1]],
+            ['alpha', 'Fz', 'u', 'kappa', 'n_terrain', 'sr', 'Kphi', 'Kc', 'c', 'phi', 'k'],
+            ['Fx', 'Fy'])
+
+        # batched
+        B = 8
+        alphas = ca.SX.sym('alphas', B); Fzs = ca.SX.sym('Fzs', B)
+        us_ = ca.SX.sym('us', B); kappas = ca.SX.sym('kappas', B)
+        n_ts = ca.SX.sym('n_ts', B); srs = ca.SX.sym('srs', B)
+        Kphi_b = ca.SX.sym('Kphi'); Kc_b = ca.SX.sym('Kc')
+        c_b = ca.SX.sym('c'); phi_b = ca.SX.sym('phi'); k_b = ca.SX.sym('k')
+
+        rows = [kappas.T, alphas.T, us_.T, Fzs.T, srs.T,
+                ca.repmat(Kphi_b, 1, B), ca.repmat(Kc_b, 1, B), n_ts.T,
+                ca.repmat(c_b, 1, B), ca.repmat(phi_b, 1, B), ca.repmat(k_b, 1, B)]
+        X = ca.vertcat(*rows)
+        Xm = ca.DM(self._X_mean.reshape(-1, 1)); Xs = ca.DM(self._X_scale.reshape(-1, 1))
+        H = (X - ca.repmat(Xm, 1, B)) / ca.repmat(Xs, 1, B)
+        Y_s = _densenet_forward_casadi(self._weights, self._n_dense_layers, H, ncols=B)
+        ym = ca.DM(self._y_mean.reshape(-1, 1)); ys = ca.DM(self._y_scale.reshape(-1, 1))
+        Y = Y_s * ca.repmat(ys, 1, B) + ca.repmat(ym, 1, B)
+
+        self._BATCH = B
+        self.predict_batch = ca.Function(
+            'nn_tire_batch_densenet',
+            [alphas, Fzs, us_, kappas, n_ts, srs, Kphi_b, Kc_b, c_b, phi_b, k_b],
+            [Y[0, :].T, Y[1, :].T],
+            ['alphas', 'Fzs', 'us', 'kappas', 'n_ts', 'srs', 'Kphi', 'Kc', 'c', 'phi', 'k'],
+            ['Fxs', 'Fys'])
+
+
+# ============================================================================
 # Factory / loader
 # ============================================================================
 
@@ -695,7 +790,9 @@ def load_nn_tire_model(model_dir: str | Path, terrain_params: dict) -> NNTireMod
         print(f"⚠ Name suggests temporal K={name_info['temporal_K']} but checkpoint is static.")
 
     # --- dispatch ---
-    if arch == 'resnet' and temporal_K > 1:
+    if arch == 'densenet':
+        cls = StaticDenseNet
+    elif arch == 'resnet' and temporal_K > 1:
         cls = TemporalResNet
     elif arch == 'resnet' and rate_aug:
         cls = RateResNet

@@ -1,0 +1,10 @@
+{
+  "source_timeseries_csv": "/home/kyle/Documents/chrono-HIL/chrono-HIL/project/SCM_Teleop/data/temporal/temporal_v1_timeseries.csv",
+  "outputs": {
+    "static": {
+      "static_csv": "/home/kyle/Documents/chrono-HIL/chrono-HIL/project/SCM_Teleop/data/universal/temporal_v1_timeseries_static_subsample6.csv",
+      "static_subsample": 6,
+      "static_rows": 201000
+    }
+  }
+}
