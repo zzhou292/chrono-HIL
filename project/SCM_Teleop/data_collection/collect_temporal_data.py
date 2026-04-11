@@ -54,7 +54,7 @@ CSV_HEADER = (
 )
 
 # ---------------------------------------------------------------------------
-# Parameter ranges (Dallas et al. Table I)
+# Parameter ranges (reference paper Table I)
 # ---------------------------------------------------------------------------
 RANGES = {
     "slip_angle_base": (-0.40, 0.40),

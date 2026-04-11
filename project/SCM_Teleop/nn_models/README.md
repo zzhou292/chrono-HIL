@@ -26,10 +26,10 @@ Trained neural network models for tire force prediction on SCM deformable terrai
 ### In Simulation
 ```bash
 # Use default (v3) model
-python simulation/dallas_chrono_demo.py --nn
+python simulation/launch_decoupled.py --nn
 
 # Use specific version
-python simulation/dallas_chrono_demo.py --nn --nn-model v2
+python simulation/launch_decoupled.py --nn --nn-model v2
 ```
 
 ### Loading Manually

@@ -73,7 +73,7 @@ constexpr double MESH_SPACING_FAST = 0.10;
 constexpr int SOLVER_ITERS = 50;
 
 // =============================================================================
-// Parameter ranges (same as collect_scm_data_fast.cpp — Dallas et al. Table I)
+// Parameter ranges (same as collect_scm_data_fast.cpp — reference paper Table I)
 // =============================================================================
 struct ParameterRanges {
     double slip_angle_base_min = -0.40;  // rad — initial slip angle (slightly inside limit)

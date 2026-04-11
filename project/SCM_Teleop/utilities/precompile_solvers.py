@@ -85,12 +85,12 @@ sys.path.insert(0, str(_SIM_DIR))
 
 def build_analytical(tire_model: str) -> dict:
     """Build (or verify cache for) an analytical tire model solver."""
-    from acados_mpc_solver import AcadosDallasMPC
+    from acados_mpc_solver import AcadosMPC
 
-    build_dir = Path(f"/tmp/acados_dallas_mpc_{tire_model}")
+    build_dir = Path(f"/tmp/acados_mpc_{tire_model}")
     t0 = time.time()
     try:
-        mpc = AcadosDallasMPC(
+        mpc = AcadosMPC(
             nn_tire_model=None,
             dt=DT_MPC,
             N=N_HORIZON,
@@ -112,7 +112,7 @@ def build_nn(label: str, nn_model_name: str) -> dict:
     """Build (or verify cache for) an NN tire model solver."""
     from nn_tire_model import load_nn_tire_model
     from param_consistency import get_terrain_preset, terrain_preset_to_internal
-    from acados_mpc_solver import AcadosDallasMPC
+    from acados_mpc_solver import AcadosMPC
 
     model_dir = _PROJECT_ROOT / "nn_models" / nn_model_name
 
@@ -132,9 +132,9 @@ def build_nn(label: str, nn_model_name: str) -> dict:
         t_load = time.time() - t0
 
         safe_model_tag = nn_model_name.replace("/", "_")
-        build_dir = Path(f"/tmp/acados_dallas_mpc_{safe_model_tag}")
+        build_dir = Path(f"/tmp/acados_mpc_{safe_model_tag}")
 
-        mpc = AcadosDallasMPC(
+        mpc = AcadosMPC(
             nn_tire_model=nn_tire,
             dt=DT_MPC,
             N=N_HORIZON,

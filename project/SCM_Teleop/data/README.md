@@ -16,7 +16,7 @@ This folder is organized so it’s obvious which CSVs are the **same underlying 
 - **`sweep_static_subsample10.csv`**: **subsampled** version of `sweep_static.csv` (derived/resampling).
 
 ### `steady_state/`
-- **`dallas_v6_static.csv`**: steady-state (Dallas-style) static dataset.
+- **`v6_static.csv`**: steady-state static dataset.
 
 ### MPC-aligned tire CSV (optional)
 
