@@ -264,7 +264,7 @@ def run_sim_node(args):
     # ------------------------------------------------------------------
     rocks = []
     if args.rocks > 0:
-        exclusion_zones = [(-25.0, 0.0, 5.0)]  # Vehicle spawn at x=-25
+        exclusion_zones = [(0.0, 0.0, 12.0)]  # Vehicle spawn at (0,0)
         rocks = add_rock_obstacles(
             system, num_rocks=args.rocks,
             zone_x=tuple(args.rock_zone_x), zone_y=tuple(args.rock_zone_y),
@@ -325,7 +325,15 @@ def run_sim_node(args):
     # ------------------------------------------------------------------
     # Driver (external commands or manual G29)
     # ------------------------------------------------------------------
-    if args.manual:
+    if args.wasd:
+        print("  Manual mode: using WASD keyboard (via Irrlicht window)")
+        driver = veh.ChInteractiveDriver(vehicle.GetVehicle())
+        driver.SetSteeringDelta(1.0 / 50)
+        driver.SetThrottleDelta(1.0 / 50)
+        driver.SetBrakingDelta(1.0 / 50)
+        driver.SetGains(4.0, 4.0, 4.0, 4.0)
+        driver.Initialize()
+    elif args.manual:
         print("  Manual mode: using G29 steering wheel")
         driver = ManualDriver(vehicle)
     else:
@@ -345,6 +353,8 @@ def run_sim_node(args):
             vis.AddLightDirectional()
             vis.AddSkyBox()
             vis.AttachVehicle(vehicle.GetVehicle())
+            if args.wasd:
+                vis.AttachDriver(driver)
         except Exception as e:
             print(f"Warning: Irrlicht visualization failed: {e}")
             vis = None
@@ -398,13 +408,16 @@ def run_sim_node(args):
     # ------------------------------------------------------------------
     # ZMQ transport (skipped in manual mode)
     # ------------------------------------------------------------------
+    _manual_mode = args.manual or args.wasd
     state_pub = None
     ctrl_sub = None
-    if not args.manual:
+    if not _manual_mode or args.wasd:
+        # Always publish state (terrain classifier needs it); skip ctrl_sub in WASD
         state_pub = ZMQPublisher(sim_pub_endpoint(args.sim_port))
-        ctrl_sub = ZMQSubscriber(ctrl_sub_endpoint(args.ctrl_host, args.ctrl_port))
         print(f"  Publishing state on port {args.sim_port}")
-        print(f"  Subscribing to controls from {args.ctrl_host}:{args.ctrl_port}")
+        if not _manual_mode:
+            ctrl_sub = ZMQSubscriber(ctrl_sub_endpoint(args.ctrl_host, args.ctrl_port))
+            print(f"  Subscribing to controls from {args.ctrl_host}:{args.ctrl_port}")
 
         # Give ZMQ sockets time to connect
         wall_time.sleep(0.3)
@@ -445,7 +458,7 @@ def run_sim_node(args):
         # codegen time from consuming --time once the loop runs.
         # --------------------------------------------------------------
         wait_s = 0.0 if args.no_wait_for_controller else float(args.wait_for_controller)
-        if wait_s > 0:
+        if ctrl_sub is not None and wait_s > 0:
             print(f"  Waiting for controller ready signal (timeout {wait_s:.0f}s)...")
             t0_wait = wall_time.time()
             last_cfg_send = t0_wait
@@ -489,7 +502,7 @@ def run_sim_node(args):
     noise_cfg = None if args.no_noise else DEFAULT_MEAS_NOISE
     print(f"  Sensor noise: {'OFF' if noise_cfg is None else 'ON'}")
     print(f"  Physics step: {step_size * 1000:.0f}ms, state rate: {args.state_rate} Hz")
-    if args.manual:
+    if _manual_mode:
         print(f"  Manual mode: close window to exit")
     else:
         print(f"  Running {args.time}s simulation...")
@@ -497,7 +510,7 @@ def run_sim_node(args):
     while True:
         time_chrono = vehicle.GetSystem().GetChTime()
 
-        if not args.manual and time_chrono >= args.time:
+        if not _manual_mode and time_chrono >= args.time:
             break
         if vis is not None and not vis.Run():
             break
@@ -636,7 +649,7 @@ def run_sim_node(args):
     elapsed = wall_time.time() - start_wall
     print(f"\n  Simulation complete: {time_chrono:.1f}s in {elapsed:.1f}s "
           f"(RT factor {time_chrono / elapsed:.2f}x)")
-    if not args.manual:
+    if not _manual_mode:
         print(f"  Total control commands received: {cmd_count}")
 
     # Safety filter summary
@@ -705,6 +718,8 @@ def main():
     # Manual control
     p.add_argument("--manual", action="store_true",
                    help="Manual control with G29 steering wheel (no MPC controller)")
+    p.add_argument("--wasd", action="store_true",
+                   help="Manual control with WASD keyboard (no MPC controller)")
 
     # Rock obstacles
     p.add_argument("--rocks", type=int, default=0,
