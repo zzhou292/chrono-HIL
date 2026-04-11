@@ -26,7 +26,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -54,13 +54,30 @@ class FeatureVector:
     sideslip_ratio_mean: float   # mean |v|/max(|u|, 0.5)
     yaw_rate_mean: float         # mean |omega|
 
+    # Longitudinal dynamics
+    ax_std: float                # longitudinal acceleration vibration
+    ay_std: float                # lateral acceleration vibration
+
+    # Context features (included for normalization / ML)
+    speed_mean: float            # mean u
+    steering_std: float          # std of steering input over window
+
+    # Logged but NOT in ML array
+    speed_std: float             # std u
+
     def to_array(self) -> np.ndarray:
-        """Return feature values as a flat numpy array (excludes timestamp)."""
+        """Return feature values as a flat numpy array (excludes timestamp).
+
+        Excludes speed_mean (confound with sand's speed ceiling) and
+        speed_std.  steering_std is kept for driving-intensity normalization.
+        """
         return np.array([
             self.slip_front_mean, self.slip_front_std, self.slip_front_max,
             self.slip_rear_mean, self.slip_rear_std, self.slip_rear_max,
             self.yaw_accel_std, self.az_std,
             self.sideslip_ratio_mean, self.yaw_rate_mean,
+            self.ax_std, self.ay_std,
+            self.steering_std,
         ], dtype=np.float64)
 
     @staticmethod
@@ -70,6 +87,8 @@ class FeatureVector:
             "slip_rear_mean", "slip_rear_std", "slip_rear_max",
             "yaw_accel_std", "az_std",
             "sideslip_ratio_mean", "yaw_rate_mean",
+            "ax_std", "ay_std",
+            "steering_std",
         ]
 
 
@@ -165,14 +184,30 @@ class FeatureExtractor:
         slip_front = (np.abs(slip_fl) + np.abs(slip_fr)) / 2.0
         slip_rear = (np.abs(slip_rl) + np.abs(slip_rr)) / 2.0
 
-        # ---- Acceleration by finite differences ----
-        dt = np.diff(ts)
+        # ---- Low-pass filter to suppress sensor noise before differentiation ----
+        # Moving average with window of 5 samples (~50ms at 100 Hz).
+        # Prevents noise from being amplified 100x by finite differences.
+        kern = 5
+        if len(u) >= kern:
+            kernel = np.ones(kern) / kern
+            u_filt = np.convolve(u, kernel, mode='valid')
+            v_filt = np.convolve(v, kernel, mode='valid')
+            om_filt = np.convolve(omega, kernel, mode='valid')
+            z_filt = np.convolve(z, kernel, mode='valid')
+            ts_filt = np.convolve(ts, kernel, mode='valid')
+        else:
+            u_filt, v_filt, om_filt, z_filt, ts_filt = u, v, omega, z, ts
+
+        # ---- Acceleration by finite differences (on filtered signals) ----
+        dt = np.diff(ts_filt)
         dt = np.where(dt < 1e-6, 1e-6, dt)  # avoid division by zero
 
-        omega_dot = np.diff(omega) / dt  # yaw acceleration
+        ax = np.diff(u_filt) / dt   # longitudinal acceleration
+        ay = np.diff(v_filt) / dt   # lateral acceleration
+        omega_dot = np.diff(om_filt) / dt  # yaw acceleration
 
         # Vertical "acceleration" proxy: second derivative of z
-        vz = np.diff(z) / dt
+        vz = np.diff(z_filt) / dt
         if len(vz) > 1:
             dt2 = dt[:-1]
             dt2 = np.where(dt2 < 1e-6, 1e-6, dt2)
@@ -184,21 +219,25 @@ class FeatureExtractor:
         safe_u = np.maximum(np.abs(u), 0.5)
         sideslip = np.abs(v) / safe_u
 
+        steering = arr[:, 12]
+
         return FeatureVector(
             timestamp=current_time,
-            # Slip ratio
             slip_front_mean=float(np.mean(slip_front)),
             slip_front_std=float(np.std(slip_front)),
             slip_front_max=float(np.max(slip_front)),
             slip_rear_mean=float(np.mean(slip_rear)),
             slip_rear_std=float(np.std(slip_rear)),
             slip_rear_max=float(np.max(slip_rear)),
-            # IMU vibration
             yaw_accel_std=float(np.std(omega_dot)),
             az_std=float(np.std(az)),
-            # Lateral dynamics
             sideslip_ratio_mean=float(np.mean(sideslip)),
             yaw_rate_mean=float(np.mean(np.abs(omega))),
+            ax_std=float(np.std(ax)),
+            ay_std=float(np.std(ay)),
+            speed_mean=float(np.mean(u)),
+            steering_std=float(np.std(steering)),
+            speed_std=float(np.std(u)),
         )
 
     def reset(self):

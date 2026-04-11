@@ -30,7 +30,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, HistGradientBoostingClassifier
 from sklearn.metrics import (
     classification_report, confusion_matrix, ConfusionMatrixDisplay,
 )
@@ -51,6 +51,14 @@ def train(args):
     df = pd.read_csv(args.data)
     feature_names = FeatureVector.feature_names()
 
+    # Backward-compat: drop legacy columns not used as ML features.
+    # speed_mean excluded to avoid confound with sand's speed ceiling;
+    # speed_std was never an ML feature.
+    _legacy_cols = ["speed_std", "speed_mean"]
+    for sc in _legacy_cols:
+        if sc in df.columns and sc not in feature_names:
+            df = df.drop(columns=[sc])
+
     # Validate columns
     missing = [c for c in feature_names + ["terrain_label"] if c not in df.columns]
     if missing:
@@ -67,6 +75,67 @@ def train(args):
     X = X[mask]
     y_raw = y_raw[mask]
 
+    # ---- Derived features (computed from base features) ----
+    # Base column indices (13 base features):
+    #   0=slip_front_mean, 1=slip_front_std, 2=slip_front_max,
+    #   3=slip_rear_mean,  4=slip_rear_std,  5=slip_rear_max,
+    #   6=yaw_accel_std,   7=az_std,
+    #   8=sideslip_ratio_mean, 9=yaw_rate_mean,
+    #  10=ax_std, 11=ay_std,
+    #  12=steering_std
+    # NOTE: speed_mean excluded — it's a confound (sand can't exceed ~5 m/s).
+    eps = 1e-6
+
+    # Log-transform highly skewed slip features
+    log_slip_f = np.log1p(X[:, 0:1])
+    log_slip_r = np.log1p(X[:, 3:4])
+    log_slip_f_max = np.log1p(X[:, 2:3])
+    log_slip_r_max = np.log1p(X[:, 5:6])
+
+    # Front/rear slip ratio (terrain-dependent traction distribution)
+    slip_fr_ratio = X[:, 0:1] / np.maximum(X[:, 3:4], eps)
+
+    # Coefficient of variation of slip (normalized variability)
+    slip_f_cv = X[:, 1:2] / np.maximum(X[:, 0:1], eps)
+    slip_r_cv = X[:, 4:5] / np.maximum(X[:, 3:4], eps)
+
+    # Yaw-to-sideslip ratio (understeer/oversteer indicator)
+    yaw_slip_ratio = X[:, 9:10] / np.maximum(X[:, 8:9], eps)
+
+    # ---- Steering-normalized features (driving-intensity invariant) ----
+    # For the same steering input, terrain determines slip/sideslip/yaw response.
+    steer = np.maximum(X[:, 12:13], 0.01)  # steering_std with floor
+    slip_per_steer = X[:, 3:4] / steer       # slip_rear_mean / steering_std
+    ay_per_steer = X[:, 11:12] / steer        # ay_std / steering_std
+    yaw_rate_per_steer = X[:, 9:10] / steer   # yaw_rate_mean / steering_std
+    yaw_accel_per_steer = X[:, 6:7] / steer   # yaw_accel_std / steering_std
+    sideslip_per_steer = X[:, 8:9] / steer    # sideslip_ratio_mean / steering_std
+
+    derived = np.hstack([
+        log_slip_f, log_slip_r, log_slip_f_max, log_slip_r_max,
+        slip_fr_ratio, slip_f_cv, slip_r_cv, yaw_slip_ratio,
+        slip_per_steer, ay_per_steer, yaw_rate_per_steer,
+        yaw_accel_per_steer, sideslip_per_steer,
+    ])
+    derived_names = [
+        "log_slip_front_mean", "log_slip_rear_mean",
+        "log_slip_front_max", "log_slip_rear_max",
+        "slip_front_rear_ratio", "slip_front_cv", "slip_rear_cv",
+        "yaw_sideslip_ratio",
+        "slip_rear_per_steer", "ay_per_steer", "yaw_rate_per_steer",
+        "yaw_accel_per_steer", "sideslip_per_steer",
+    ]
+
+    X = np.hstack([X, derived])
+    feature_names = feature_names + derived_names
+
+    # Clean up any NaN/inf introduced by derived features
+    mask2 = np.all(np.isfinite(X), axis=1)
+    if (~mask2).sum() > 0:
+        print(f"  Dropping {(~mask2).sum()} derived-feature NaN/inf rows")
+        X = X[mask2]
+        y_raw = y_raw[mask2]
+
     le = LabelEncoder()
     y = le.fit_transform(y_raw)
 
@@ -82,28 +151,41 @@ def train(args):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    # ---- Train Random Forest ----
-    rf = RandomForestClassifier(
-        n_estimators=args.n_trees,
-        max_depth=args.max_depth,
-        min_samples_leaf=args.min_leaf,
-        class_weight="balanced",   # handles class imbalance
-        random_state=42,
-        n_jobs=-1,
-    )
+    # ---- Train classifier ----
+    if args.classifier == "gb":
+        clf = HistGradientBoostingClassifier(
+            max_iter=args.n_trees,
+            max_depth=args.max_depth or 6,
+            min_samples_leaf=args.min_leaf,
+            learning_rate=0.1,
+            random_state=42,
+        )
+        clf_name = "HistGradientBoosting"
+    else:
+        clf = RandomForestClassifier(
+            n_estimators=args.n_trees,
+            max_depth=args.max_depth,
+            min_samples_leaf=args.min_leaf,
+            class_weight="balanced",
+            random_state=42,
+            n_jobs=-1,
+        )
+        clf_name = "RandomForest"
+
+    print(f"  Classifier: {clf_name}")
 
     # Stratified K-fold cross-validation
     n_splits = min(5, min(np.bincount(y)))
     if n_splits < 2:
         print("  WARNING: Too few samples per class for cross-validation. "
               "Training on full dataset without CV.")
-        rf.fit(X_scaled, y)
-        y_pred = rf.predict(X_scaled)
+        clf.fit(X_scaled, y)
+        y_pred = clf.predict(X_scaled)
     else:
         cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-        y_pred = cross_val_predict(rf, X_scaled, y, cv=cv)
+        y_pred = cross_val_predict(clf, X_scaled, y, cv=cv)
         # Re-train on full dataset for the final model
-        rf.fit(X_scaled, y)
+        clf.fit(X_scaled, y)
 
     # ---- Evaluation ----
     print(f"\n  Classification Report ({n_splits}-fold CV):")
@@ -115,7 +197,14 @@ def train(args):
         print(f"    {cls:>6s}: {cm[i]}")
 
     # ---- Feature importance ----
-    importances = rf.feature_importances_
+    if hasattr(clf, 'feature_importances_'):
+        importances = clf.feature_importances_
+    else:
+        # HistGradientBoosting uses permutation importance by default
+        from sklearn.inspection import permutation_importance
+        perm_result = permutation_importance(clf, X_scaled, y, n_repeats=5,
+                                             random_state=42, n_jobs=-1)
+        importances = perm_result.importances_mean
     idx_sorted = np.argsort(importances)[::-1]
     print("\n  Feature Importance (top 10):")
     for rank, idx in enumerate(idx_sorted[:10]):
@@ -126,10 +215,12 @@ def train(args):
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     model_bundle = {
-        "model": rf,
+        "model": clf,
         "label_encoder": le,
         "scaler": scaler,
         "feature_names": feature_names,
+        "derived_feature_names": derived_names,
+        "base_feature_names": FeatureVector.feature_names(),
         "classes": list(le.classes_),
         "n_samples": len(X),
     }
@@ -191,6 +282,8 @@ def main():
     p.add_argument("--n-trees", type=int, default=200, help="Number of RF trees")
     p.add_argument("--max-depth", type=int, default=None, help="Max tree depth (None=unlimited)")
     p.add_argument("--min-leaf", type=int, default=3, help="Min samples per leaf")
+    p.add_argument("--classifier", choices=["rf", "gb"], default="gb",
+                   help="Classifier type: rf=RandomForest, gb=GradientBoosting")
     p.add_argument("--no-plot", action="store_true", help="Skip generating plots")
     args = p.parse_args()
     train(args)

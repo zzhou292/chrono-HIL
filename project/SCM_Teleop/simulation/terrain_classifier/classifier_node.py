@@ -30,26 +30,101 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from hil_messages import (
     VehicleState, ControlCommand, SimStatus,
     ZMQPublisher, ZMQSubscriber,
-    sim_sub_endpoint,
+    sim_sub_endpoint, ctrl_sub_endpoint,
 )
 from terrain_classifier.feature_extractor import FeatureExtractor
 from terrain_classifier.messages import TerrainEstimate, terrain_pub_endpoint
 
 
 class ExponentialSmoother:
-    """Smooths class probability vectors with EMA to reduce flickering."""
+    """Smooths class probability vectors with EMA to reduce flickering.
 
-    def __init__(self, alpha: float = 0.3, n_classes: int = 3):
+    Uses a two-layer approach:
+      1. EMA on raw probabilities (responsive, short-term)
+      2. Running mean of all post-burn-in probabilities (robust, long-term)
+
+    The final output blends both: after *burn_in* predictions, the running
+    mean dominates, making the estimate very stable for the common case
+    where terrain does not change within a run.
+    """
+
+    def __init__(self, alpha: float = 0.3, n_classes: int = 3,
+                 burn_in: int = 8):
         self.alpha = alpha
-        self._probs = np.ones(n_classes) / n_classes  # uniform prior
+        self.burn_in = burn_in
+        self._ema = np.ones(n_classes) / n_classes  # uniform prior
+        self._accum = np.zeros(n_classes)  # sum of post-burn-in probs
+        self._count = 0
+        self._total = 0
 
     def update(self, probs: np.ndarray) -> np.ndarray:
-        self._probs = self.alpha * probs + (1 - self.alpha) * self._probs
-        self._probs /= self._probs.sum()  # re-normalize
-        return self._probs.copy()
+        self._total += 1
+        # Layer 1: EMA (always active)
+        self._ema = self.alpha * probs + (1 - self.alpha) * self._ema
+        self._ema /= self._ema.sum()
+
+        # Layer 2: running mean after burn-in
+        if self._total > self.burn_in:
+            self._accum += probs
+            self._count += 1
+            mean_probs = self._accum / self._count
+            mean_probs /= mean_probs.sum()
+            return mean_probs.copy()
+        return self._ema.copy()
 
     def reset(self):
-        self._probs = np.ones(len(self._probs)) / len(self._probs)
+        n = len(self._ema)
+        self._ema = np.ones(n) / n
+        self._accum = np.zeros(n)
+        self._count = 0
+        self._total = 0
+
+
+def compute_derived_features(X_base: np.ndarray) -> np.ndarray:
+    """Compute derived features matching those added in train_model.py.
+
+    Args:
+        X_base: (1, N_base) array of base feature values.
+                Column order (13 base features):
+                  0=slip_front_mean, 1=slip_front_std, 2=slip_front_max,
+                  3=slip_rear_mean,  4=slip_rear_std,  5=slip_rear_max,
+                  6=yaw_accel_std,   7=az_std,
+                  8=sideslip_ratio_mean, 9=yaw_rate_mean,
+                  10=ax_std, 11=ay_std,
+                  12=steering_std
+
+    Returns:
+        (1, N_base+13) array with base + derived features concatenated.
+    """
+    eps = 1e-6
+
+    # Log transforms
+    log_slip_f = np.log1p(X_base[:, 0:1])
+    log_slip_r = np.log1p(X_base[:, 3:4])
+    log_slip_f_max = np.log1p(X_base[:, 2:3])
+    log_slip_r_max = np.log1p(X_base[:, 5:6])
+
+    # Ratios
+    slip_fr_ratio = X_base[:, 0:1] / np.maximum(X_base[:, 3:4], eps)
+    slip_f_cv = X_base[:, 1:2] / np.maximum(X_base[:, 0:1], eps)
+    slip_r_cv = X_base[:, 4:5] / np.maximum(X_base[:, 3:4], eps)
+    yaw_slip_ratio = X_base[:, 9:10] / np.maximum(X_base[:, 8:9], eps)
+
+    # Steering-normalized (driving-intensity invariant)
+    steer = np.maximum(X_base[:, 12:13], 0.01)
+    slip_per_steer = X_base[:, 3:4] / steer
+    ay_per_steer = X_base[:, 11:12] / steer
+    yaw_rate_per_steer = X_base[:, 9:10] / steer
+    yaw_accel_per_steer = X_base[:, 6:7] / steer
+    sideslip_per_steer = X_base[:, 8:9] / steer
+
+    derived = np.hstack([
+        log_slip_f, log_slip_r, log_slip_f_max, log_slip_r_max,
+        slip_fr_ratio, slip_f_cv, slip_r_cv, yaw_slip_ratio,
+        slip_per_steer, ay_per_steer, yaw_rate_per_steer,
+        yaw_accel_per_steer, sideslip_per_steer,
+    ])
+    return np.hstack([X_base, derived])
 
 
 def run_classifier(args):
@@ -78,8 +153,10 @@ def run_classifier(args):
 
     # ---- ZMQ setup ----
     state_sub = ZMQSubscriber(sim_sub_endpoint(args.sim_host, args.sim_port))
+    ctrl_sub = ZMQSubscriber(ctrl_sub_endpoint(args.ctrl_host, args.ctrl_port))
     est_pub = ZMQPublisher(terrain_pub_endpoint(args.pub_port))
     print(f"  Subscribing to state: tcp://{args.sim_host}:{args.sim_port}")
+    print(f"  Subscribing to ctrl:  tcp://{args.ctrl_host}:{args.ctrl_port}")
     print(f"  Publishing estimates on port {args.pub_port}")
 
     # ---- Feature extractor ----
@@ -103,6 +180,13 @@ def run_classifier(args):
 
     try:
         while True:
+            # Poll control commands (non-blocking) to track steering
+            ctrl_result = ctrl_sub.recv(timeout_ms=0)
+            if ctrl_result is not None:
+                _, ctrl_msg = ctrl_result
+                if isinstance(ctrl_msg, ControlCommand):
+                    last_steering = ctrl_msg.steering
+
             result = state_sub.recv(timeout_ms=200)
             if result is None:
                 continue
@@ -134,6 +218,9 @@ def run_classifier(args):
 
             # Classify
             X = fv.to_array().reshape(1, -1)
+            # Add derived features if model expects them
+            if len(feature_names) > X.shape[1]:
+                X = compute_derived_features(X)
             X_scaled = scaler.transform(X)
             proba = model.predict_proba(X_scaled)[0]
 
@@ -168,6 +255,7 @@ def run_classifier(args):
         print("\n  Interrupted.")
     finally:
         state_sub.close()
+        ctrl_sub.close()
         est_pub.close()
 
         # Summary
@@ -184,6 +272,8 @@ def main():
                    help="Path to trained model pickle")
     p.add_argument("--sim-host", default="localhost")
     p.add_argument("--sim-port", type=int, default=5555)
+    p.add_argument("--ctrl-host", default="localhost")
+    p.add_argument("--ctrl-port", type=int, default=5556)
     p.add_argument("--pub-port", type=int, default=5557,
                    help="Port to publish TerrainEstimate messages")
     p.add_argument("--window", type=float, default=1.0, help="Feature window (s)")

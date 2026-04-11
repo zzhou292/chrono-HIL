@@ -48,6 +48,8 @@ def main():
     p.add_argument("--model", default="nn",
                    choices=["nn", "pacejka", "tmeasy", "linear"],
                    help="MPC tire model (must match runtime model)")
+    p.add_argument("--nn-model", default=None,
+                   help="NN model version directory (only used when --model nn)")
     args = p.parse_args()
 
     script_dir = Path(__file__).resolve().parent.parent
@@ -108,12 +110,16 @@ def main():
                 "--no-plot",
                 "--no-csv",
             ]
+            if args.model == "nn" and args.nn_model:
+                ctrl_cmd.extend(["--nn-model", args.nn_model])
 
             # Build collector command
             collect_cmd = [
                 sys.executable, "-m", "terrain_classifier.collect_data",
                 "--sim-host", "localhost",
                 "--sim-port", str(args.sim_port),
+                "--ctrl-host", "localhost",
+                "--ctrl-port", str(args.ctrl_port),
                 "--output", str(csv_path),
                 "--terrain-label", terrain,
             ]

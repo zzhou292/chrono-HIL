@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hil_messages import (
     VehicleState, ControlCommand, SimStatus,
-    ZMQSubscriber, sim_sub_endpoint,
+    ZMQSubscriber, sim_sub_endpoint, ctrl_sub_endpoint,
 )
 from terrain_classifier.feature_extractor import FeatureExtractor, FeatureVector
 
@@ -41,7 +41,11 @@ def collect(args):
 
     endpoint = sim_sub_endpoint(args.sim_host, args.sim_port)
     sub = ZMQSubscriber(endpoint)
-    print(f"  Subscribed to {endpoint}")
+    print(f"  Subscribed to state: {endpoint}")
+
+    ctrl_endpoint = ctrl_sub_endpoint(args.ctrl_host, args.ctrl_port)
+    ctrl_sub = ZMQSubscriber(ctrl_endpoint)
+    print(f"  Subscribed to ctrl:  {ctrl_endpoint}")
 
     extractor = FeatureExtractor(
         window_sec=args.window,
@@ -77,6 +81,13 @@ def collect(args):
 
     try:
         while True:
+            # Poll control commands (non-blocking) to track steering
+            ctrl_result = ctrl_sub.recv(timeout_ms=0)
+            if ctrl_result is not None:
+                _, ctrl_msg = ctrl_result
+                if isinstance(ctrl_msg, ControlCommand):
+                    last_steering = ctrl_msg.steering
+
             result = sub.recv(timeout_ms=200)
             if result is None:
                 continue
@@ -94,7 +105,6 @@ def collect(args):
                 config_received = True
                 continue
 
-            # Track steering from control commands if we also subscribe to that
             if isinstance(msg, ControlCommand):
                 last_steering = msg.steering
                 continue
@@ -122,8 +132,7 @@ def collect(args):
             if sample_count % 20 == 0:
                 csv_file.flush()
                 print(f"  [t={fv.timestamp:.1f}s] Samples collected: {sample_count}  "
-                      f"(speed={fv.speed_mean:.1f} m/s, "
-                      f"slip_f={fv.slip_front_mean:.4f})")
+                      f"(slip_f={fv.slip_front_mean:.4f})")
 
             # Check for sim stop
             if isinstance(msg, SimStatus) and msg.event == "stop":
@@ -135,6 +144,7 @@ def collect(args):
     finally:
         csv_file.close()
         sub.close()
+        ctrl_sub.close()
         print(f"\n  Collection complete: {sample_count} feature samples "
               f"({msg_count} messages) → {out_path}")
 
@@ -145,6 +155,8 @@ def main():
 
     p.add_argument("--sim-host", default="localhost")
     p.add_argument("--sim-port", type=int, default=5555)
+    p.add_argument("--ctrl-host", default="localhost")
+    p.add_argument("--ctrl-port", type=int, default=5556)
     p.add_argument("--output", "-o", default="terrain_classifier/data/training_data.csv")
     p.add_argument("--append", action="store_true",
                    help="Append to existing CSV instead of overwriting")
