@@ -150,14 +150,14 @@ def quat_to_yaw(e0, e1, e2, e3):
 
 
 # =============================================================================
-# Control integrator (mirrors DallasMPCDriver logic)
+# Control integrator
 # =============================================================================
 
 class ControlIntegrator:
     """Integrates MPC rate commands (delta_dot, Jx) into steering/throttle/brake.
 
     Works with any MPC object that exposes ``delta_max``, ``ax_min``, and
-    ``ax_max`` attributes (both DallasMPC and AcadosDallasMPC satisfy this).
+    ``ax_max`` attributes (the AcadosMPC solver satisfies this).
     """
 
     def __init__(self, mpc, v_target: float = 5.0):

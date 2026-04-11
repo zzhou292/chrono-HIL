@@ -285,16 +285,16 @@ class CBFSafetyFilter:
                  vehicle_params: dict,
                  nn_casadi=None,
                  max_steering_rate: float = 2.0,
-                 cbf_alpha: float = 5.0,
-                 cbf_alpha2: float = 4.0,
+                 cbf_alpha: float = 1.0,
+                 cbf_alpha2: float = 0.8,
                  obstacle_buffer: float = 0.25,
                  vehicle_radius: float = 1.0,
                  max_speed: float = 15.0,
                  delay_steps: int = 5,
                  control_dt: float = 0.02,
-                 w_long: float = 0.06,
+                 w_long: float = 0.15,
                  w_lat: float = 0.50,
-                 forward_bias: float = 3.0,
+                 forward_bias: float = 1.5,
                  dob_bandwidth: float = 10.0,
                  cbf_flavor: str = 'balance',
                  teleop_delay: float = 0.0,
@@ -330,6 +330,7 @@ class CBFSafetyFilter:
         self.cbf_flavor = cbf_flavor
 
         # Teleop delay compensation
+        self._teleop_enabled = teleop_delay > 0.0  # Only activate if explicitly set
         self._teleop_delay = max(teleop_delay, 0.0)
         self._stale_cmd_timeout = stale_cmd_timeout
         self._cmd_age = 0.0        # Latest measured command age (s)
@@ -404,11 +405,13 @@ class CBFSafetyFilter:
         one_way = max(now - cmd_wall_time, 0.0)
         self._cmd_age = one_way
         self._last_cmd_wall = now  # record *when* we last got a command
-        # EMA smoothing
-        a = self._delay_ema_alpha
-        self._delay_ema = a * one_way + (1.0 - a) * self._delay_ema
-        # Auto-update the effective teleop delay
-        self._teleop_delay = self._delay_ema
+        # Only update teleop delay estimate if teleop mode was explicitly
+        # enabled at construction (delay > 0).  Local ZMQ latency (~1-2ms)
+        # should NOT activate the teleop prediction / stale-command logic.
+        if self._teleop_enabled:
+            a = self._delay_ema_alpha
+            self._delay_ema = a * one_way + (1.0 - a) * self._delay_ema
+            self._teleop_delay = self._delay_ema
 
     def _effective_obstacle_buffer(self, v: float) -> float:
         """
@@ -850,23 +853,52 @@ class CBFSafetyFilter:
             h = w1 * d_along**2 + w2 * d_cross**2 - safe_r**2
             min_h = min(min_h, h)
 
+            # Euclidean distance from vehicle CG to obstacle center
+            dist_eucl = np.sqrt(dd)
+
             # Kinematic quantities at current beta
-            tan_beta = np.tan(beta) if abs(beta) < 1.5 else np.sign(beta) * 1e3
-            omega_kin = v / self.L * tan_beta
+            # Use actual measured yaw rate for barrier dynamics — the
+            # kinematic bicycle model (omega_kin = v/L*tan(delta)) is
+            # inaccurate on low-friction surfaces where tire slip causes
+            # the real yaw rate to diverge from the kinematic prediction.
             d_along_unbiased = d_along - bias
 
-            d_along_dot = v + omega_kin * d_cross
-            d_cross_dot = -d_along_unbiased * omega_kin
+            d_along_dot = v + omega * d_cross
+            d_cross_dot = v_lat - omega * d_along_unbiased
 
             h_dot = 2 * w1 * d_along * d_along_dot + 2 * w2 * d_cross * d_cross_dot
 
-            # Skip obstacles we're moving away from
+            # Skip obstacles we're moving away from (h increasing and already safe)
             if h_dot > 0 and h > 0:
                 continue
 
+            # Skip obstacles that are BEHIND the vehicle (already passed).
+            # d_along_unbiased < 0 means obstacle is ahead; > 0 means behind.
+            if d_along_unbiased > 1.0:
+                continue
+
+            # Skip obstacles we're moving away from even with h < 0
+            # (we already passed but barrier still overlaps)
+            if h_dot > 0 and d_along_unbiased > -0.5:
+                continue
+
+            # Clamp h from below to prevent deadlock when deep inside barrier.
+            # Physical collision radius is safe_r; barrier violation (h < 0)
+            # just means we're inside the safety margin, not colliding.
+            # Use a softer constraint: only require h_dot >= 0 (stop getting
+            # closer) instead of full recovery when deep in the barrier.
+            if h < 0 and dist_eucl > safe_r:
+                # Inside barrier but not colliding — use first-order constraint
+                # only: require h_dot + alpha1 * h_clamped >= 0
+                # This gives a "slow down and steer" rather than "emergency brake"
+                h_eff = max(h, -0.5 * safe_r**2)
+            else:
+                h_eff = h
+
             # Steering sensitivity: dh_dot / d(steer_normalized)
-            # omega = v/L * tan(steer * max_angle)
-            # d(omega)/d(steer) = v/L * sec²(beta) * max_angle
+            # Uses kinematic model for control authority (how steering
+            # changes omega), which is a vehicle design property.
+            tan_beta = np.tan(beta) if abs(beta) < 1.5 else np.sign(beta) * 1e3
             sec2_beta = 1.0 + tan_beta**2
             d_omega_d_steer = v / self.L * sec2_beta * self.max_road_steer_angle
 
@@ -878,24 +910,34 @@ class CBFSafetyFilter:
             # Autonomous h_ddot (second derivative at constant control)
             omega_dot_auto = hdv0 / self.L * tan_beta if abs(v) > 0.1 else 0.0
             d_along_ddot_auto = (hdv0
-                                 + d_cross_dot * omega_kin
+                                 + d_cross_dot * omega
                                  + d_cross * omega_dot_auto)
-            d_cross_ddot_auto = (-d_along_dot * omega_kin
+            d_cross_ddot_auto = (-d_along_dot * omega
                                  - d_along_unbiased * omega_dot_auto)
-            h_ddot_auto = (2 * w1 * (d_along_dot**2 + d_along * d_along_ddot_auto)
-                         + 2 * w2 * (d_cross_dot**2 + d_cross * d_cross_ddot_auto))
+            # Drop velocity² (centrifugal) terms from h_ddot_auto.
+            # The full chain-rule expansion of d²h/dt² includes
+            # d_along_dot² and d_cross_dot² which are always non-negative.
+            # These inflate h_ddot_auto — especially d_cross_dot² during
+            # turns — making the QP constraint non-binding: the CBF
+            # "thinks" the barrier is naturally improving when the vehicle
+            # is merely rotating the body frame, not actually escaping.
+            # Keeping only the position×acceleration terms makes the
+            # constraint conservative enough to trigger braking/steering
+            # before it's too late.
+            h_ddot_auto = (2 * w1 * d_along * d_along_ddot_auto
+                         + 2 * w2 * d_cross * d_cross_ddot_auto)
 
             # Throttle sensitivity: alpha affects h_ddot through acceleration
             A_alpha = 2 * w1 * d_along * accel_gain
 
-            # Position-based CBF constraint:
-            # h_ddot_auto + A_alpha*alpha + alpha2*(h_dot_0 + A_steer*(s - s_cur)) + alpha1*h >= 0
+            # Position-based CBF constraint using effective barrier:
+            # h_ddot_auto + A_alpha*alpha + alpha2*(h_dot_0 + A_steer*(s - s_cur)) + alpha1*h_eff >= 0
             #
             # Rearrange to: -[alpha2*A_steer, A_alpha] @ [s, alpha] <= psi0
             s_current = self._beta / self.max_road_steer_angle
             psi0 = (h_ddot_auto
                     + self.alpha2 * (h_dot - A_steer * s_current)
-                    + self.alpha1 * h)
+                    + self.alpha1 * h_eff)
             psi1 = np.array([self.alpha2 * A_steer, A_alpha])
 
             A_ineq_list.append(-psi1)
@@ -916,6 +958,41 @@ class CBFSafetyFilter:
             accel_for_speed = accel_gain
             A_ineq_list.append(np.array([0.0, -accel_for_speed]))
             b_ineq_list.append(self.alpha1 * speed_margin)
+
+        # Low-speed recovery: if vehicle is nearly stopped and min_h < 0
+        # but no real collision (Euclidean distance > safe_r for all nearby
+        # obstacles), drop CBF constraints and rely on reactive steering.
+        # This prevents the vehicle from getting permanently stuck inside
+        # the barrier zone when surrounded by multiple obstacles.
+        # Use hysteresis: enter creep at v < 1.0, exit at v > 3.0
+        if not hasattr(self, '_creep_mode'):
+            self._creep_mode = False
+        if min_h < -0.1:
+            if v < 1.0:
+                self._creep_mode = True
+            elif v > 3.0:
+                self._creep_mode = False
+        else:
+            self._creep_mode = False
+
+        if self._creep_mode and len(A_ineq_list) > 0:
+            # Check if ANY obstacle is actually within physical collision radius
+            physical_collision = False
+            for (obs_x, obs_y, obs_r) in obstacles:
+                dd = (x - obs_x)**2 + (y - obs_y)**2
+                hard_safe_r = obs_r + self.vehicle_radius
+                if dd < hard_safe_r**2:
+                    physical_collision = True
+                    break
+            if not physical_collision:
+                # Safe to creep: replace CBF constraints with a speed limit
+                A_ineq_list.clear()
+                b_ineq_list.clear()
+                # Limit creeping speed to 3 m/s
+                creep_max = 3.0
+                if v > creep_max * 0.9:
+                    A_ineq_list.append(np.array([0.0, -accel_gain]))
+                    b_ineq_list.append(self.alpha1 * (creep_max - v))
 
         # Solve QP
         was_modified = False
@@ -996,6 +1073,18 @@ class CBFSafetyFilter:
         # Extract filtered controls directly (position-based, no integration)
         safe_steering = np.clip(u_safe[0], -1.0, 1.0)
         safe_alpha = u_safe[1]
+
+        # Reactive steering layer: add avoidance commands for nearby obstacles.
+        # This handles head-on obstacles where the CBF geometric singularity
+        # prevents the QP from choosing steering, and provides guidance during
+        # low-speed creeping through obstacle fields.
+        if len(obstacles) > 0 and min_h < 2.0:
+            reactive_steer = self._compute_reactive_steering(vehicle_state, obstacles)
+            if abs(reactive_steer) > 0.01:
+                safe_steering = np.clip(safe_steering + reactive_steer, -1.0, 1.0)
+                if not was_modified:
+                    was_modified = True
+                    self._modify_count += 1
 
         # Teleop: forward-predict over delay horizon and emergency-brake
         # if the QP-safe output still leads to a collision within the RTT

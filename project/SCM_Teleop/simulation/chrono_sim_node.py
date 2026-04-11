@@ -748,6 +748,8 @@ def main():
                    help="Visualization mode: irrlicht, sensor (driver POV), both, or none")
     p.add_argument("--no-rt",  action="store_true",
                    help="Disable real-time pacing (fast-forward; breaks decoupled MPC)")
+    p.add_argument("--no-tire-forces", action="store_true",
+                   help="Disable per-wheel tire force extraction in state messages")
     p.add_argument("--speed", type=float, default=5.0, help="Target speed for markers (m/s)")
 
     # Terrain

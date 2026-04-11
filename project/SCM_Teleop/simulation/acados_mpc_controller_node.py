@@ -58,7 +58,7 @@ from mpc_helpers import (
 )
 
 # ACADOS solver + unified NN loader
-from acados_mpc_solver import AcadosDallasMPC
+from acados_mpc_solver import AcadosMPC
 from nn_tire_model import load_nn_tire_model
 from analytical_tire_models import get_tire_forces as analytical_tire_forces
 
@@ -77,7 +77,7 @@ _TERRAIN_PARAMS_LOOKUP = {
     name: terrain_preset_to_internal(preset)
     for name, preset in TERRAIN_PRESETS.items()
 }
-_DEFAULT_TERRAIN_CLASS = "dirt"
+_DEFAULT_TERRAIN_CLASS = "clay"
 
 from path_utils import make_path_function
 from tire_input_features import (
@@ -214,11 +214,11 @@ def run_controller_node(args):
         # Using only model_type (e.g. static_mlp) causes many different
         # checkpoints to thrash the same cache path.
         safe_model_tag = model_version.replace("/", "_")
-        acados_build_dir = Path(f"/tmp/acados_dallas_mpc_{safe_model_tag}")
+        acados_build_dir = Path(f"/tmp/acados_mpc_{safe_model_tag}")
     else:
-        acados_build_dir = Path(f"/tmp/acados_dallas_mpc_{tire_model}")
+        acados_build_dir = Path(f"/tmp/acados_mpc_{tire_model}")
 
-    mpc = AcadosDallasMPC(
+    mpc = AcadosMPC(
         nn_tire_model=nn_tire,
         dt=dt_mpc,
         N=N_horizon,
@@ -994,10 +994,16 @@ def main():
     # Terrain classifier
     p.add_argument("--terrain-classifier", action="store_true",
                    help="Subscribe to terrain classifier estimates")
+    p.add_argument("--use-prediction", action="store_true",
+                   help="Use terrain classifier predictions for MPC terrain params "
+                        "(implies --terrain-classifier; defaults to clay before first prediction)")
     p.add_argument("--tc-port", type=int, default=5557,
                    help="Terrain classifier publish port to subscribe to")
 
     args = p.parse_args()
+    # --use-prediction implies --terrain-classifier
+    if args.use_prediction:
+        args.terrain_classifier = True
     run_controller_node(args)
 
 

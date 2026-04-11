@@ -4,7 +4,7 @@ Analytical Tire Models (CasADi symbolic)
 =========================================
 
 Shared CasADi-symbolic tire force functions used by both the CasADi+IPOPT
-(DallasMPC) and ACADOS (AcadosDallasMPC) solvers.
+the ACADOS MPC solver.
 
 Each function takes CasADi symbolic slip angles and normal forces and returns
 ``(Fyf, Fyr, Fx_traction)`` as CasADi expressions suitable for embedding in
@@ -19,7 +19,7 @@ Supported models:
 import casadi as ca
 
 # ============================================================================
-# Default parameters (from HMMWV_Pac02Tire.tir / Dallas paper calibration)
+# Default parameters (from HMMWV_Pac02Tire.tir)
 # ============================================================================
 
 # Pacejka Magic Formula

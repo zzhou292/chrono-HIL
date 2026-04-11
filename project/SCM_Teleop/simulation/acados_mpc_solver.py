@@ -3,11 +3,11 @@
 ACADOS MPC Solver — Neural Network Terramechanics
 ===================================================
 
-Drop-in replacement for the CasADi+IPOPT DallasMPC solver, using ACADOS
+Drop-in replacement for the CasADi+IPOPT MPC solver, using ACADOS
 with SQP-RTI for significantly faster solve times.
 
 The vehicle dynamics, cost function, and constraints are identical to
-mpc_solver.py / DallasMPC.  The NN tire model is loaded via the unified
+mpc_solver.py.  The NN tire model is loaded via the unified
 nn_tire_model.py interface and embedded as a CasADi symbolic expression
 in the ACADOS model (same approach as before — ACADOS auto-differentiates
 through it).
@@ -19,11 +19,11 @@ ACADOS advantages over plain CasADi+IPOPT:
   - Feedback phase preparation: even lower latency
 
 Usage:
-    from acados_mpc_solver import AcadosDallasMPC
+    from acados_mpc_solver import AcadosMPC
     from nn_tire_model import load_nn_tire_model
 
     nn = load_nn_tire_model('nn_models/v6_mlp_16_4', terrain_params)
-    mpc = AcadosDallasMPC(nn_tire_model=nn, dt=0.1, N=20)
+    mpc = AcadosMPC(nn_tire_model=nn, dt=0.1, N=20)
 
     delta_cmd, Jx, Z_opt, U_opt = mpc.solve(z0, x_ref, y_ref, psi_ref, v_ref,
                                              x_goal, y_goal, psi_goal,
@@ -65,7 +65,7 @@ from analytical_tire_models import get_tire_forces as _analytical_tire_forces
 
 
 # ============================================================================
-# Vehicle parameters (identical to DallasMPC defaults)
+# Vehicle parameters
 # ============================================================================
 
 _VP = HMMWV_VEHICLE_PARAMS
@@ -78,7 +78,7 @@ _h_cg = _VP['h_cg']     # 0.65 m
 _T = _VP['T']           # 1.8194 m
 
 
-class AcadosDallasMPC:
+class AcadosMPC:
     """
     ACADOS-based MPC for off-road autonomous driving.
 
@@ -103,7 +103,7 @@ class AcadosDallasMPC:
             lateral_load_transfer: Use 4-wheel Fz model (NN mode only)
             kappa_mode: 'zero' or 'approx'
             build_dir: Where to generate ACADOS C code.  Defaults to
-                       /tmp/acados_dallas_mpc_{model_tag}/
+                       /tmp/acados_mpc_{model_tag}/
             tire_model: 'nn', 'pacejka', 'tmeasy', or 'linear'.
         """
         self.tire_model = tire_model
@@ -124,14 +124,14 @@ class AcadosDallasMPC:
         self.T = _T
         self.use_nn = (nn_tire_model is not None and tire_model == 'nn')
 
-        # Bounds (same as DallasMPC)
+        # Bounds
         self.u_min, self.u_max = 0.5, 20.0
         self.delta_min, self.delta_max = -0.528, 0.528
         self.ax_min, self.ax_max = -2.6, 1.9
         self.delta_dot_min, self.delta_dot_max = -0.5, 0.5
         self.Jx_min, self.Jx_max = -3.0, 3.0
 
-        # Cost weights (same as DallasMPC)
+        # Cost weights
         self.w_lateral = 120.0
         self.w_heading = 20.0
         self.w_speed = 10.0
@@ -147,7 +147,7 @@ class AcadosDallasMPC:
         self._temporal_mode = (self.use_nn and nn_tire_model.temporal_K > 1)
         self._rate_mode = (self.use_nn and nn_tire_model.rate_augmented)
 
-        # nn_scale: convention from DallasMPC
+        # nn_scale
         self.nn_scale = 1.0
 
         # Solver tuning (model-adaptive)
@@ -185,7 +185,7 @@ class AcadosDallasMPC:
         else:
             model_tag = tire_model  # pacejka / tmeasy / linear
         if build_dir is None:
-            build_dir = Path(f'/tmp/acados_dallas_mpc_{model_tag}')
+            build_dir = Path(f'/tmp/acados_mpc_{model_tag}')
         self._build_dir = Path(build_dir)
 
         # Build the ACADOS OCP solver
@@ -232,7 +232,7 @@ class AcadosDallasMPC:
         # --- Cache: skip full OCP build if compiled solver matches ---
         fingerprint = self._compute_fingerprint()
         fp_file = self._build_dir / '.fingerprint'
-        so_file = self._build_dir / 'c_generated_code' / 'libacados_ocp_solver_dallas_bicycle.so'
+        so_file = self._build_dir / 'c_generated_code' / 'libacados_ocp_solver_bicycle.so'
         json_file = self._build_dir / 'acados_ocp.json'
 
         if (fp_file.exists() and so_file.exists() and json_file.exists()
@@ -435,7 +435,7 @@ class AcadosDallasMPC:
     def _build_acados_model(self) -> AcadosModel:
         """Define the CasADi symbolic model for ACADOS."""
         model = AcadosModel()
-        model.name = 'dallas_bicycle'
+        model.name = 'bicycle'
 
         nx, nu = self.nx, self.nu
         M, Izz, Lf, Lr = _M, _Izz, _Lf, _Lr
@@ -763,7 +763,7 @@ class AcadosDallasMPC:
               hist_front=None, hist_rear=None,
               rates_front=None, rates_rear=None):
         """
-        Solve the MPC with the same interface as DallasMPC.solve().
+        Solve the MPC.
 
         Returns:
             delta_cmd, Jx, Z_opt, U_opt  — first control is road-wheel angle δ [rad]
@@ -925,7 +925,7 @@ if __name__ == '__main__':
             sys.exit(1)
 
     nn = load_nn_tire_model(model_dir, tp)
-    mpc = AcadosDallasMPC(nn_tire_model=nn, dt=0.1, N=20)
+    mpc = AcadosMPC(nn_tire_model=nn, dt=0.1, N=20)
 
     # Simple test scenario
     N = mpc.N

@@ -435,3 +435,167 @@ class ManualDriver(veh.ChDriver):
     def get_mpc_stats(self):
         """No MPC stats for manual control"""
         return None
+
+
+# =========================================================================
+# WASD Keyboard Driver
+# =========================================================================
+
+class WASDDriver(veh.ChDriver):
+    """
+    Manual driver using WASD / arrow keys via a small pygame window.
+
+    Controls:
+        W / Up    — Throttle
+        S / Down  — Brake
+        A / Left  — Steer left
+        D / Right — Steer right
+        Space     — Handbrake (full brake)
+        Q / Esc   — Quit (zeros inputs)
+    """
+
+    # Tuning constants
+    STEER_RATE = 2.0          # Full lock in 0.5s
+    STEER_RETURN_RATE = 4.0   # Centre in 0.25s when released
+    THROTTLE_RATE = 3.0       # Full throttle in 0.33s
+    THROTTLE_DECAY = 5.0      # Release in 0.2s
+    BRAKE_RATE = 5.0          # Full brake in 0.2s
+    BRAKE_DECAY = 8.0         # Release in 0.125s
+
+    def __init__(self, vehicle):
+        super().__init__(vehicle.GetVehicle())
+        self.vehicle = vehicle
+        self.m_steering = 0.0
+        self.m_throttle = 0.0
+        self.m_braking = 0.0
+        self._prev_time = 0.0
+        self._quit = False
+
+        # For compatibility with code that checks these
+        self.mpc_worker = None
+        self.mp_worker = None
+        self.state_history = []
+
+        # Defer pygame init to first Synchronize() so it doesn't conflict
+        # with Irrlicht's window/display initialization.
+        self._pygame = None
+        self._screen = None
+        self._font = None
+        self._initialized = False
+
+    def _init_pygame(self):
+        """Lazy-initialize pygame after Irrlicht is already running."""
+        import pygame
+        self._pygame = pygame
+        pygame.init()
+        self._screen = pygame.display.set_mode((320, 120))
+        pygame.display.set_caption("WASD Driver — focus this window")
+        self._font = pygame.font.SysFont("monospace", 14)
+        self._initialized = True
+        print("  WASD driver: focus the 'WASD Driver' window to drive")
+
+    def Synchronize(self, time):
+        """Called by Chrono each physics step — read keys and update inputs."""
+        if not self._initialized:
+            self._init_pygame()
+            return
+
+        pg = self._pygame
+        dt = time - self._prev_time if self._prev_time > 0 else 0.003
+        self._prev_time = time
+
+        # Pump events (needed for key state)
+        for event in pg.event.get():
+            if event.type == pg.QUIT:
+                self._quit = True
+            elif event.type == pg.KEYDOWN and event.key in (pg.K_q, pg.K_ESCAPE):
+                self._quit = True
+
+        if self._quit:
+            self.m_throttle = 0.0
+            self.m_braking = 0.0
+            return
+
+        keys = pg.key.get_pressed()
+        steer_left = keys[pg.K_a] or keys[pg.K_LEFT]
+        steer_right = keys[pg.K_d] or keys[pg.K_RIGHT]
+        accel = keys[pg.K_w] or keys[pg.K_UP]
+        brake = keys[pg.K_s] or keys[pg.K_DOWN] or keys[pg.K_SPACE]
+
+        # Steering (positive = left, SAE convention)
+        if steer_left and not steer_right:
+            self.m_steering = min(1.0, self.m_steering + self.STEER_RATE * dt)
+        elif steer_right and not steer_left:
+            self.m_steering = max(-1.0, self.m_steering - self.STEER_RATE * dt)
+        else:
+            if self.m_steering > 0:
+                self.m_steering = max(0.0, self.m_steering - self.STEER_RETURN_RATE * dt)
+            elif self.m_steering < 0:
+                self.m_steering = min(0.0, self.m_steering + self.STEER_RETURN_RATE * dt)
+
+        # Throttle
+        if accel:
+            self.m_throttle = min(1.0, self.m_throttle + self.THROTTLE_RATE * dt)
+        else:
+            self.m_throttle = max(0.0, self.m_throttle - self.THROTTLE_DECAY * dt)
+
+        # Braking
+        if brake:
+            self.m_braking = min(1.0, self.m_braking + self.BRAKE_RATE * dt)
+        else:
+            self.m_braking = max(0.0, self.m_braking - self.BRAKE_DECAY * dt)
+
+        # Draw mini-HUD
+        self._draw_hud()
+
+    def _draw_hud(self):
+        pg = self._pygame
+        scr = self._screen
+        scr.fill((30, 30, 30))
+        y = 5
+        speed = self.vehicle.GetVehicle().GetSpeed()
+
+        lines = [
+            (f"Steer: {self.m_steering:+.2f}", (100, 180, 255)),
+            (f"Throt: {self.m_throttle:.2f}  Brake: {self.m_braking:.2f}",
+             (80, 220, 80) if self.m_throttle > self.m_braking else (220, 80, 80)),
+            (f"Speed: {speed:.1f} m/s  ({speed * 3.6:.0f} km/h)", (220, 220, 100)),
+            ("WASD/Arrows=drive  Space=brake  Q=quit", (120, 120, 120)),
+        ]
+        for text, color in lines:
+            surf = self._font.render(text, True, color)
+            scr.blit(surf, (10, y))
+            y += 22
+        # Steering bar
+        bar_y = y + 2
+        bar_w, bar_h = 200, 10
+        bar_x = 60
+        pg.draw.rect(scr, (60, 60, 60), (bar_x, bar_y, bar_w, bar_h))
+        mid = bar_x + bar_w // 2
+        steer_px = int(self.m_steering * (bar_w // 2))
+        if steer_px > 0:
+            pg.draw.rect(scr, (100, 180, 255), (mid, bar_y, steer_px, bar_h))
+        elif steer_px < 0:
+            pg.draw.rect(scr, (100, 180, 255), (mid + steer_px, bar_y, -steer_px, bar_h))
+        pg.draw.line(scr, (200, 200, 200), (mid, bar_y), (mid, bar_y + bar_h), 1)
+
+        pg.display.flip()
+
+    def Advance(self, step):
+        pass
+
+    def GetSteering(self):
+        return self.m_steering
+
+    def GetThrottle(self):
+        return self.m_throttle
+
+    def GetBraking(self):
+        return self.m_braking
+
+    def shutdown(self):
+        if self._initialized:
+            self._pygame.quit()
+
+    def get_mpc_stats(self):
+        return None

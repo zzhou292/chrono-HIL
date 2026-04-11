@@ -26,7 +26,7 @@ KappaMode = Literal["zero", "approx"]
 
 @dataclass(frozen=True)
 class VehicleGeometry:
-    """Bicycle + load-transfer geometry (matches AcadosDallasMPC / HMMWV defaults)."""
+    """Bicycle + load-transfer geometry (matches AcadosMPC / HMMWV defaults)."""
 
     Lf: float
     Lr: float

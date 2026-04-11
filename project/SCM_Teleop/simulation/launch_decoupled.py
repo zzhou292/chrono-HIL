@@ -124,12 +124,12 @@ Examples:
     # Safety filter
     p.add_argument("--safety-filter", action="store_true",
                    help="Enable DOB-CBF safety filter")
-    p.add_argument("--cbf-alpha", type=float, default=5.0)
+    p.add_argument("--cbf-alpha", type=float, default=1.0)
     p.add_argument("--safety-buffer", type=float, default=0.25)
     p.add_argument("--delay-steps", type=int, default=5)
-    p.add_argument("--cbf-w-long", type=float, default=0.06)
+    p.add_argument("--cbf-w-long", type=float, default=0.15)
     p.add_argument("--cbf-w-lat", type=float, default=0.50)
-    p.add_argument("--cbf-forward-bias", type=float, default=3.0)
+    p.add_argument("--cbf-forward-bias", type=float, default=1.5)
     p.add_argument("--dob-bandwidth", type=float, default=10.0)
     p.add_argument("--cbf-flavor", type=str, default="balance",
                    choices=["balance", "steer_priority", "throttle_priority"])
@@ -151,6 +151,8 @@ Examples:
                    help="Only launch the controller node")
     p.add_argument("--manual", action="store_true",
                    help="Manual control with G29 steering wheel (no MPC controller)")
+    p.add_argument("--wasd", action="store_true",
+                   help="Manual control with WASD keyboard (no MPC controller)")
 
     # Terrain classifier
     p.add_argument("--terrain-classifier", action="store_true",
@@ -193,6 +195,8 @@ Examples:
         sim_cmd.append("--no-noise")
     if args.manual:
         sim_cmd.append("--manual")
+    if args.wasd:
+        sim_cmd.append("--wasd")
     if args.terrain_config:
         sim_cmd.extend(["--terrain-config", args.terrain_config])
     # Rock obstacles
@@ -258,8 +262,18 @@ Examples:
         "--model", args.tc_model,
         "--sim-host", "localhost",
         "--sim-port", str(args.sim_port),
+        "--ctrl-host", "localhost",
+        "--ctrl-port", str(args.ctrl_port),
         "--pub-port", str(args.tc_port),
         "--ema-alpha", str(args.tc_ema_alpha),
+    ]
+
+    # ---- WASD driver command ----
+    wasd_cmd = [
+        sys.executable, str(script_dir / "wasd_driver_node.py"),
+        "--sim-host", "localhost",
+        "--sim-port", str(args.sim_port),
+        "--ctrl-port", str(args.ctrl_port),
     ]
 
     # ---- Launch ----
@@ -283,10 +297,22 @@ Examples:
             proc = subprocess.Popen(ctrl_cmd)
             procs.append(proc)
             proc.wait()
-        elif args.sim_only or args.manual:
-            mode = "manual (G29)" if args.manual else "simulation only"
+        elif args.sim_only or args.manual or args.wasd:
+            if args.wasd:
+                mode = "manual (WASD keyboard)"
+            elif args.manual:
+                mode = "manual (G29)"
+            else:
+                mode = "simulation only"
             print(f"[launch] Starting {mode}")
             print(f"  cmd: {' '.join(sim_cmd)}")
+
+            # Start terrain classifier if requested (WASD publishes state via ZMQ)
+            if args.wasd and args.terrain_classifier:
+                print("[launch] Starting terrain classifier...")
+                tc_proc = subprocess.Popen(tc_cmd, cwd=str(script_dir))
+                procs.append(tc_proc)
+
             proc = subprocess.Popen(sim_cmd)
             procs.append(proc)
             proc.wait()

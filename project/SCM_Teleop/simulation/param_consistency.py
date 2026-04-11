@@ -19,28 +19,28 @@ import random
 from typing import Dict, Any, List, Sequence, Tuple
 
 # =============================================================================
-# NN training data ranges — v6 format (Dallas et al.)
+# NN training data ranges — v6 format
 # Must match data_collection/collect_scm_data_fast.cpp ParameterRanges struct EXACTLY.
 # These are the ranges used during Latin Hypercube sampling for data collection.
 # =============================================================================
 TRAINING_RANGES_V6 = {
-    # Operating conditions — Dallas et al. Table I
+    # Operating conditions
     "slip_ratio":     (-1.0, 1.0),            # dimensionless
     "slip_angle":     (-0.6, 0.6),            # rad (~-34.4° to 34.4°)
     "velocity":       (2.0, 10.0),            # m/s
-    "vertical_load":  (1500.0, 7500.0),       # N per wheel (HMMWV-adjusted from Dallas 500-5500)
+    "vertical_load":  (1500.0, 7500.0),       # N per wheel (HMMWV-adjusted from reference 500-5500)
     "steering_rate":  (-0.56, 0.56),          # rad/s — critical transient input
 
     # Bekker pressure-sinkage
     "bekker_Kphi":    (0.5e6, 4.0e6),         # Pa — covers clay (692k) through stiff soils
     "bekker_Kc":      (0.0, 20000.0),         # Pa — covers clay (13.2k)
-    "bekker_n":       (0.3, 1.3),             # dimensionless — Dallas et al. Table I
+    "bekker_n":       (0.3, 1.3),             # dimensionless
 
     # Mohr-Coulomb
-    "mohr_cohesion":  (650.0, 20700.0),       # Pa — Dallas et al. Table I
+    "mohr_cohesion":  (650.0, 20700.0),       # Pa
     "mohr_friction":  (0.105, 0.66),          # RADIANS in v6 CSV (6° to 37.8°)
 
-    # Janosi (upper 0.025 m matches sand/dirt presets; Dallas Table I lists 0.024)
+    # Janosi (upper 0.025 m matches sand/dirt presets; reference Table I lists 0.024)
     "janosi_shear":   (0.01, 0.025),          # m
 }
 
@@ -206,8 +206,8 @@ def get_bumpiness_params(level: int, seed: int = 12345) -> dict:
     return params
 
 
-# Steering excitation defaults for terrain estimation (Dallas Sec. V.A)
-# Dallas paper: "sinusoidal steering commands, steering fully in both directions"
+# Steering excitation defaults for terrain estimation
+# Reference paper: "sinusoidal steering commands, steering fully in both directions"
 # =============================================================================
 EXCITATION_DEFAULTS = {
     "steer_amp_rad": 0.35,       # ~20° — aggressive but won't spin out
@@ -231,7 +231,7 @@ def get_static_fz_per_wheel(vehicle_params: Dict[str, float] | None = None) -> T
 
 
 def get_vehicle_params_for_demo() -> Dict[str, float]:
-    """Vehicle params to pass to DallasMPC when running Chrono HMMWV demo."""
+    """Vehicle params for the MPC when running Chrono HMMWV demo."""
     return dict(HMMWV_VEHICLE_PARAMS)
 
 
@@ -310,7 +310,7 @@ def generate_lhs_terrain_yaml_dicts(
     """
     ``n_samples`` Latin-hypercube draws over TRAINING_RANGES_V6 soil parameters.
 
-    Same hull as ``data_collection`` / Dallas v6 rig sampling; includes the region around
+    Same hull as ``data_collection`` / v6 rig sampling; includes the region around
     clay, sand, and dirt presets in ``TERRAIN_PRESETS``.
     """
     rng = random.Random(seed)
