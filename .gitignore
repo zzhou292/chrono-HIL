@@ -16,3 +16,8 @@ __pycache__/
 
 # Generated image/log outputs
 *.log
+project/SCM_Teleop/archive
+project/solver_aware_nn
+project/SCM_Teleop/ref_papers
+project/SCM_Teleop/nn_models
+project/SCM_Teleop/data
