@@ -65,6 +65,16 @@ class VehicleState:
     v: float              # Lateral speed (m/s)
     # Angular velocity
     omega: float          # Yaw rate (rad/s)
+    # Body-frame acceleration (IMU)
+    ax: float = 0.0       # Longitudinal acceleration (m/s²)
+    ay: float = 0.0       # Lateral acceleration (m/s²)
+    # Wheel angular velocities (wheel encoders, rad/s)
+    wheel_omega_fl: float = 0.0
+    wheel_omega_fr: float = 0.0
+    wheel_omega_rl: float = 0.0
+    wheel_omega_rr: float = 0.0
+    # Road-wheel steering angle (steering sensor, rad)
+    steering_angle: float = 0.0
     # Tire info (optional, for diagnostics)
     tire_forces: Optional[Dict[str, float]] = None
 

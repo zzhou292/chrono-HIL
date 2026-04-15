@@ -540,6 +540,11 @@ class CBFSafetyFilter:
         alpha_f = delta - np.arctan2(v_lat + self.Lf * omega, u_safe)
         alpha_r = -np.arctan2(v_lat - self.Lr * omega, u_safe)
 
+        # Clamp slip angles to training-data range
+        _alpha_max = 0.55
+        alpha_f = float(max(-_alpha_max, min(_alpha_max, alpha_f)))
+        alpha_r = float(max(-_alpha_max, min(_alpha_max, alpha_r)))
+
         # Normal forces (static weight distribution, per wheel)
         Fz_f = self.M * g * self.Lr / self.L / 2.0
         Fz_r = self.M * g * self.Lf / self.L / 2.0

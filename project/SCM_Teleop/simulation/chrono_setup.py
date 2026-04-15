@@ -17,6 +17,18 @@ from param_consistency import TERRAIN_PRESETS, get_bumpiness_params
 from terrain_gen import generate_heightmap_bmp
 
 
+def _viz_type(name: str):
+    """Return visualization enum value across Chrono Python API variants."""
+    attr = f"VisualizationType_{name}"
+    if hasattr(veh, attr):
+        return getattr(veh, attr)
+    if hasattr(chrono, attr):
+        return getattr(chrono, attr)
+    raise AttributeError(
+        f"PyChrono visualization enum '{attr}' not found in pychrono or pychrono.vehicle"
+    )
+
+
 def setup_chrono_vehicle(visualize=True):
     """Setup PyChrono HMMWV vehicle."""
     
@@ -44,15 +56,15 @@ def setup_chrono_vehicle(visualize=True):
     
     if visualize:
         # MESH for visual quality, PRIMITIVES for less important parts
-        vehicle.SetChassisVisualizationType(chrono.VisualizationType_MESH)
-        vehicle.SetSuspensionVisualizationType(chrono.VisualizationType_PRIMITIVES)
-        vehicle.SetSteeringVisualizationType(chrono.VisualizationType_PRIMITIVES)
-        vehicle.SetWheelVisualizationType(chrono.VisualizationType_MESH)
-        vehicle.SetTireVisualizationType(chrono.VisualizationType_MESH)
+        vehicle.SetChassisVisualizationType(_viz_type("MESH"))
+        vehicle.SetSuspensionVisualizationType(_viz_type("PRIMITIVES"))
+        vehicle.SetSteeringVisualizationType(_viz_type("PRIMITIVES"))
+        vehicle.SetWheelVisualizationType(_viz_type("MESH"))
+        vehicle.SetTireVisualizationType(_viz_type("MESH"))
     else:
-        vehicle.SetChassisVisualizationType(chrono.VisualizationType_PRIMITIVES)
-        vehicle.SetWheelVisualizationType(chrono.VisualizationType_PRIMITIVES)
-        vehicle.SetTireVisualizationType(chrono.VisualizationType_PRIMITIVES)
+        vehicle.SetChassisVisualizationType(_viz_type("PRIMITIVES"))
+        vehicle.SetWheelVisualizationType(_viz_type("PRIMITIVES"))
+        vehicle.SetTireVisualizationType(_viz_type("PRIMITIVES"))
     
     return system, vehicle
 
@@ -95,7 +107,7 @@ def load_terrain_config(config_path):
 
 def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand',
                       terrain_config=None, mesh_resolution=None,
-                      bumpiness=0, bump_seed=12345, texture=False):
+                      bumpiness=0, bump_seed=12345, texture=True):
     """Setup SCM deformable terrain
     
     Args:
@@ -170,7 +182,7 @@ def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand
         print(f"  Mesh: {delta}m")
     
     # Terrain dimensions: large visual area (moving patch keeps computation local)
-    length, width = 200.0, 50.0  # Large terrain for visualization
+    length, width = 200.0, 80.0  # Large terrain for visualization
     
     # Initialize terrain - flat or bumpy
     if bump_amplitude > 0:
@@ -197,15 +209,26 @@ def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand
     else:
         terrain.Initialize(length, width, delta)
     
-    # Per-wheel active domains: tighter boxes = fewer SCM nodes evaluated per step
+    # Per-wheel moving patch: tighter boxes = fewer SCM nodes evaluated per step.
+    # Older/newer Chrono Python builds expose either AddActiveDomain or AddMovingPatch.
     if vehicle is not None:
+        add_patch = None
+        if hasattr(terrain, "AddActiveDomain"):
+            add_patch = terrain.AddActiveDomain
+        elif hasattr(terrain, "AddMovingPatch"):
+            add_patch = terrain.AddMovingPatch
+        else:
+            print("  WARNING: SCMTerrain moving patch API not found; running without moving patches")
+
         for ax in vehicle.GetVehicle().GetAxles():
-            terrain.AddActiveDomain(ax.m_wheels[0].GetSpindle(),
-                                    chrono.ChVector3d(0, 0, 0),
-                                    chrono.ChVector3d(1, 0.5, 1))
-            terrain.AddActiveDomain(ax.m_wheels[1].GetSpindle(),
-                                    chrono.ChVector3d(0, 0, 0),
-                                    chrono.ChVector3d(1, 0.5, 1))
+            if add_patch is None:
+                break
+            add_patch(ax.m_wheels[0].GetSpindle(),
+                      chrono.ChVector3d(0, 0, 0),
+                      chrono.ChVector3d(1, 0.5, 1))
+            add_patch(ax.m_wheels[1].GetSpindle(),
+                      chrono.ChVector3d(0, 0, 0),
+                      chrono.ChVector3d(1, 0.5, 1))
     
     if visualize:
         terrain.SetPlotType(veh.SCMTerrain.PLOT_SINKAGE, 0, 0.1)
@@ -218,112 +241,72 @@ def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand
     return terrain, {'Kphi': Kphi, 'Kc': Kc, 'n': n, 'c': c, 'phi': phi, 'k': k}
 
 
-def add_trajectory_markers(system, path_type='lane_change', sim_time=10.0, 
-                           v_target=8.0, lane_offset=3.0, marker_z=None,
-                           sine_amplitude=2.0, sine_wavelength=30.0, lead_in=0.0):
+def add_trajectory_markers(system, path_type='lane_change', marker_z=None,
+                           lead_in=0.0, **_kwargs):
     """
-    Add visual markers on the ground to show the reference trajectory.
-    
+    Add visual sphere markers along the reference path loaded from CSV.
+
+    Loads waypoints from ``paths/<path_type>.csv`` and places markers at
+    regular arc-length intervals along the path.
+
     Args:
-        system: Chrono system
-        path_type: 'lane_change', 'double_lane_change', or 'sinusoidal'
-        sim_time: Duration to generate markers for
-        v_target: Target velocity (used only for estimating marker count)
-        lane_offset: Lane change offset (m)
-        marker_z: Z height for markers (default: 0.15, set higher for bumpy terrain)
-        sine_amplitude: Amplitude for sinusoidal path (m)
-        sine_wavelength: Wavelength for sinusoidal path (m)
+        system: Chrono system to add markers to.
+        path_type: Name of the CSV file (without extension) in ``paths/``.
+        marker_z: Z height for markers (default 0.15).
+        lead_in: Optional straight lead-in distance prepended to the path.
     """
-    marker_spacing = 4.0  # meters between markers (sparser for performance)
+    from pathlib import Path as _P
+
+    marker_spacing = 4.0   # arc-length metres between markers
     marker_radius = 0.15
     marker_height = marker_z if marker_z is not None else 0.15
-    
-    # Estimate total distance (just for marker count, not for path positions)
-    total_dist = max(v_target * sim_time, 60.0)  # At least 60m to cover path
-    n_markers = int(total_dist / marker_spacing) + 1
-    
-    print(f"  Adding {n_markers} trajectory markers for {path_type}...")
-    
-    # Path-specific parameters - ALL FIXED POSITIONS (shifted by lead_in)
-    # Single lane change
-    lc_start = 10.0 + lead_in
-    lc_end = 25.0 + lead_in
-    
-    # Double lane change zones
-    dlc_z1_start, dlc_z1_end = 8.0 + lead_in, 18.0 + lead_in
-    dlc_z2_start, dlc_z2_end = 28.0 + lead_in, 38.0 + lead_in
-    
-    for i in range(n_markers):
-        x = i * marker_spacing
-        
-        if path_type == 'lane_change':
-            if x < lc_start:
-                y = 0.0
-                zone = 'start'
-            elif x > lc_end:
-                y = lane_offset
-                zone = 'end'
-            else:
-                blend = (x - lc_start) / (lc_end - lc_start)
-                blend = blend * blend * (3 - 2 * blend)
-                y = blend * lane_offset
-                zone = 'transition'
-                
-        elif path_type == 'double_lane_change':
-            if x < dlc_z1_start:
-                y = 0.0
-                zone = 'start'
-            elif x < dlc_z1_end:
-                blend = (x - dlc_z1_start) / (dlc_z1_end - dlc_z1_start)
-                blend = blend * blend * (3 - 2 * blend)
-                y = blend * lane_offset
-                zone = 'transition1'
-            elif x < dlc_z2_start:
-                y = lane_offset
-                zone = 'middle'
-            elif x < dlc_z2_end:
-                blend = (x - dlc_z2_start) / (dlc_z2_end - dlc_z2_start)
-                blend = blend * blend * (3 - 2 * blend)
-                y = lane_offset * (1 - blend)
-                zone = 'transition2'
-            else:
-                y = 0.0
-                zone = 'end'
-                
-        elif path_type == 'sinusoidal':
-            # Use parameters passed to function (with lead-in offset)
-            if x < lead_in:
-                y = 0.0
-            else:
-                y = sine_amplitude * np.sin(2 * np.pi * (x - lead_in) / sine_wavelength)
-            zone = 'sine'
-        else:
-            y = 0.0
-            zone = 'default'
-        
-        # Create marker
+
+    paths_dir = _P(__file__).resolve().parent.parent / "paths"
+    csv_path = paths_dir / f"{path_type}.csv"
+    if not csv_path.exists():
+        print(f"  WARNING: path CSV not found: {csv_path}, skipping markers")
+        return
+
+    data = np.loadtxt(str(csv_path), delimiter=',', skiprows=1)
+    if data.shape[1] == 2:
+        x_all, y_all = data[:, 0], data[:, 1]
+    else:
+        x_all, y_all = data[:, 1], data[:, 2]
+
+    # Optionally prepend lead-in straight section
+    if lead_in > 0:
+        ds = 0.25
+        n_lead = max(1, int(lead_in / ds))
+        x_lead = np.linspace(0, lead_in, n_lead, endpoint=False)
+        y_lead = np.zeros(n_lead)
+        x_all = np.concatenate([x_lead, x_all + lead_in])
+        y_all = np.concatenate([y_lead, y_all])
+
+    # Compute cumulative arc length
+    dx = np.diff(x_all)
+    dy = np.diff(y_all)
+    ds_arr = np.sqrt(dx ** 2 + dy ** 2)
+    s_cum = np.concatenate([[0.0], np.cumsum(ds_arr)])
+    s_total = s_cum[-1]
+
+    n_markers = int(s_total / marker_spacing) + 1
+    print(f"  Adding {n_markers} trajectory markers for {path_type} ({s_total:.0f}m arc)...")
+
+    # Subsample at regular arc-length intervals
+    s_targets = np.linspace(0, s_total, n_markers)
+
+    for i, s_t in enumerate(s_targets):
+        idx = int(np.searchsorted(s_cum, s_t, side='right')) - 1
+        idx = max(0, min(idx, len(x_all) - 1))
+        x = float(x_all[idx])
+        y = float(y_all[idx])
+
         marker = chrono.ChBodyEasySphere(marker_radius, 1000, True, False)
         marker.SetPos(chrono.ChVector3d(x, y, marker_height))
         marker.SetFixed(True)
-        
-        # Color by zone
-        if zone == 'start':
-            color = chrono.ChColor(0.2, 0.8, 0.2)  # Green
-        elif zone == 'end':
-            color = chrono.ChColor(0.2, 0.2, 0.8)  # Blue
-        elif zone in ['transition', 'transition1']:
-            color = chrono.ChColor(0.9, 0.9, 0.2)  # Yellow
-        elif zone == 'middle':
-            color = chrono.ChColor(0.8, 0.4, 0.1)  # Orange
-        elif zone == 'transition2':
-            color = chrono.ChColor(0.9, 0.5, 0.9)  # Pink
-        elif zone == 'sine':
-            # Rainbow based on sine phase (using actual amplitude)
-            phase = (y / sine_amplitude + 1) / 2  # 0 to 1
-            color = chrono.ChColor(0.8 * phase, 0.3, 0.8 * (1-phase))
-        else:
-            t = i / max(n_markers - 1, 1)
-            color = chrono.ChColor(0.2 + 0.6 * t, 0.8 - 0.4 * t, 0.2)
-        
+
+        # Gradient color: green → yellow → blue along path progress
+        t = i / max(n_markers - 1, 1)
+        color = chrono.ChColor(0.2 + 0.7 * t, 0.8 - 0.5 * t, 0.2 + 0.6 * t)
         marker.GetVisualShape(0).SetColor(color)
         system.Add(marker)

@@ -16,7 +16,7 @@ Output CSV columns:
 
 Usage:
   python collect_temporal_data.py [num_scenarios] [output.csv] [options]
-  python collect_temporal_data.py --visualize          # 1 scenario with Irrlicht
+  python collect_temporal_data.py 5 data.csv -s -v     # visualize each scenario (single worker)
   python collect_temporal_data.py 3000 data.csv -t 6   # 3000 scenarios, 6 workers
   python collect_temporal_data.py -c                    # continuous mode
 """
@@ -276,10 +276,14 @@ def collect_one_scenario(
             if t >= t_next_record and t <= T_END:
                 force = rig.ReportTireForce()
                 fv = force.force
+                # ChTireTestRig wraps the slip angle function with DelayedFun,
+                # which evaluates f(t - T_DELAY) instead of f(t). Record the
+                # actual slip angle and rate that the tire sees.
+                t_eff = max(0.0, t - T_DELAY)
                 records.append((
                     t,
-                    params.alpha(t),
-                    params.steering_rate(t),
+                    params.alpha(t_eff),
+                    params.steering_rate(t_eff),
                     fv.z, fv.x, fv.y,
                 ))
                 t_next_record += RECORD_DT
@@ -417,6 +421,7 @@ def collect_with_workers(
 def collect_sequential(
     n_samples: int,
     output_file: str,
+    visualize: bool = False,
 ):
     """Single-threaded collection."""
     global _stop
@@ -428,6 +433,7 @@ def collect_sequential(
 
     print(f"\n=== Temporal SCM Data Collection (Python, sequential) ===")
     print(f"Scenarios: {n_samples}")
+    print(f"Visualization: {'ON' if visualize else 'OFF'}")
     print(f"Recording: every {RECORD_DT*1000:.0f}ms over {T_RECORD_DURATION}s = ~{timesteps_per} timesteps/scenario")
 
     t0 = time.time()
@@ -437,7 +443,7 @@ def collect_sequential(
         for i in range(n_samples):
             if _stop:
                 break
-            recs = collect_one_scenario(samples[i], i)
+            recs = collect_one_scenario(samples[i], i, visualize=visualize)
             text = format_records(i, samples[i], recs)
             if text:
                 f.write(text)
@@ -464,6 +470,7 @@ def collect_sequential(
 def collect_continuous(
     output_file: str,
     num_threads: int,
+    visualize: bool = False,
 ):
     """Continuous collection until Ctrl+C."""
     global _stop
@@ -472,11 +479,12 @@ def collect_continuous(
 
     print(f"\n=== Temporal SCM Data Collection (Python, continuous) ===")
     print(f"Workers: {num_threads}")
+    print(f"Visualization: {'ON' if visualize else 'OFF'}")
     print(f"Press Ctrl+C to stop.")
 
     # Warm-up
     warm = SampleParams()
-    recs = collect_one_scenario(warm, 0)
+    recs = collect_one_scenario(warm, 0, visualize=visualize)
     with open(output_file, "w") as f:
         f.write(CSV_HEADER)
         text = format_records(0, warm, recs)
@@ -538,7 +546,7 @@ def collect_continuous(
                 for i, p in enumerate(batch_samples):
                     if _stop:
                         break
-                    recs = collect_one_scenario(p, completed)
+                    recs = collect_one_scenario(p, completed, visualize=visualize)
                     text = format_records(completed, p, recs)
                     if text:
                         f.write(text)
@@ -597,7 +605,7 @@ def main():
     parser.add_argument("output", nargs="?", default="scm_temporal_data.csv",
                         help="Output CSV file (default: scm_temporal_data.csv)")
     parser.add_argument("-v", "--visualize", action="store_true",
-                        help="Run 1 scenario with Irrlicht visualization")
+                        help="Enable Irrlicht visualization (forces single-worker mode)")
     parser.add_argument("-s", "--sequential", action="store_true",
                         help="Single-threaded (no multiprocessing)")
     parser.add_argument("-t", "--threads", type=int, default=0,
@@ -606,8 +614,6 @@ def main():
                         help="Batch size for submission (0=all at once)")
     parser.add_argument("-c", "--continuous", action="store_true",
                         help="Continuous mode (Ctrl+C to stop)")
-    parser.add_argument("--scenario", type=int, default=0,
-                        help="Scenario index to visualize (default: 0)")
 
     args = parser.parse_args()
 
@@ -618,16 +624,20 @@ def main():
         args.batch_size = max(args.threads * 4, 20)
 
     if args.visualize:
-        run_visualize(args.output, args.scenario)
-        return
+        # Visualization is only safe in single-process, single-worker mode.
+        if not args.sequential or args.threads != 1:
+            print("Visualization enabled: forcing single-worker sequential mode.")
+        args.sequential = True
+        args.threads = 1
+        args.batch_size = 1
 
     if args.continuous or args.num_scenarios is None:
-        collect_continuous(args.output, 1 if args.sequential else args.threads)
+        collect_continuous(args.output, 1 if args.sequential else args.threads, visualize=args.visualize)
         return
 
     n = args.num_scenarios
     if args.sequential:
-        collect_sequential(n, args.output)
+        collect_sequential(n, args.output, visualize=args.visualize)
     else:
         collect_with_workers(n, args.output, args.threads, args.batch_size)
 

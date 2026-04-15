@@ -125,6 +125,10 @@ class StatePredictor:
 
         alpha_f = delta - np.arctan2(v + Lf * omega, u_safe)
         alpha_r = -np.arctan2(v - Lr * omega, u_safe)
+        # Clamp slip angles to prevent extrapolation / unbounded force at low speed
+        _alpha_max = 0.55
+        alpha_f = float(max(-_alpha_max, min(_alpha_max, alpha_f)))
+        alpha_r = float(max(-_alpha_max, min(_alpha_max, alpha_r)))
         Fyf = self.Cf * alpha_f
         Fyr = self.Cr * alpha_r
 
@@ -156,6 +160,14 @@ def quat_to_yaw(e0, e1, e2, e3):
 class ControlIntegrator:
     """Integrates MPC rate commands (delta_dot, Jx) into steering/throttle/brake.
 
+    Uses an asymmetric Disturbance Observer (DOB) to estimate persistent
+    terrain drag (model-plant mismatch) and compensate with extra throttle.
+    Combined with a proportional speed-error term for immediate response.
+
+    Key design: the DOB only adds throttle — it never fights MPC braking.
+    This prevents the death-spiral where stale disturbance estimates cause
+    over-braking before turns.
+
     Works with any MPC object that exposes ``delta_max``, ``ax_min``, and
     ``ax_max`` attributes (the AcadosMPC solver satisfies this).
     """
@@ -170,9 +182,11 @@ class ControlIntegrator:
         self.steering_gain = 1.0 / self.delta_max
         self.throttle_gain = 1.0
         self.brake_gain = 0.6
-        self.speed_err_integral = 0.0
+        self._prev_throttle = 0.0
+        self._prev_braking = 0.0
 
-    def update(self, delta_dot: float, Jx: float, dt: float, u: float):
+    def update(self, delta_dot: float, Jx: float, dt: float, u: float,
+               v_ref_now: float | None = None):
         """Integrate rate commands and produce vehicle inputs.
 
         Returns:
@@ -189,25 +203,22 @@ class ControlIntegrator:
         steering = np.clip(self.steering_angle * self.steering_gain, -1.0, 1.0)
 
         dead_band = 0.1  # m/s²
-        speed_err = self.v_target - u
-        if speed_err > 0:
-            self.speed_err_integral += speed_err * dt
-            self.speed_err_integral = min(self.speed_err_integral, 3.0)
-            speed_boost = 0.15 * speed_err + 0.05 * self.speed_err_integral
-        else:
-            self.speed_err_integral = max(self.speed_err_integral - 0.5 * dt, 0.0)
-            speed_boost = 0.0
-
         if self.acceleration > dead_band:
-            base = self.acceleration / self.ax_max * self.throttle_gain
-            throttle = min(base + speed_boost, 1.0)
+            throttle = min(self.acceleration / self.ax_max * self.throttle_gain, 1.0)
             braking = 0.0
         elif self.acceleration < -dead_band:
             throttle = 0.0
             braking = min(-self.acceleration / abs(self.ax_min) * self.brake_gain, 1.0)
         else:
-            throttle = min(speed_boost, 1.0)
+            throttle = 0.0
             braking = 0.0
+
+        # Low-pass filter: prevent instant throttle↔brake switching.
+        alpha = min(4.0 * dt, 1.0)
+        throttle = alpha * throttle + (1.0 - alpha) * self._prev_throttle
+        braking = alpha * braking + (1.0 - alpha) * self._prev_braking
+        self._prev_throttle = throttle
+        self._prev_braking = braking
 
         return steering, throttle, braking
 
@@ -275,7 +286,7 @@ class TrackingAnalytics:
         self._window: list[float] = []
 
     def record(self, t: float, x: float, y: float, psi: float, u: float):
-        y_ref, psi_ref = self.ref_path.evaluate_at_x(x)
+        y_ref, psi_ref = self.ref_path.evaluate_at_x(x, y)
 
         ct_err = y - y_ref
         hd_err = psi - psi_ref
@@ -612,3 +623,49 @@ class RateTracker:
     @property
     def rear(self):
         return self._rates_rear.copy()
+
+
+class GRUHiddenTracker:
+    """Maintain per-axle GRU hidden states for the GRU observer tire model.
+
+    At each MPC cycle the controller computes per-tire operating conditions
+    and calls ``step()`` which runs the GRU cell forward once (via numpy)
+    and stores the updated hidden state.
+    """
+
+    def __init__(self, nn_model):
+        """
+        Args:
+            nn_model: A GRUObserverMLP instance (from nn_tire_model).
+        """
+        self._nn = nn_model
+        self._h_dim = nn_model.gru_h_dim
+        self._h_front = np.zeros(self._h_dim, dtype=np.float64)
+        self._h_rear = np.zeros(self._h_dim, dtype=np.float64)
+
+    def step(self, kappa_f, alpha_f, u, Fz_f, sr_f,
+             kappa_r, alpha_r, Fz_r, sr_r,
+             terrain_params):
+        """Run one GRU step for front and rear axle.
+
+        Args:
+            kappa_f/r, alpha_f/r, u, Fz_f/r, sr_f/r: operating-point scalars.
+            terrain_params: dict with Kphi, Kc, n, c, phi (degrees), k.
+        """
+        tp = terrain_params
+        phi_rad = np.radians(tp['phi'])
+        t_vec = [tp['Kphi'], tp['Kc'], tp['n'], tp['c'], phi_rad, tp['k']]
+
+        x_front = np.array([kappa_f, alpha_f, u, Fz_f, sr_f] + t_vec, dtype=np.float64)
+        x_rear = np.array([kappa_r, alpha_r, u, Fz_r, sr_r] + t_vec, dtype=np.float64)
+
+        self._h_front = self._nn.gru_step(x_front, self._h_front)
+        self._h_rear = self._nn.gru_step(x_rear, self._h_rear)
+
+    @property
+    def front(self):
+        return self._h_front.copy()
+
+    @property
+    def rear(self):
+        return self._h_rear.copy()

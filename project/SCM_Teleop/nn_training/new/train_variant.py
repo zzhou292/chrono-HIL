@@ -348,13 +348,25 @@ def main():
         rate_aug = False
 
     else:  # rate
-        required = ["scenario_id", "timestep"] + OP_COLS + TERRAIN_COLS + OUT_COLS
-        missing = [c for c in required if c not in df.columns]
-        if missing:
-            raise ValueError(f"Rate CSV missing columns: {missing}")
-        df_r = compute_rates(df, record_dt=args.record_dt)
-        X = df_r[OP_COLS + ["d_slip_ratio", "d_slip_angle", "d_velocity"] + TERRAIN_COLS].values.astype(np.float32)
-        y = df_r[OUT_COLS].values.astype(np.float32)
+        rate_cols = ["d_slip_ratio", "d_slip_angle", "d_velocity"]
+        if all(c in df.columns for c in rate_cols):
+            # Rate columns pre-computed (e.g. from collect_rate_data)
+            required = OP_COLS + rate_cols + TERRAIN_COLS + OUT_COLS
+            missing = [c for c in required if c not in df.columns]
+            if missing:
+                raise ValueError(f"Rate CSV missing columns: {missing}")
+            logger.info("Using pre-computed rate columns from CSV")
+            X = df[OP_COLS + rate_cols + TERRAIN_COLS].values.astype(np.float32)
+            y = df[OUT_COLS].values.astype(np.float32)
+        else:
+            # Compute rates from time-series data
+            required = ["scenario_id", "timestep"] + OP_COLS + TERRAIN_COLS + OUT_COLS
+            missing = [c for c in required if c not in df.columns]
+            if missing:
+                raise ValueError(f"Rate CSV missing columns: {missing}")
+            df_r = compute_rates(df, record_dt=args.record_dt)
+            X = df_r[OP_COLS + rate_cols + TERRAIN_COLS].values.astype(np.float32)
+            y = df_r[OUT_COLS].values.astype(np.float32)
         temporal_K = 1
         rate_aug = True
 

@@ -100,6 +100,9 @@ TERRAIN_CONFIG_TO_NN = {
 #   Lf:    front spindle x (1.6486) - CG x (0.056) = 1.593 m
 #   Lr:    CG x (0.056) - rear spindle x (-1.6534) = 1.709 m
 # =============================================================================
+# ISO 80000-3 / typical automotive convention (m/s²)
+STANDARD_GRAVITY_M_S2 = 9.81
+
 HMMWV_VEHICLE_PARAMS = {
     "M": 2573.0,       # kg
     "Izz": 3570.0,     # kg*m^2

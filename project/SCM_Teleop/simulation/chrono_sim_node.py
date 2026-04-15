@@ -143,18 +143,21 @@ def extract_tire_forces(vehicle, terrain) -> dict:
 
 
 def extract_vehicle_state(vehicle, sim_time: float, terrain=None,
-                          noise: dict = None) -> VehicleState:
+                          noise: dict = None,
+                          imu_acc_sensor=None,
+                          imu_gyro_sensor=None) -> VehicleState:
     """Read Chrono vehicle and pack into a VehicleState message.
 
     Args:
         terrain: If provided, tire forces are included.
         noise: If provided, dict of std-devs to add Gaussian noise to sensors.
+        imu_acc_sensor: ChAccelerometerSensor (if available, replaces GetPosDt2).
+        imu_gyro_sensor: ChGyroscopeSensor (if available, replaces GetAngVelLocal).
     """
     chassis = vehicle.GetChassisBody()
     pos = chassis.GetPos()
     rot = chassis.GetRot()
     vel = chassis.GetPosDt()
-    omega_vec = chassis.GetAngVelLocal()
 
     # Velocity in body frame
     vel_loc = rot.RotateBack(vel)
@@ -163,20 +166,69 @@ def extract_vehicle_state(vehicle, sim_time: float, terrain=None,
     y_cg = pos.y
     u = vel_loc.x
     v = vel_loc.y
-    omega = omega_vec.z
+
+    # --- IMU accelerometer (body-frame acceleration from sensor module) ---
+    # Chrono's ChAccelerometerSensor outputs: a_global - gravity_global (in global frame).
+    # Rotating to body frame gives the same result as rot.RotateBack(GetPosDt2()).
+    _imu_acc_ok = False
+    if imu_acc_sensor is not None:
+        buf = imu_acc_sensor.GetMostRecentAccelBuffer()
+        if buf.HasData():
+            data = buf.GetAccelData()  # numpy (3,): global-frame, gravity subtracted
+            acc_global = chrono.ChVector3d(float(data[0]), float(data[1]), float(data[2]))
+            acc_body = rot.RotateBack(acc_global)
+            ax = acc_body.x
+            ay = acc_body.y
+            _imu_acc_ok = True
+    if not _imu_acc_ok:
+        # Fallback: analytical rigid-body acceleration (ground truth)
+        acc = chassis.GetPosDt2()
+        acc_loc = rot.RotateBack(acc)
+        ax = acc_loc.x
+        ay = acc_loc.y
+
+    # --- IMU gyroscope (body-frame, includes noise from sensor module) ---
+    _imu_gyro_ok = False
+    if imu_gyro_sensor is not None:
+        buf = imu_gyro_sensor.GetMostRecentGyroBuffer()
+        if buf.HasData():
+            data = buf.GetGyroData()  # numpy (3,): [Roll, Pitch, Yaw]
+            omega = float(data[2])    # Z-axis angular velocity
+            _imu_gyro_ok = True
+    if not _imu_gyro_ok:
+        omega_vec = chassis.GetAngVelLocal()
+        omega = omega_vec.z
+
+    # Wheel angular velocities (wheel-encoder equivalent)
+    veh_obj = vehicle.GetVehicle()
+    wheel_omega_fl = veh_obj.GetSpindleOmega(0, veh.LEFT)
+    wheel_omega_fr = veh_obj.GetSpindleOmega(0, veh.RIGHT)
+    wheel_omega_rl = veh_obj.GetSpindleOmega(1, veh.LEFT)
+    wheel_omega_rr = veh_obj.GetSpindleOmega(1, veh.RIGHT)
+
+    # Road-wheel steering angle (steering-angle sensor equivalent, avg L/R)
+    steer_angle = 0.5 * (veh_obj.GetSteeringAngle(0, veh.LEFT)
+                         + veh_obj.GetSteeringAngle(0, veh.RIGHT))
 
     # Compute yaw from quaternion for noise injection
     psi = math.atan2(2 * (rot.e0 * rot.e3 + rot.e1 * rot.e2),
                      1 - 2 * (rot.e2 * rot.e2 + rot.e3 * rot.e3))
 
     # Sensor noise injection
+    # NOTE: ax, ay, omega are already noisy when using Chrono sensor-module IMU.
+    # Manual noise is only added to non-IMU channels (GPS, speed, etc.).
     if noise:
         x_cg  += np.random.normal(0, noise['x'])
         y_cg  += np.random.normal(0, noise['y'])
         psi   += np.random.normal(0, noise['psi'])
         u     += np.random.normal(0, noise['u'])
         v     += np.random.normal(0, noise['v'])
-        omega += np.random.normal(0, noise['omega'])
+        # Only add manual noise to IMU channels if sensor module not active
+        if not _imu_gyro_ok:
+            omega += np.random.normal(0, noise['omega'])
+        if not _imu_acc_ok:
+            ax    += np.random.normal(0, noise.get('ax', 0.05))
+            ay    += np.random.normal(0, noise.get('ay', 0.05))
         # Reconstruct quaternion from noisy yaw (keep pitch/roll from Chrono)
         half = psi / 2.0
         qe0, qe1, qe2, qe3 = math.cos(half), 0.0, 0.0, math.sin(half)
@@ -217,6 +269,13 @@ def extract_vehicle_state(vehicle, sim_time: float, terrain=None,
         u=u,
         v=v,
         omega=omega,
+        ax=ax,
+        ay=ay,
+        wheel_omega_fl=wheel_omega_fl,
+        wheel_omega_fr=wheel_omega_fr,
+        wheel_omega_rl=wheel_omega_rl,
+        wheel_omega_rr=wheel_omega_rr,
+        steering_angle=steer_angle,
         tire_forces=tf,
     )
 
@@ -279,20 +338,10 @@ def run_sim_node(args):
     safety_filter = None
     if args.safety_filter:
         vehicle_params = get_vehicle_params_for_demo()
-        nn_for_cbf = None
-        if load_nn_tire_model is not None:
-            base_path = Path(__file__).parent.parent
-            model_version = args.nn_model if hasattr(args, 'nn_model') else "v6"
-            cbf_model_dir = base_path / "nn_models" / model_version
-            if (cbf_model_dir / "best_terrain_nn.pt").exists():
-                try:
-                    nn_for_cbf = load_nn_tire_model(cbf_model_dir, terrain_params)
-                    print(f"  [SAFETY] NN tire model loaded for CBF: {model_version}")
-                except Exception as e:
-                    print(f"  [SAFETY] NN load failed ({e}), using kinematic fallback")
+        # NN removed from safety filter — use kinematic/linear fallbacks only
         safety_filter = CBFSafetyFilter(
             vehicle_params=vehicle_params,
-            nn_casadi=nn_for_cbf,
+            nn_casadi=None,
             cbf_alpha=args.cbf_alpha,
             obstacle_buffer=args.safety_buffer,
             delay_steps=args.delay_steps,
@@ -315,10 +364,8 @@ def run_sim_node(args):
     if any_vis:
         marker_z = 0.5 if args.bumpiness > 0 else 0.15
         add_trajectory_markers(
-            system, args.path, args.time, v_target=args.speed,
+            system, args.path,
             marker_z=marker_z,
-            sine_amplitude=args.sine_amplitude,
-            sine_wavelength=args.sine_wavelength,
             lead_in=args.lead_in,
         )
 
@@ -403,6 +450,88 @@ def run_sim_node(args):
             print(f"Warning: Sensor visualization failed: {e}")
             sensor_manager = None
             driver_cam = None
+
+    # ------------------------------------------------------------------
+    # IMU Sensors (Chrono Sensor module — accelerometer + gyroscope)
+    # ------------------------------------------------------------------
+    imu_acc_sensor = None
+    imu_gyro_sensor = None
+    if HAS_SENSOR and not args.no_imu:
+        try:
+            # Create a sensor manager if camera mode didn't already
+            if sensor_manager is None:
+                sensor_manager = sens.ChSensorManager(system)
+
+            imu_rate = args.imu_rate  # Hz
+            imu_offset = chrono.ChFramed(
+                chrono.ChVector3d(0, 0, 0),
+                chrono.ChQuaterniond(1, 0, 0, 0),
+            )
+
+            # --- Noise models ---
+            if args.no_noise:
+                acc_noise = sens.ChNoiseNone()
+                gyro_noise = sens.ChNoiseNone()
+            else:
+                # ChNoiseNormalDrift: Gaussian + slow-varying bias drift
+                #   (updateRate, mean, stdev, bias_drift, tau_drift)
+                # Typical automotive-grade MEMS accelerometer:
+                #   noise density ~150 µg/√Hz → stdev ≈ 0.015 m/s² at 100 Hz
+                #   bias stability ~10 µg → drift ~ 1e-4 m/s²
+                acc_noise = sens.ChNoiseNormalDrift(
+                    float(imu_rate),
+                    chrono.ChVector3d(0, 0, 0),                                      # mean
+                    chrono.ChVector3d(args.imu_acc_stdev, args.imu_acc_stdev, args.imu_acc_stdev),  # stdev
+                    args.imu_acc_bias_drift,                                          # bias drift rate
+                    args.imu_acc_tau_drift,                                           # tau drift (s)
+                )
+                # Typical automotive-grade MEMS gyroscope:
+                #   noise density ~0.005 °/s/√Hz → stdev ≈ 0.001 rad/s at 100 Hz
+                #   bias stability ~1 °/hr → drift ~ 5e-6 rad/s
+                gyro_noise = sens.ChNoiseNormalDrift(
+                    float(imu_rate),
+                    chrono.ChVector3d(0, 0, 0),                                          # mean
+                    chrono.ChVector3d(args.imu_gyro_stdev, args.imu_gyro_stdev, args.imu_gyro_stdev),  # stdev
+                    args.imu_gyro_bias_drift,                                            # bias drift rate
+                    args.imu_gyro_tau_drift,                                             # tau drift (s)
+                )
+
+            # --- Accelerometer ---
+            imu_acc_sensor = sens.ChAccelerometerSensor(
+                vehicle.GetChassisBody(),
+                float(imu_rate),
+                imu_offset,
+                acc_noise,
+            )
+            imu_acc_sensor.SetName("IMU_Accelerometer")
+            imu_acc_sensor.SetLag(args.imu_lag)
+            imu_acc_sensor.SetCollectionWindow(0.0)
+            imu_acc_sensor.PushFilter(sens.ChFilterAccelAccess())
+            sensor_manager.AddSensor(imu_acc_sensor)
+
+            # --- Gyroscope ---
+            imu_gyro_sensor = sens.ChGyroscopeSensor(
+                vehicle.GetChassisBody(),
+                float(imu_rate),
+                imu_offset,
+                gyro_noise,
+            )
+            imu_gyro_sensor.SetName("IMU_Gyroscope")
+            imu_gyro_sensor.SetLag(args.imu_lag)
+            imu_gyro_sensor.SetCollectionWindow(0.0)
+            imu_gyro_sensor.PushFilter(sens.ChFilterGyroAccess())
+            sensor_manager.AddSensor(imu_gyro_sensor)
+
+            noise_label = "OFF" if args.no_noise else (
+                f"acc_σ={args.imu_acc_stdev}, gyro_σ={args.imu_gyro_stdev}"
+            )
+            print(f"  IMU sensors: {imu_rate} Hz, lag={args.imu_lag}s, noise={noise_label}")
+        except Exception as e:
+            print(f"Warning: IMU sensor setup failed: {e}")
+            imu_acc_sensor = None
+            imu_gyro_sensor = None
+    elif not HAS_SENSOR and not args.no_imu:
+        print("  WARNING: pychrono.sensor not available — using analytical accel/gyro (ground truth)")
 
     # ------------------------------------------------------------------
     # ZMQ transport (skipped in manual mode)
@@ -493,9 +622,13 @@ def run_sim_node(args):
 
     render_interval = 1.0 / 35.0
     last_render_time = -render_interval
-    # Gate sensor manager to camera FPS to avoid ~0.8ms overhead per physics step
-    sensor_interval = 1.0 / 30.0  # Match sensor camera update rate
-    last_sensor_time = -sensor_interval
+    # Gate sensor manager updates:
+    # - When IMU sensors are active, Update() must be called EVERY physics step
+    #   (the sensor internally handles its own update rate scheduling).
+    # - When only camera is active, gate to camera FPS to avoid overhead.
+    _imu_active = (imu_acc_sensor is not None or imu_gyro_sensor is not None)
+    sensor_interval = 0.0 if _imu_active else (1.0 / 30.0)
+    last_sensor_time = -1.0
     last_report_time = 0.0
     start_wall = wall_time.time()
     cmd_count = 0
@@ -656,6 +789,8 @@ def run_sim_node(args):
                 vehicle, time_chrono,
                 terrain=None if args.no_tire_forces else terrain,
                 noise=noise_cfg,
+                imu_acc_sensor=imu_acc_sensor,
+                imu_gyro_sensor=imu_gyro_sensor,
             )
             state_pub.send(state_msg)
             _t_state_extract += wall_time.time() - _tw
@@ -760,7 +895,7 @@ def main():
 
     # Path (for visual markers only; the controller handles actual path generation)
     p.add_argument("--path", default="lane_change",
-                   choices=["lane_change", "double_lane_change", "sinusoidal"])
+                   choices=["lane_change", "double_lane_change", "right_left", "sinusoidal"])
     p.add_argument("--sine-amplitude", type=float, default=2.0)
     p.add_argument("--sine-wavelength", type=float, default=30.0)
     p.add_argument("--lead-in", type=float, default=0.0,
@@ -774,6 +909,27 @@ def main():
                    help="Vehicle state publish rate (Hz)")
     p.add_argument("--no-noise", action="store_true",
                    help="Disable sensor noise (noise ON by default)")
+
+    # IMU sensor (Chrono sensor module)
+    p.add_argument("--no-imu", action="store_true",
+                   help="Disable Chrono sensor-module IMU (use analytical ground-truth accel/gyro)")
+    p.add_argument("--imu-rate", type=int, default=100,
+                   help="IMU update rate in Hz (default 100)")
+    p.add_argument("--imu-lag", type=float, default=0.0,
+                   help="IMU sensor lag in seconds (default 0)")
+    p.add_argument("--imu-acc-stdev", type=float, default=0.015,
+                   help="Accelerometer noise stdev in m/s² (default 0.015, ~150µg/√Hz MEMS)")
+    p.add_argument("--imu-acc-bias-drift", type=float, default=1e-4,
+                   help="Accelerometer bias drift rate (default 1e-4)")
+    p.add_argument("--imu-acc-tau-drift", type=float, default=100.0,
+                   help="Accelerometer drift time constant in s (default 100)")
+    p.add_argument("--imu-gyro-stdev", type=float, default=0.001,
+                   help="Gyroscope noise stdev in rad/s (default 0.001, ~0.005°/s/√Hz MEMS)")
+    p.add_argument("--imu-gyro-bias-drift", type=float, default=5e-6,
+                   help="Gyroscope bias drift rate (default 5e-6)")
+    p.add_argument("--imu-gyro-tau-drift", type=float, default=500.0,
+                   help="Gyroscope drift time constant in s (default 500)")
+
     p.add_argument("--wait-for-controller", type=float, default=300.0,
                    help="Wait up to this many seconds for the controller's first control message (ready ping after "
                         "ACADOS init) before advancing Chrono. Default 300. Start the sim first, then the "

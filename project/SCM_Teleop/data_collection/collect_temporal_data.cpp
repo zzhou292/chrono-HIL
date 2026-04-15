@@ -65,7 +65,7 @@ using namespace chrono::vehicle;
 // Simulation parameters
 // =============================================================================
 constexpr double STEP_SIZE = 5e-4;
-constexpr double T_DELAY = 0.5;          // Settling time before recording
+constexpr double T_DELAY = 0.5;           // Settling time before recording
 constexpr double T_RECORD_DURATION = 2.0; // Duration of force recording
 constexpr double T_END = T_DELAY + T_RECORD_DURATION;
 constexpr double RECORD_DT = 0.005;      // 5ms recording interval (200 Hz)
@@ -323,12 +323,16 @@ std::vector<TimestepRecord> CollectTemporalSample(
             rig.Advance(STEP_SIZE);
             t += STEP_SIZE;
 
-            if (t >= t_next_record) {
+            if (t >= t_next_record && t <= T_END) {
                 auto force = rig.ReportTireForce();
                 TimestepRecord rec;
                 rec.time          = t;
-                rec.slip_angle    = params.alpha(t);
-                rec.steering_rate = params.steering_rate(t);
+                // ChTireTestRig wraps the slip angle function with DelayedFun,
+                // which evaluates f(t - T_DELAY) instead of f(t). Record the
+                // actual slip angle and rate that the tire sees.
+                double t_eff = std::max(0.0, t - T_DELAY);
+                rec.slip_angle    = params.alpha(t_eff);
+                rec.steering_rate = params.steering_rate(t_eff);
                 rec.Fz = force.force.z();
                 rec.Fx = force.force.x();
                 rec.Fy = force.force.y();
@@ -528,13 +532,14 @@ void CollectWithSubprocessBatching(int n_samples, const std::string& output_file
 // Single-process collection
 // =============================================================================
 void CollectTemporalData(int n_samples, const std::string& output_file,
-                         int num_threads, bool use_parallel)
+                         int num_threads, bool use_parallel, bool visualize)
 {
     bool continuous = (n_samples <= 0);
 
     std::cout << "\n=== Temporal SCM Data Collection ===\n"
               << "Scenarios: " << (continuous ? "CONTINUOUS (Ctrl+C to stop)" : std::to_string(n_samples)) << "\n"
               << "Step size: " << STEP_SIZE << "\n"
+              << "Visualization: " << (visualize ? "ON" : "OFF") << "\n"
               << "Recording: every " << RECORD_DT*1000 << "ms over "
               << T_RECORD_DURATION << "s\n";
 
@@ -579,7 +584,7 @@ void CollectTemporalData(int n_samples, const std::string& output_file,
             warm.bekker_Kphi = 2e6; warm.bekker_Kc = 5000; warm.bekker_n = 0.8;
             warm.mohr_cohesion = 5000; warm.mohr_friction = 20; warm.janosi_shear = 0.015;
             warm.mesh_spacing = 0.10;
-            auto recs = CollectTemporalSample(warm, 0);
+            auto recs = CollectTemporalSample(warm, 0, visualize);
             if (!recs.empty()) { WriteTemporalRecords(csv, csv_mtx, 0, warm, recs); success++; }
             completed++;
         }
@@ -628,7 +633,7 @@ void CollectTemporalData(int n_samples, const std::string& output_file,
             for (int i = 0; i < batch_sz; i++) {
                 if (g_stop) continue;
                 int sid = completed.load() + i;
-                auto recs = CollectTemporalSample(batch[i], sid);
+                auto recs = CollectTemporalSample(batch[i], sid, visualize);
                 if (!recs.empty()) {
                     WriteTemporalRecords(csv, csv_mtx, sid, batch[i], recs);
                     success++;
@@ -654,7 +659,7 @@ void CollectTemporalData(int n_samples, const std::string& output_file,
 
         // Warm-up
         {
-            auto recs = CollectTemporalSample(samples[0], 0);
+            auto recs = CollectTemporalSample(samples[0], 0, visualize);
             if (!recs.empty()) { WriteTemporalRecords(csv, csv_mtx, 0, samples[0], recs); success++; }
             completed++;
         }
@@ -664,7 +669,7 @@ void CollectTemporalData(int n_samples, const std::string& output_file,
 #endif
         for (int i = 1; i < n_samples; i++) {
             if (g_stop) continue;
-            auto recs = CollectTemporalSample(samples[i], i);
+            auto recs = CollectTemporalSample(samples[i], i, visualize);
             if (!recs.empty()) {
                 WriteTemporalRecords(csv, csv_mtx, i, samples[i], recs);
                 success++;
@@ -726,7 +731,7 @@ int main(int argc, char* argv[]) {
                       << "Options:\n"
                       << "  [no number]         Continuous mode (Ctrl+C to stop)\n"
                       << "  N                   Run N scenarios\n"
-                      << "  --visualize, -v     Run 1 scenario with Irrlicht visualization\n"
+                      << "  --visualize, -v     Enable Irrlicht visualization (single-thread only)\n"
                       << "  --sequential, -s    Single-threaded\n"
                       << "  --threads N, -t N   OpenMP threads (0=auto)\n"
                       << "  --batch-size N, -b N  Subprocess batch size (prevents OOM)\n"
@@ -746,31 +751,20 @@ int main(int argc, char* argv[]) {
     SetChronoDataPath(CHRONO_DATA_DIR);
 
     try {
-        // Visualization mode: run a single scenario with Irrlicht rendering
         if (visualize) {
-#ifdef CHRONO_IRRLICHT
-            std::cout << "\n=== Visualization Mode ===\n"
-                      << "Running 1 scenario with Irrlicht rendering...\n";
-            ParameterRanges ranges;
-            auto samples = GenerateLHSSamples(1, ranges);
-            auto recs = CollectTemporalSample(samples[0], 0, true);
-            std::cout << "Recorded " << recs.size() << " timesteps\n";
-            if (!output_file.empty() && !recs.empty()) {
-                std::ofstream csv(output_file);
-                csv << "scenario_id,timestep,slip_ratio,slip_angle,velocity,vertical_load,"
-                    << "steering_rate,bekker_Kphi,bekker_Kc,bekker_n,mohr_cohesion,"
-                    << "mohr_friction,janosi_shear,mesh_spacing,Fz,Fx,Fy\n";
-                std::mutex mtx;
-                WriteTemporalRecords(csv, mtx, 0, samples[0], recs);
-                csv.close();
-                std::cout << "Output: " << output_file << "\n";
-            }
-#else
+#ifndef CHRONO_IRRLICHT
             std::cerr << "Error: built without Irrlicht support. "
                       << "Rebuild with CHRONO_IRRLICHT enabled.\n";
             return 1;
+#else
+            // Visualization is only safe in single-process, single-thread mode.
+            use_parallel = false;
+            num_threads = 1;
+            if (batch_size > 0) {
+                std::cout << "Visualization enabled: ignoring --batch-size and running in single process.\n";
+                batch_size = 0;
+            }
 #endif
-            return 0;
         }
 
 #ifdef __linux__
@@ -779,7 +773,7 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 #endif
-        CollectTemporalData(n_samples, output_file, num_threads, use_parallel);
+        CollectTemporalData(n_samples, output_file, num_threads, use_parallel, visualize);
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;

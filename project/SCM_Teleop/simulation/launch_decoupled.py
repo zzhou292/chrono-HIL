@@ -61,11 +61,11 @@ Examples:
 
     # Shared args
     p.add_argument("--time", type=float, default=15.0, help="Simulation time (s)")
-    p.add_argument("--speed", type=float, default=8.0, help="Target speed (m/s)")
+    p.add_argument("--speed", type=float, default=5.0, help="Target speed (m/s)")
     p.add_argument("--terrain", default="sand", choices=["sand", "clay", "dirt"])
     p.add_argument("--terrain-config", type=str, default=None)
     p.add_argument("--path", default="lane_change",
-                   choices=["lane_change", "double_lane_change", "sinusoidal"])
+                   choices=["lane_change", "double_lane_change", "right_left", "sinusoidal"])
     p.add_argument("--sine-amplitude", type=float, default=2.0)
     p.add_argument("--sine-wavelength", type=float, default=30.0)
     p.add_argument("--lead-in", type=float, default=0.0,
@@ -79,19 +79,39 @@ Examples:
     p.add_argument("--no-noise", action="store_true",
                    help="Disable sensor noise (noise ON by default)")
 
+    # IMU sensor (Chrono sensor module)
+    p.add_argument("--no-imu", action="store_true",
+                   help="Disable Chrono sensor-module IMU (use analytical ground-truth accel/gyro)")
+    p.add_argument("--imu-rate", type=int, default=100,
+                   help="IMU update rate in Hz (default 100)")
+    p.add_argument("--imu-lag", type=float, default=0.0,
+                   help="IMU sensor lag in seconds (default 0)")
+    p.add_argument("--imu-acc-stdev", type=float, default=0.015,
+                   help="Accelerometer noise stdev in m/s² (default 0.015)")
+    p.add_argument("--imu-gyro-stdev", type=float, default=0.001,
+                   help="Gyroscope noise stdev in rad/s (default 0.001)")
+
     # Controller-specific
     p.add_argument("--model", default="nn",
                    choices=["nn", "pacejka", "tmeasy", "linear"],
                    help="MPC tire model: nn, pacejka (Magic Formula), tmeasy, or linear")
-    p.add_argument("--nn-model", default="v6")
-    p.add_argument("--kappa", default="zero", choices=["zero", "approx"])
+    p.add_argument("--nn-model", default="paper_v1_mlp_16_4")
+    p.add_argument("--kappa", default="measured", choices=["zero", "approx", "measured"])
     p.add_argument("--no-lat-transfer", action="store_true")
     p.add_argument("--no-delay-comp", action="store_true")
     p.add_argument("--no-path-reindex", action="store_true")
+    p.add_argument("--no-temporal-staged", action="store_true",
+                   help="Disable stage-varying temporal history")
+    p.add_argument("--symbolic-rates", action="store_true",
+                   help="Compute rate features symbolically in MPC dynamics")
     p.add_argument("--rms-time-start", type=float, default=2.0,
                    help="Start time for RMS calculation (s)")
     p.add_argument("--no-plot", action="store_true",
                    help="Skip generating end-of-run plots")
+    p.add_argument("--live-plot", action="store_true",
+                   help="Open live matplotlib debug window")
+    p.add_argument("--live-plot-every", type=int, default=5,
+                   help="Redraw live debug plot every N steps (default: 5)")
     p.add_argument("--no-csv", action="store_true",
                    help="Skip diagnostic CSV output")
     p.add_argument(
@@ -157,6 +177,10 @@ Examples:
     # Terrain classifier
     p.add_argument("--terrain-classifier", action="store_true",
                    help="Launch terrain classifier node alongside sim + controller")
+    p.add_argument("--use-prediction", action="store_true",
+                   help="When terrain classifier is enabled, apply predicted terrain to MPC parameters")
+    p.add_argument("--prediction-min-confidence", type=float, default=0.0,
+                   help="Controller gate for applying classifier terrain updates to MPC [0,1]")
     p.add_argument("--tc-model", default="terrain_classifier/models/terrain_rf.pkl",
                    help="Path to trained terrain classifier model")
     p.add_argument("--tc-port", type=int, default=5557,
@@ -164,7 +188,51 @@ Examples:
     p.add_argument("--tc-ema-alpha", type=float, default=0.3,
                    help="EMA smoothing for terrain classifier (0=smooth, 1=raw)")
 
+    # Live residual adaptation
+    p.add_argument("--residual-adapt", action="store_true",
+                   help="Enable l4acados-style online residual adaptation in controller")
+    p.add_argument("--residual-checkpoint", default=None,
+                   help="Path to residual_model.pt used when --residual-adapt is enabled")
+    p.add_argument("--residual-no-online", action="store_true",
+                   help="Residual inference only (disable online updates)")
+    p.add_argument("--residual-correction-gain", type=float, default=1.0)
+    p.add_argument("--residual-online-lr", type=float, default=2e-4)
+    p.add_argument("--residual-online-epochs", type=int, default=4)
+    p.add_argument("--residual-online-batch-size", type=int, default=256)
+    p.add_argument("--residual-update-interval", type=int, default=5)
+    p.add_argument("--residual-buffer-size", type=int, default=4096)
+    p.add_argument("--residual-warmup-samples", type=int, default=128)
+    p.add_argument("--residual-clip-u", type=float, default=0.25)
+    p.add_argument("--residual-clip-v", type=float, default=0.25)
+    p.add_argument("--residual-clip-omega", type=float, default=0.08)
+    p.add_argument("--residual-log-json", default=None,
+                   help="Optional JSON output path for residual adapter summary")
+
+    # Force-level residual (corrects Fy across horizon)
+    p.add_argument("--force-residual", action="store_true",
+                   help="Enable force-level residual correction (ΔFy per horizon stage)")
+    p.add_argument("--force-residual-checkpoint", default=None,
+                   help="Path to force_residual_model.pt")
+    p.add_argument("--force-residual-no-online", action="store_true",
+                   help="Disable online bias adaptation for force residual")
+    p.add_argument("--force-residual-clip", type=float, default=500.0,
+                   help="Symmetric clip on ΔFy corrections (N)")
+    p.add_argument("--force-residual-gain", type=float, default=1.0,
+                   help="Output scaling for force residual (<1 = conservative)")
+
+    p.add_argument("--ax-filter-tau", type=float, default=0.5,
+                   help="Complementary filter time constant (s) for IMU ax (0 = no filter)")
+
     args = p.parse_args()
+    if args.use_prediction:
+        args.terrain_classifier = True
+    # Default lead-in for sinusoidal path (cold-start infeasibility without it)
+    if args.path == 'sinusoidal' and args.lead_in == 0.0:
+        args.lead_in = 0.0
+    if args.residual_adapt and not args.residual_checkpoint:
+        p.error("--residual-adapt requires --residual-checkpoint")
+    if args.force_residual and not args.force_residual_checkpoint:
+        p.error("--force-residual requires --force-residual-checkpoint")
 
     script_dir = Path(__file__).parent
 
@@ -220,6 +288,17 @@ Examples:
         if args.teleop_delay > 0:
             sim_cmd.extend(["--teleop-delay", str(args.teleop_delay)])
             sim_cmd.extend(["--stale-cmd-timeout", str(args.stale_cmd_timeout)])
+    # IMU sensor args
+    if args.no_imu:
+        sim_cmd.append("--no-imu")
+    if args.imu_rate != 100:
+        sim_cmd.extend(["--imu-rate", str(args.imu_rate)])
+    if args.imu_lag > 0:
+        sim_cmd.extend(["--imu-lag", str(args.imu_lag)])
+    if args.imu_acc_stdev != 0.015:
+        sim_cmd.extend(["--imu-acc-stdev", str(args.imu_acc_stdev)])
+    if args.imu_gyro_stdev != 0.001:
+        sim_cmd.extend(["--imu-gyro-stdev", str(args.imu_gyro_stdev)])
 
     ctrl_cmd = [
         sys.executable, str(script_dir / "acados_mpc_controller_node.py"),
@@ -245,8 +324,15 @@ Examples:
         ctrl_cmd.append("--no-lat-transfer")
     if args.no_path_reindex:
         ctrl_cmd.append("--no-path-reindex")
+    if args.no_temporal_staged:
+        ctrl_cmd.append("--no-temporal-staged")
+    if args.symbolic_rates:
+        ctrl_cmd.append("--symbolic-rates")
     if args.no_plot:
         ctrl_cmd.append("--no-plot")
+    if args.live_plot:
+        ctrl_cmd.append("--live-plot")
+        ctrl_cmd.extend(["--live-plot-every", str(args.live_plot_every)])
     if args.no_csv:
         ctrl_cmd.append("--no-csv")
     if args.log_tire_csv:
@@ -255,6 +341,37 @@ Examples:
     if args.terrain_classifier:
         ctrl_cmd.append("--terrain-classifier")
         ctrl_cmd.extend(["--tc-port", str(args.tc_port)])
+    if args.use_prediction:
+        ctrl_cmd.append("--use-prediction")
+    if args.prediction_min_confidence > 0.0:
+        ctrl_cmd.extend(["--prediction-min-confidence", str(args.prediction_min_confidence)])
+    if args.residual_adapt:
+        ctrl_cmd.append("--residual-adapt")
+        ctrl_cmd.extend(["--residual-checkpoint", str(args.residual_checkpoint)])
+        if args.residual_no_online:
+            ctrl_cmd.append("--residual-no-online")
+        ctrl_cmd.extend(["--residual-correction-gain", str(args.residual_correction_gain)])
+        ctrl_cmd.extend(["--residual-online-lr", str(args.residual_online_lr)])
+        ctrl_cmd.extend(["--residual-online-epochs", str(args.residual_online_epochs)])
+        ctrl_cmd.extend(["--residual-online-batch-size", str(args.residual_online_batch_size)])
+        ctrl_cmd.extend(["--residual-update-interval", str(args.residual_update_interval)])
+        ctrl_cmd.extend(["--residual-buffer-size", str(args.residual_buffer_size)])
+        ctrl_cmd.extend(["--residual-warmup-samples", str(args.residual_warmup_samples)])
+        ctrl_cmd.extend(["--residual-clip-u", str(args.residual_clip_u)])
+        ctrl_cmd.extend(["--residual-clip-v", str(args.residual_clip_v)])
+        ctrl_cmd.extend(["--residual-clip-omega", str(args.residual_clip_omega)])
+        if args.residual_log_json:
+            ctrl_cmd.extend(["--residual-log-json", str(args.residual_log_json)])
+
+    if args.force_residual:
+        ctrl_cmd.append("--force-residual")
+        ctrl_cmd.extend(["--force-residual-checkpoint", str(args.force_residual_checkpoint)])
+        if args.force_residual_no_online:
+            ctrl_cmd.append("--force-residual-no-online")
+        ctrl_cmd.extend(["--force-residual-clip", str(args.force_residual_clip)])
+        ctrl_cmd.extend(["--force-residual-gain", str(args.force_residual_gain)])
+
+    ctrl_cmd.extend(["--ax-filter-tau", str(args.ax_filter_tau)])
 
     # ---- Terrain classifier command ----
     tc_cmd = [
@@ -266,14 +383,6 @@ Examples:
         "--ctrl-port", str(args.ctrl_port),
         "--pub-port", str(args.tc_port),
         "--ema-alpha", str(args.tc_ema_alpha),
-    ]
-
-    # ---- WASD driver command ----
-    wasd_cmd = [
-        sys.executable, str(script_dir / "wasd_driver_node.py"),
-        "--sim-host", "localhost",
-        "--sim-port", str(args.sim_port),
-        "--ctrl-port", str(args.ctrl_port),
     ]
 
     # ---- Launch ----

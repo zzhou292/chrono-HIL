@@ -755,6 +755,153 @@ class StaticDenseNet(NNTireModel):
 
 
 # ============================================================================
+# GRU latent-state observer + MLP decoder
+# ============================================================================
+
+class GRUObserverMLP(NNTireModel):
+    """GRU latent-state observer with MLP decoder.
+
+    The GRU processes scaled observations at runtime (PyTorch / numpy) to
+    produce a latent state h ∈ R^{h_dim}.  The MLP decoder is embedded in
+    CasADi and takes [x_scaled(11), h(h_dim)] → [Fx, Fy].
+
+    Inside the MPC horizon h is *frozen* (constant parameter); the GRU is
+    only stepped in the controller at each real-time cycle.
+    """
+
+    model_type = 'gru_observer_mlp'
+    model_format = 'gru_observer'
+
+    # Populated during _build()
+    gru_h_dim: int = 0
+
+    def _build(self):
+        ckpt = self._checkpoint
+        self.gru_h_dim = ckpt['gru_h_dim']
+        self.input_dim = ckpt.get('input_size', 11 + self.gru_h_dim)
+        self._gru_input_dim = ckpt.get('gru_input_size', 11)
+        li = _mlp_layer_indices(self._weights)
+
+        # GRU weights (numpy, for runtime gru_step)
+        self._gru_weights = {
+            k: v.detach().numpy() for k, v in ckpt['gru_state_dict'].items()
+        }
+        self.n_params += sum(v.size for v in self._gru_weights.values())
+
+        h_dim = self.gru_h_dim
+
+        # --- Scalar symbolic function ---
+        alpha = ca.SX.sym('alpha'); Fz = ca.SX.sym('Fz'); u = ca.SX.sym('u')
+        kappa = ca.SX.sym('kappa'); n_t = ca.SX.sym('n_terrain')
+        sr = ca.SX.sym('sr')
+        Kphi = ca.SX.sym('Kphi'); Kc = ca.SX.sym('Kc')
+        c = ca.SX.sym('c'); phi = ca.SX.sym('phi'); k = ca.SX.sym('k')
+        h_vec = ca.SX.sym('h', h_dim)
+
+        x_ops = ca.vertcat(kappa, alpha, u, Fz, sr, Kphi, Kc, n_t, c, phi, k)
+        x_s = (x_ops - self._X_mean.reshape(-1, 1)) / self._X_scale.reshape(-1, 1)
+        dec_in = ca.vertcat(x_s, h_vec)
+        y_s = _mlp_forward_casadi(self._weights, dec_in, li)
+        y_out = y_s * self._y_scale.reshape(-1, 1) + self._y_mean.reshape(-1, 1)
+
+        self.predict_tire_force = ca.Function(
+            'nn_tire_gru',
+            [alpha, Fz, u, kappa, n_t, sr, h_vec, Kphi, Kc, c, phi, k],
+            [y_out[0], y_out[1]],
+            ['alpha', 'Fz', 'u', 'kappa', 'n_terrain', 'sr', 'h',
+             'Kphi', 'Kc', 'c', 'phi', 'k'],
+            ['Fx', 'Fy'])
+
+        # --- Batched function (8 samples) ---
+        B = 8
+        alphas = ca.SX.sym('alphas', B); Fzs = ca.SX.sym('Fzs', B)
+        us = ca.SX.sym('us', B); kappas = ca.SX.sym('kappas', B)
+        n_ts = ca.SX.sym('n_ts', B); srs = ca.SX.sym('srs', B)
+        h_mat = ca.SX.sym('h_mat', h_dim, B)
+        Kphi_b = ca.SX.sym('Kphi'); Kc_b = ca.SX.sym('Kc')
+        c_b = ca.SX.sym('c'); phi_b = ca.SX.sym('phi'); k_b = ca.SX.sym('k')
+
+        rows = [kappas.T, alphas.T, us.T, Fzs.T, srs.T,
+                ca.repmat(Kphi_b, 1, B), ca.repmat(Kc_b, 1, B), n_ts.T,
+                ca.repmat(c_b, 1, B), ca.repmat(phi_b, 1, B), ca.repmat(k_b, 1, B)]
+        X_ops = ca.vertcat(*rows)                         # (11, B)
+        Xm = ca.DM(self._X_mean.reshape(-1, 1))
+        Xs = ca.DM(self._X_scale.reshape(-1, 1))
+        X_s = (X_ops - ca.repmat(Xm, 1, B)) / ca.repmat(Xs, 1, B)
+        Dec_in = ca.vertcat(X_s, h_mat)                   # (11+h_dim, B)
+        Y_s = _mlp_forward_casadi(self._weights, Dec_in, li, ncols=B)
+        ym = ca.DM(self._y_mean.reshape(-1, 1))
+        ys = ca.DM(self._y_scale.reshape(-1, 1))
+        Y = Y_s * ca.repmat(ys, 1, B) + ca.repmat(ym, 1, B)
+
+        self._BATCH = B
+        self.predict_batch_gru = ca.Function(
+            'nn_tire_batch_gru',
+            [alphas, Fzs, us, kappas, n_ts, srs, h_mat,
+             Kphi_b, Kc_b, c_b, phi_b, k_b],
+            [Y[0, :].T, Y[1, :].T],
+            ['alphas', 'Fzs', 'us', 'kappas', 'n_ts', 'srs', 'h_mat',
+             'Kphi', 'Kc', 'c', 'phi', 'k'],
+            ['Fxs', 'Fys'])
+        self.predict_batch = None
+
+    # --- GRU runtime (numpy) -------------------------------------------------
+
+    def gru_step(self, x_obs, h_prev=None):
+        """Run one GRU cell step.  Returns updated hidden state (numpy).
+
+        Args:
+            x_obs: (11,) raw observation
+                   [kappa, alpha, u, Fz, sr, Kphi, Kc, n, c, phi, k]
+            h_prev: (h_dim,) previous hidden state, or None → zeros.
+        Returns:
+            h_new: (h_dim,) updated hidden state.
+        """
+        hd = self.gru_h_dim
+        if h_prev is None:
+            h_prev = np.zeros(hd, dtype=np.float64)
+
+        x = (np.asarray(x_obs, dtype=np.float64) - self._X_mean) / self._X_scale
+
+        W_ih = self._gru_weights['weight_ih_l0']
+        W_hh = self._gru_weights['weight_hh_l0']
+        b_ih = self._gru_weights['bias_ih_l0']
+        b_hh = self._gru_weights['bias_hh_l0']
+
+        gi = W_ih @ x + b_ih           # (3*hd,)
+        gh = W_hh @ h_prev + b_hh      # (3*hd,)
+
+        def _sigmoid(v):
+            return 1.0 / (1.0 + np.exp(-np.clip(v, -20, 20)))
+
+        r = _sigmoid(gi[:hd] + gh[:hd])
+        z = _sigmoid(gi[hd:2*hd] + gh[hd:2*hd])
+        n = np.tanh(gi[2*hd:] + r * gh[2*hd:])
+        return (1.0 - z) * n + z * h_prev
+
+    # --- predict overrides (so kappa-ref estimation works) -------------------
+
+    def predict(self, alpha, Fz, u, kappa=0.0, n_terrain=None, steering_rate=0.0,
+                terrain_params=None, hist=None, rates=None, gru_h=None):
+        if n_terrain is None:
+            n_terrain = self.n_nominal
+        tp = terrain_params if terrain_params is not None else self._terrain_nominals
+        phi_val = np.radians(tp['phi'])
+        h = gru_h if gru_h is not None else np.zeros(self.gru_h_dim)
+        Fx, Fy = self.predict_tire_force(
+            alpha, Fz, u, kappa, n_terrain, steering_rate,
+            h, tp['Kphi'], tp['Kc'], tp['c'], phi_val, tp['k'])
+        return Fx, Fy
+
+    def predict_numeric(self, alpha, Fz, u, kappa=0.0, n_terrain=None,
+                        steering_rate=0.0, terrain_params=None, hist=None,
+                        rates=None, gru_h=None):
+        Fx, Fy = self.predict(alpha, Fz, u, kappa, n_terrain, steering_rate,
+                              terrain_params, hist, rates, gru_h=gru_h)
+        return float(Fx), float(Fy)
+
+
+# ============================================================================
 # Factory / loader
 # ============================================================================
 
@@ -790,7 +937,9 @@ def load_nn_tire_model(model_dir: str | Path, terrain_params: dict) -> NNTireMod
         print(f"⚠ Name suggests temporal K={name_info['temporal_K']} but checkpoint is static.")
 
     # --- dispatch ---
-    if arch == 'densenet':
+    if arch == 'gru_observer':
+        cls = GRUObserverMLP
+    elif arch == 'densenet':
         cls = StaticDenseNet
     elif arch == 'resnet' and temporal_K > 1:
         cls = TemporalResNet

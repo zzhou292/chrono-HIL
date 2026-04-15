@@ -111,67 +111,55 @@ def suggest_feasible_sine_params(target_amplitude=2.0, wheelbase=3.302, delta_ma
     return min_wavelength
 
 
-def make_path_function(path_type='lane_change', lane_offset=3.0, v_target=8.0,
-                        sine_amplitude=2.0, sine_wavelength=30.0,
-                        use_closest_point=True, lead_in=0.0,
-                        csv_dir=None, total_length=None):
+def make_path_function(path_type='lane_change', v_target=8.0,
+                        lead_in=0.0, csv_dir=None, friction_angle_deg=None,
+                        **_kwargs):
     """
-    Create a ReferencePath for the MPC driver.
+    Load a ReferencePath from a CSV waypoint file in ``paths/<path_type>.csv``.
 
-    Generates dense waypoints for the chosen path type, fits an arc-length
-    parameterised cubic spline, and returns a :class:`ReferencePath` whose
-    :meth:`get_reference` method has the same ``(time, z0, N, dt)`` signature
-    used by the controller loop.
+    The CSV must contain ``x,y`` columns (or ``s,x,y,psi`` legacy format).
+    If *lead_in* > 0 a straight section is prepended along +x.
 
     Args:
-        path_type: 'lane_change', 'double_lane_change', or 'sinusoidal'
-        lane_offset: Lateral offset for lane change maneuvers (m)
-        v_target: Target longitudinal velocity (m/s)
-        sine_amplitude: Amplitude for sinusoidal path (m)
-        sine_wavelength: Wavelength for sinusoidal path (m)
-        use_closest_point: (kept for CLI compat; now always True internally)
-        lead_in: Straight lead-in distance (m) added before path geometry
-        csv_dir: If given, save a reference_path_<type>.csv into this dir
-        total_length: Override total path length (m); auto-computed if None
+        path_type: Name of the path (matches ``paths/<name>.csv``).
+        v_target: Target longitudinal velocity (m/s).
+        lead_in: Straight lead-in distance (m) prepended before path geometry.
+        csv_dir: If given, save a copy of the loaded path to this dir.
+        friction_angle_deg: Terrain friction angle (degrees) for speed profiler.
 
     Returns:
-        ReferencePath object.  Use ``ref_path.get_reference`` as the
-        path callable, and ``ref_path.evaluate_at_x`` for analytics.
+        ReferencePath object.
     """
-    from reference_path import ReferencePath, generate_path_waypoints
+    from pathlib import Path as _P
+    from reference_path import ReferencePath
 
-    # Check sinusoidal path feasibility
-    if path_type == 'sinusoidal':
-        is_feasible, req_R, ach_R, margin = check_sinusoidal_feasibility(
-            sine_amplitude, sine_wavelength)
-        if not is_feasible:
-            min_wl = suggest_feasible_sine_params(sine_amplitude)
-            print(f"\n  ⚠ WARNING: Sinusoidal path is INFEASIBLE!")
-            print(f"     Required turning radius: {req_R:.2f} m")
-            print(f"     Vehicle minimum radius:  {ach_R:.2f} m")
-            print(f"     Path is {-margin:.0f}% beyond vehicle limits")
-            print(f"     Suggestions:")
-            print(f"       - Increase wavelength to ≥{min_wl:.1f}m (currently {sine_wavelength}m)")
-            print(f"       - Or reduce amplitude to ≤{sine_amplitude * (req_R/ach_R):.2f}m")
-            print()
-        else:
-            print(f"  Path feasibility: OK (margin: +{margin:.0f}%)")
+    paths_dir = _P(__file__).resolve().parent.parent / "paths"
+    csv_path = paths_dir / f"{path_type}.csv"
+    if not csv_path.exists():
+        raise FileNotFoundError(
+            f"Path CSV not found: {csv_path}\n"
+            f"  Available: {[p.stem for p in paths_dir.glob('*.csv')]}")
 
+    ref_path = ReferencePath.from_csv(str(csv_path), v_target,
+                                       friction_angle_deg=friction_angle_deg)
+
+    # Optionally prepend a straight lead-in section
     if lead_in > 0:
+        ds = 0.25
+        n_lead = max(1, int(lead_in / ds))
+        x_lead = np.linspace(0, lead_in, n_lead, endpoint=False)
+        y_lead = np.zeros(n_lead)
+        x_shifted = ref_path.x_pts + lead_in
+        y_shifted = ref_path.y_pts
+        x_all = np.concatenate([x_lead, x_shifted])
+        y_all = np.concatenate([y_lead, y_shifted])
+        ref_path = ReferencePath(x_all, y_all, v_target,
+                                  friction_angle_deg=friction_angle_deg)
         print(f"  Lead-in: {lead_in:.0f}m straight before path starts")
 
-    # Generate dense waypoints
-    x_pts, y_pts = generate_path_waypoints(
-        path_type, lead_in=lead_in, lane_offset=lane_offset,
-        sine_amplitude=sine_amplitude, sine_wavelength=sine_wavelength,
-        total_length=total_length,
-    )
-
-    # Build spline-based reference path
-    ref_path = ReferencePath(x_pts, y_pts, v_target)
     print(f"  Reference path: {ref_path}")
 
-    # Optionally save CSV
+    # Optionally save a copy
     if csv_dir is not None:
         import os
         os.makedirs(csv_dir, exist_ok=True)

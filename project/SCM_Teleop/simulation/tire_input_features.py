@@ -19,9 +19,9 @@ from typing import Dict, List, Literal, Tuple
 
 import numpy as np
 
-from param_consistency import HMMWV_VEHICLE_PARAMS
+from param_consistency import HMMWV_VEHICLE_PARAMS, HMMWV_TIRE_RADIUS_M
 
-KappaMode = Literal["zero", "approx"]
+KappaMode = Literal["zero", "approx", "measured"]
 
 
 @dataclass(frozen=True)
@@ -59,6 +59,29 @@ class BicycleOperatingPoint:
     steering_rate_cmd: float  # δ̇ used as NN steering_rate feature (rad/s)
 
 
+def kappa_from_wheel_speed(
+    wheel_omega_fl: float,
+    wheel_omega_fr: float,
+    wheel_omega_rl: float,
+    wheel_omega_rr: float,
+    u_body: float,
+    tire_radius: float = HMMWV_TIRE_RADIUS_M,
+) -> float:
+    """Measured longitudinal slip ratio from wheel speed sensors.
+
+    κ = (R·ω_avg − |u|) / max(|u|, |R·ω_avg|)
+    """
+    omega_avg = (wheel_omega_fl + wheel_omega_fr
+                 + wheel_omega_rl + wheel_omega_rr) / 4.0
+    Vw = tire_radius * abs(omega_avg)
+    u_abs = abs(u_body)
+    if max(u_abs, Vw) < 0.5:
+        return 0.0
+    denom = max(u_abs, Vw)
+    kappa = float((Vw - u_abs) / denom)
+    return float(np.clip(kappa, -0.8, 0.8))
+
+
 def compute_bicycle_operating_point(
     steering_angle_rad: float,
     u_body: float,
@@ -68,6 +91,8 @@ def compute_bicycle_operating_point(
     *,
     geom: VehicleGeometry,
     kappa_mode: KappaMode = "zero",
+    terrain_mu: float = 0.4,
+    measured_kappa: float = 0.0,
     g: float = 9.81,
 ) -> Tuple[float, float, float, float, float, float]:
     """
@@ -75,17 +100,29 @@ def compute_bicycle_operating_point(
 
     Matches acados_mpc_controller_node pre-solve convention (no delay-comp shift here;
     pass already-compensated state if you want exact parity with z0 after predictor).
+
+    terrain_mu: effective friction coefficient for kappa approximation.
+                Recommended: tan(phi) where phi is the terrain friction angle.
+    measured_kappa: pre-computed kappa from wheel speed sensors (used when
+                    kappa_mode='measured').
     """
     u_safe = float(max(abs(u_body), 0.5))
     alpha_f = float(
         steering_angle_rad - math.atan2(v_body + geom.Lf * omega, u_safe)
     )
     alpha_r = float(-math.atan2(v_body - geom.Lr * omega, u_safe))
+    # Clamp slip angles to training-data range to prevent NN extrapolation.
+    _alpha_max = 0.55
+    alpha_f = float(max(-_alpha_max, min(_alpha_max, alpha_f)))
+    alpha_r = float(max(-_alpha_max, min(_alpha_max, alpha_r)))
     L = geom.Lf + geom.Lr
     Fz_f = float((geom.M * g * geom.Lr - geom.M * ax_body * geom.h_cg) / L / 2.0)
     Fz_r = float((geom.M * g * geom.Lf + geom.M * ax_body * geom.h_cg) / L / 2.0)
-    if kappa_mode == "approx":
-        kappa = float(np.clip(ax_body / (0.4 * 9.81), -0.3, 0.3))
+    if kappa_mode == "measured":
+        kappa = float(np.clip(measured_kappa, -0.8, 0.8))
+    elif kappa_mode == "approx":
+        mu_eff = max(terrain_mu, 0.1)
+        kappa = float(np.clip(ax_body / (mu_eff * 9.81), -0.8, 0.8))
     else:
         kappa = 0.0
     return kappa, alpha_f, alpha_r, u_safe, Fz_f, Fz_r
