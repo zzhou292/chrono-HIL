@@ -132,7 +132,7 @@ def demonstrate_terrain_adaptation(model, scaler_X, scaler_y):
     camber = 0
     velocity = 1.0  # m/s
     
-    # Different terrain types (from Table II in Dallas et al.)
+    # Different terrain types (from Table II in the reference paper)
     terrains = {
         'Dry Sand': {
             'bekker_Kphi': 1.5e6, 'bekker_Kc': 0, 'bekker_n': 1.1,

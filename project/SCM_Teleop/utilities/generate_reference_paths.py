@@ -9,7 +9,7 @@ sys.path.insert(0, str(_SIM_DIR))
 
 from path_utils import make_path_function
 
-path_types = ["lane_change", "double_lane_change", "sinusoidal"]
+path_types = ["lane_change", "double_lane_change", "right_left", "sinusoidal"]
 v_target = 1.0  # Neutral speed, geometry only
 sine_amplitude = 2.0
 sine_wavelength = 30.0

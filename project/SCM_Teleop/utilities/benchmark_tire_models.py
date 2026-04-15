@@ -36,10 +36,14 @@ _SIM_DIR = _PROJECT_ROOT / "simulation"
 PATH_CONFIGS = [
     ('lane_change', 'lane_change', 2.0, 30.0),
     ('double_lane_change', 'double_lane_change', 2.0, 30.0),
+    ('right_left', 'right_left', 2.0, 30.0),
     ('sine_gentle', 'sinusoidal', 1.5, 40.0),    # R=27m, very easy
     ('sine_medium', 'sinusoidal', 2.0, 30.0),    # R=11m, moderate
     ('sine_tight', 'sinusoidal', 2.0, 24.0),     # R=7.2m, challenging but feasible (was 2.5/20 = infeasible!)
 ]
+
+# Default target speeds (m/s) for the full terrain × path grid
+DEFAULT_BENCHMARK_SPEEDS_MPS = (5.0, 8.0)
 
 # Base terrain types (excludes soft/hard aliases)
 TERRAIN_TYPES = ['sand', 'clay', 'dirt']
@@ -181,7 +185,7 @@ def run_single_simulation(args_tuple):
     Launches a sim + controller subprocess pair with unique ZMQ ports.
 
     Returns:
-        (terrain, path_name, model, run_idx, rms_error or None)
+        (terrain, path_name, v_target, model, run_idx, rms_error or None)
     """
     (model, terrain, path_name, path_type, sine_amp, sine_wl,
      sim_time, v_target, run_idx, no_noise, no_path_reindex,
@@ -194,22 +198,24 @@ def run_single_simulation(args_tuple):
             sim_time, v_target, no_noise, no_path_reindex,
             rms_time_start, sim_port, ctrl_port
         )
-        return (terrain, path_name, model, run_idx, rms)
+        return (terrain, path_name, v_target, model, run_idx, rms)
     except Exception:
-        return (terrain, path_name, model, run_idx, None)
+        return (terrain, path_name, v_target, model, run_idx, None)
     finally:
         _port_queue.put((sim_port, ctrl_port))
 
 
-def run_benchmark_parallel(n_runs=20, sim_time=30.0, v_target=5.0, n_workers=None,
+def run_benchmark_parallel(n_runs=20, sim_time=30.0, v_targets=None, n_workers=None,
                            no_noise=False, no_path_reindex=False,
                            rms_time_start=5.0):
     """
     Run benchmark in parallel using multiprocessing.
     Each worker spawns a sim + controller subprocess pair with unique ZMQ ports.
     """
+    if v_targets is None:
+        v_targets = list(DEFAULT_BENCHMARK_SPEEDS_MPS)
     terrains = TERRAIN_TYPES
-    models = ['linear', 'nn']
+    models = ['pacejka', 'nn']
     
     if n_workers is None:
         n_workers = max(1, mp.cpu_count() - 1)
@@ -218,13 +224,14 @@ def run_benchmark_parallel(n_runs=20, sim_time=30.0, v_target=5.0, n_workers=Non
     jobs = []
     for terrain in terrains:
         for path_name, path_type, sine_amp, sine_wl in PATH_CONFIGS:
-            for model in models:
-                for run_idx in range(n_runs):
-                    jobs.append((
-                        model, terrain, path_name, path_type, sine_amp, sine_wl,
-                        sim_time, v_target, run_idx, no_noise, no_path_reindex,
-                        rms_time_start
-                    ))
+            for v_target in v_targets:
+                for model in models:
+                    for run_idx in range(n_runs):
+                        jobs.append((
+                            model, terrain, path_name, path_type, sine_amp, sine_wl,
+                            sim_time, v_target, run_idx, no_noise, no_path_reindex,
+                            rms_time_start
+                        ))
     
     total_jobs = len(jobs)
     
@@ -236,9 +243,9 @@ def run_benchmark_parallel(n_runs=20, sim_time=30.0, v_target=5.0, n_workers=Non
     print(f"{'='*70}")
     print(f"  Terrains: {', '.join(terrains)}")
     print(f"  Paths: {', '.join([p[0] for p in PATH_CONFIGS])}")
-    print(f"  Models: Pacejka (linear), NN")
+    print(f"  Models: Pacejka, NN")
     print(f"  Runs per combination: {n_runs}")
-    print(f"  Speed: {v_target} m/s, Time: {sim_time}s")
+    print(f"  Speeds: {v_targets} m/s, Time: {sim_time}s")
     print(f"  RMS window: {rms_window_str}")
     print(f"  Measurement noise: {noise_str}")
     print(f"  Path re-indexing: {reindex_str}")
@@ -253,7 +260,8 @@ def run_benchmark_parallel(n_runs=20, sim_time=30.0, v_target=5.0, n_workers=Non
     results = {}
     for terrain in terrains:
         for path_name, _, _, _ in PATH_CONFIGS:
-            results[(terrain, path_name)] = {'linear': [], 'nn': []}
+            for v_target in v_targets:
+                results[(terrain, path_name, v_target)] = {'pacejka': [], 'nn': []}
     
     # Create port queue with unique port pairs per worker
     port_queue = mp.Queue()
@@ -269,10 +277,10 @@ def run_benchmark_parallel(n_runs=20, sim_time=30.0, v_target=5.0, n_workers=Non
     with mp.Pool(processes=n_workers, initializer=_init_worker,
                  initargs=(port_queue,)) as pool:
         for result in pool.imap_unordered(run_single_simulation, jobs):
-            terrain, path_name, model, run_idx, rms = result
+            terrain, path_name, v_target, model, run_idx, rms = result
             
             if rms is not None:
-                results[(terrain, path_name)][model].append(rms)
+                results[(terrain, path_name, v_target)][model].append(rms)
             
             completed += 1
             pct = int(100 * completed / total_jobs)
@@ -289,21 +297,24 @@ def run_benchmark_parallel(n_runs=20, sim_time=30.0, v_target=5.0, n_workers=Non
     return results
 
 
-def run_benchmark_sequential(n_runs=20, sim_time=30.0, v_target=5.0, visualize=False,
+def run_benchmark_sequential(n_runs=20, sim_time=30.0, v_targets=None, visualize=False,
                               no_noise=False, no_path_reindex=False,
                               rms_time_start=5.0):
     """
     Run benchmark sequentially using subprocess pairs.
     """
+    if v_targets is None:
+        v_targets = list(DEFAULT_BENCHMARK_SPEEDS_MPS)
     terrains = TERRAIN_TYPES
-    models = ['linear', 'nn']
+    models = ['pacejka', 'nn']
     
     results = {}
     for terrain in terrains:
         for path_name, _, _, _ in PATH_CONFIGS:
-            results[(terrain, path_name)] = {m: [] for m in models}
+            for v_target in v_targets:
+                results[(terrain, path_name, v_target)] = {'pacejka': [], 'nn': []}
     
-    total_runs = len(terrains) * len(PATH_CONFIGS) * len(models) * n_runs
+    total_runs = len(terrains) * len(PATH_CONFIGS) * len(v_targets) * len(models) * n_runs
     
     noise_str = "OFF" if no_noise else "ON"
     reindex_str = "OFF" if no_path_reindex else "ON"
@@ -314,9 +325,9 @@ def run_benchmark_sequential(n_runs=20, sim_time=30.0, v_target=5.0, visualize=F
     print(f"{'='*70}")
     print(f"  Terrains: {', '.join(terrains)}")
     print(f"  Paths: {', '.join([p[0] for p in PATH_CONFIGS])}")
-    print(f"  Models: Pacejka (linear), NN")
+    print(f"  Models: Pacejka, NN")
     print(f"  Runs per combination: {n_runs}")
-    print(f"  Speed: {v_target} m/s, Time: {sim_time}s")
+    print(f"  Speeds: {v_targets} m/s, Time: {sim_time}s")
     print(f"  RMS window: {rms_window_str}")
     print(f"  Measurement noise: {noise_str}")
     print(f"  Path re-indexing: {reindex_str}")
@@ -333,34 +344,35 @@ def run_benchmark_sequential(n_runs=20, sim_time=30.0, v_target=5.0, visualize=F
         print(f"{'='*60}")
         
         for path_name, path_type, sine_amp, sine_wl in PATH_CONFIGS:
-            print(f"\n  [PATH: {path_name}]")
-            
-            for model in models:
-                model_name = 'Pacejka' if model == 'linear' else 'NN'
-                print(f"    {model_name}: ", end='', flush=True)
+            for v_target in v_targets:
+                print(f"\n  [PATH: {path_name}  v={v_target:g} m/s]")
                 
-                run_errors = []
-                for i in range(n_runs):
-                    rms = _run_subprocess_pair(
-                        model, terrain, path_type, sine_amp, sine_wl,
-                        sim_time, v_target, no_noise, no_path_reindex,
-                        rms_time_start, sim_port, ctrl_port,
-                        visualize=visualize
-                    )
-                    if rms is not None:
-                        run_errors.append(rms)
-                        print(".", end='', flush=True)
+                for model in models:
+                    model_name = 'Pacejka' if model == 'pacejka' else 'NN'
+                    print(f"    {model_name}: ", end='', flush=True)
+                    
+                    run_errors = []
+                    for i in range(n_runs):
+                        rms = _run_subprocess_pair(
+                            model, terrain, path_type, sine_amp, sine_wl,
+                            sim_time, v_target, no_noise, no_path_reindex,
+                            rms_time_start, sim_port, ctrl_port,
+                            visualize=visualize
+                        )
+                        if rms is not None:
+                            run_errors.append(rms)
+                            print(".", end='', flush=True)
+                        else:
+                            print("X", end='', flush=True)
+                    
+                    results[(terrain, path_name, v_target)][model] = run_errors
+                    
+                    if run_errors:
+                        mean_rms = np.mean(run_errors)
+                        std_rms = np.std(run_errors)
+                        print(f" {mean_rms:.4f} ± {std_rms:.4f} m")
                     else:
-                        print("X", end='', flush=True)
-                
-                results[(terrain, path_name)][model] = run_errors
-                
-                if run_errors:
-                    mean_rms = np.mean(run_errors)
-                    std_rms = np.std(run_errors)
-                    print(f" {mean_rms:.4f} ± {std_rms:.4f} m")
-                else:
-                    print(" FAILED")
+                        print(" FAILED")
     
     elapsed = time.time() - t_start
     print(f"\n[Benchmark completed in {elapsed/60:.1f} minutes]")
@@ -395,7 +407,7 @@ def compute_improvement(stats):
     improvements = {}
     
     for key, models in stats.items():
-        pacejka = models.get('linear')
+        pacejka = models.get('pacejka')
         nn = models.get('nn')
         
         if pacejka and nn:
@@ -413,67 +425,84 @@ def compute_improvement(stats):
     return improvements
 
 
+def _speeds_from_keys(stats_or_improvements: dict) -> list[float]:
+    sp = {k[2] for k in stats_or_improvements
+          if isinstance(k, tuple) and len(k) == 3}
+    return sorted(sp)
+
+
 def print_summary_table(stats, improvements):
     """Print formatted summary table."""
-    print(f"\n{'='*100}")
+    print(f"\n{'='*110}")
     print("SUMMARY TABLE: RMS Tracking Error (meters)")
-    print(f"{'='*100}")
-    print(f"{'Terrain':<10} | {'Path':<18} | {'Pacejka (mean±std)':<20} | {'NN (mean±std)':<20} | {'Improvement':<12}")
-    print(f"{'-'*100}")
+    print(f"{'='*110}")
+    print(f"{'Terrain':<10} | {'v':>4} | {'Path':<18} | {'Pacejka (mean±std)':<20} | "
+          f"{'NN (mean±std)':<20} | {'Improvement':<12}")
+    print(f"{'-'*110}")
     
-    # Group by terrain for readability
     terrains = TERRAIN_TYPES
     path_names = [p[0] for p in PATH_CONFIGS]
+    speeds = _speeds_from_keys(stats) or list(DEFAULT_BENCHMARK_SPEEDS_MPS)
     
     for terrain in terrains:
-        for i, path_name in enumerate(path_names):
-            key = (terrain, path_name)
-            pacejka = stats[key].get('linear')
-            nn = stats[key].get('nn')
-            imp = improvements.get(key)
-            
-            if pacejka:
-                pacejka_str = f"{pacejka['mean']:.4f} ± {pacejka['std']:.4f}"
-            else:
-                pacejka_str = "N/A"
-            
-            if nn:
-                nn_str = f"{nn['mean']:.4f} ± {nn['std']:.4f}"
-            else:
-                nn_str = "N/A"
-            
-            if imp:
-                if imp['improvement_pct'] > 0:
-                    imp_str = f"+{imp['improvement_pct']:.1f}%"
+        row_in_block = 0
+        for path_name in path_names:
+            for v in speeds:
+                key = (terrain, path_name, v)
+                pacejka = stats.get(key, {}).get('pacejka')
+                nn = stats.get(key, {}).get('nn')
+                imp = improvements.get(key)
+                
+                if pacejka:
+                    pacejka_str = f"{pacejka['mean']:.4f} ± {pacejka['std']:.4f}"
                 else:
-                    imp_str = f"{imp['improvement_pct']:.1f}%"
-            else:
-                imp_str = "N/A"
-            
-            # Only show terrain name on first row of group
-            terrain_str = terrain if i == 0 else ""
-            print(f"{terrain_str:<10} | {path_name:<18} | {pacejka_str:<20} | {nn_str:<20} | {imp_str:<12}")
+                    pacejka_str = "N/A"
+                
+                if nn:
+                    nn_str = f"{nn['mean']:.4f} ± {nn['std']:.4f}"
+                else:
+                    nn_str = "N/A"
+                
+                if imp:
+                    if imp['improvement_pct'] > 0:
+                        imp_str = f"+{imp['improvement_pct']:.1f}%"
+                    else:
+                        imp_str = f"{imp['improvement_pct']:.1f}%"
+                else:
+                    imp_str = "N/A"
+                
+                terrain_str = terrain if row_in_block == 0 else ""
+                row_in_block += 1
+                vs = f"{v:g}"
+                print(f"{terrain_str:<10} | {vs:>4} | {path_name:<18} | {pacejka_str:<20} | "
+                      f"{nn_str:<20} | {imp_str:<12}")
         
-        print(f"{'-'*100}")
+        print(f"{'-'*110}")
     
     # Overall summaries
     print(f"\n{'='*70}")
     print("AGGREGATE STATISTICS")
     print(f"{'='*70}")
     
-    # By terrain
     print("\nBy Terrain:")
     for terrain in terrains:
-        terrain_imps = [improvements[(terrain, p[0])]['improvement_pct'] 
-                        for p in PATH_CONFIGS if improvements.get((terrain, p[0]))]
+        terrain_imps = []
+        for p in PATH_CONFIGS:
+            for v in speeds:
+                imp = improvements.get((terrain, p[0], v))
+                if imp:
+                    terrain_imps.append(imp['improvement_pct'])
         if terrain_imps:
             print(f"  {terrain}: {np.mean(terrain_imps):+.1f}% avg improvement")
     
-    # By path
     print("\nBy Path Type:")
     for path_name, _, _, _ in PATH_CONFIGS:
-        path_imps = [improvements[(t, path_name)]['improvement_pct'] 
-                     for t in terrains if improvements.get((t, path_name))]
+        path_imps = []
+        for t in terrains:
+            for v in speeds:
+                imp = improvements.get((t, path_name, v))
+                if imp:
+                    path_imps.append(imp['improvement_pct'])
         if path_imps:
             print(f"  {path_name}: {np.mean(path_imps):+.1f}% avg improvement")
     
@@ -490,10 +519,12 @@ def plot_error_bars(results, stats, improvements, output_path='benchmark_results
     path_names = [p[0] for p in PATH_CONFIGS]
     n_terrains = len(terrains)
     n_paths = len(path_names)
+    speeds = _speeds_from_keys(stats) or list(DEFAULT_BENCHMARK_SPEEDS_MPS)
+    spd_lbl = ",".join(f"{s:g}" for s in speeds)
     
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     
-    # ===== Plot 1: Grouped by terrain (aggregate over paths) =====
+    # ===== Plot 1: Grouped by terrain (aggregate over paths & speeds) =====
     ax1 = axes[0, 0]
     terrain_pacejka_means = []
     terrain_pacejka_stds = []
@@ -501,10 +532,16 @@ def plot_error_bars(results, stats, improvements, output_path='benchmark_results
     terrain_nn_stds = []
     
     for terrain in terrains:
-        p_means = [stats[(terrain, p[0])]['linear']['mean'] 
-                   for p in PATH_CONFIGS if stats.get((terrain, p[0]), {}).get('linear')]
-        n_means = [stats[(terrain, p[0])]['nn']['mean'] 
-                   for p in PATH_CONFIGS if stats.get((terrain, p[0]), {}).get('nn')]
+        p_means = [
+            stats[(terrain, p[0], v)]['pacejka']['mean']
+            for p in PATH_CONFIGS for v in speeds
+            if stats.get((terrain, p[0], v), {}).get('pacejka')
+        ]
+        n_means = [
+            stats[(terrain, p[0], v)]['nn']['mean']
+            for p in PATH_CONFIGS for v in speeds
+            if stats.get((terrain, p[0], v), {}).get('nn')
+        ]
         
         terrain_pacejka_means.append(np.mean(p_means) if p_means else 0)
         terrain_nn_means.append(np.mean(n_means) if n_means else 0)
@@ -521,13 +558,13 @@ def plot_error_bars(results, stats, improvements, output_path='benchmark_results
     
     ax1.set_xlabel('Terrain Type', fontsize=12)
     ax1.set_ylabel('Mean RMS Error (m)', fontsize=12)
-    ax1.set_title('By Terrain (averaged over paths)', fontsize=14)
+    ax1.set_title(f'By Terrain (avg over paths & speeds {spd_lbl} m/s)', fontsize=14)
     ax1.set_xticks(x)
     ax1.set_xticklabels([t.capitalize() for t in terrains])
     ax1.legend()
     ax1.grid(axis='y', alpha=0.3)
     
-    # ===== Plot 2: Grouped by path type (aggregate over terrains) =====
+    # ===== Plot 2: Grouped by path type (aggregate over terrains & speeds) =====
     ax2 = axes[0, 1]
     path_pacejka_means = []
     path_pacejka_stds = []
@@ -535,10 +572,16 @@ def plot_error_bars(results, stats, improvements, output_path='benchmark_results
     path_nn_stds = []
     
     for path_name, _, _, _ in PATH_CONFIGS:
-        p_means = [stats[(t, path_name)]['linear']['mean'] 
-                   for t in terrains if stats.get((t, path_name), {}).get('linear')]
-        n_means = [stats[(t, path_name)]['nn']['mean'] 
-                   for t in terrains if stats.get((t, path_name), {}).get('nn')]
+        p_means = [
+            stats[(t, path_name, v)]['pacejka']['mean']
+            for t in terrains for v in speeds
+            if stats.get((t, path_name, v), {}).get('pacejka')
+        ]
+        n_means = [
+            stats[(t, path_name, v)]['nn']['mean']
+            for t in terrains for v in speeds
+            if stats.get((t, path_name, v), {}).get('nn')
+        ]
         
         path_pacejka_means.append(np.mean(p_means) if p_means else 0)
         path_nn_means.append(np.mean(n_means) if n_means else 0)
@@ -554,7 +597,7 @@ def plot_error_bars(results, stats, improvements, output_path='benchmark_results
     
     ax2.set_xlabel('Path Type', fontsize=12)
     ax2.set_ylabel('Mean RMS Error (m)', fontsize=12)
-    ax2.set_title('By Path (averaged over terrains)', fontsize=14)
+    ax2.set_title(f'By Path (avg over terrains & speeds {spd_lbl} m/s)', fontsize=14)
     ax2.set_xticks(x2)
     ax2.set_xticklabels([p[0].replace('_', '\n') for p in PATH_CONFIGS], fontsize=9)
     ax2.legend()
@@ -564,8 +607,11 @@ def plot_error_bars(results, stats, improvements, output_path='benchmark_results
     ax3 = axes[1, 0]
     terrain_improvements = []
     for terrain in terrains:
-        imps = [improvements[(terrain, p[0])]['improvement_pct'] 
-                for p in PATH_CONFIGS if improvements.get((terrain, p[0]))]
+        imps = [
+            improvements[(terrain, p[0], v)]['improvement_pct']
+            for p in PATH_CONFIGS for v in speeds
+            if improvements.get((terrain, p[0], v))
+        ]
         terrain_improvements.append(np.mean(imps) if imps else 0)
     
     colors = ['#4CAF50' if imp > 0 else '#F44336' for imp in terrain_improvements]
@@ -588,8 +634,11 @@ def plot_error_bars(results, stats, improvements, output_path='benchmark_results
     ax4 = axes[1, 1]
     path_improvements = []
     for path_name, _, _, _ in PATH_CONFIGS:
-        imps = [improvements[(t, path_name)]['improvement_pct'] 
-                for t in terrains if improvements.get((t, path_name))]
+        imps = [
+            improvements[(t, path_name, v)]['improvement_pct']
+            for t in terrains for v in speeds
+            if improvements.get((t, path_name, v))
+        ]
         path_improvements.append(np.mean(imps) if imps else 0)
     
     colors = ['#4CAF50' if imp > 0 else '#F44336' for imp in path_improvements]
@@ -625,13 +674,18 @@ def plot_heatmap(stats, improvements, output_path):
     """Create heatmap of improvement percentages."""
     terrains = TERRAIN_TYPES
     path_names = [p[0] for p in PATH_CONFIGS]
+    speeds = _speeds_from_keys(improvements) or list(DEFAULT_BENCHMARK_SPEEDS_MPS)
     
-    # Build improvement matrix
+    # Build improvement matrix (mean % improvement across target speeds)
     imp_matrix = np.zeros((len(terrains), len(path_names)))
     for i, terrain in enumerate(terrains):
         for j, path_name in enumerate(path_names):
-            imp = improvements.get((terrain, path_name))
-            imp_matrix[i, j] = imp['improvement_pct'] if imp else 0
+            cell = [
+                improvements[(terrain, path_name, v)]['improvement_pct']
+                for v in speeds
+                if improvements.get((terrain, path_name, v))
+            ]
+            imp_matrix[i, j] = float(np.mean(cell)) if cell else 0.0
     
     fig, ax = plt.subplots(figsize=(10, 6))
     
@@ -657,7 +711,12 @@ def plot_heatmap(stats, improvements, output_path):
     
     ax.set_xlabel('Path Type', fontsize=12)
     ax.set_ylabel('Terrain', fontsize=12)
-    ax.set_title('NN Improvement over Pacejka (%)\n(Green = NN better, Red = Pacejka better)', fontsize=14)
+    spd_lbl = ",".join(f"{s:g}" for s in speeds)
+    ax.set_title(
+        f'NN Improvement over Pacejka (%) — avg speeds {spd_lbl} m/s\n'
+        '(Green = NN better, Red = Pacejka better)',
+        fontsize=14,
+    )
     
     plt.colorbar(im, ax=ax, label='Improvement (%)')
     plt.tight_layout()
@@ -668,9 +727,10 @@ def plot_heatmap(stats, improvements, output_path):
 def save_raw_data(results, output_path='benchmark_raw_data.npz'):
     """Save raw benchmark data for later analysis."""
     data = {}
-    for (terrain, path_name), models in results.items():
+    for (terrain, path_name, v_target), models in results.items():
+        vs = int(v_target) if abs(v_target - round(v_target)) < 1e-6 else v_target
         for model, errors in models.items():
-            key = f"{terrain}_{path_name}_{model}"
+            key = f"{terrain}_{path_name}_v{vs}_{model}"
             data[key] = np.array(errors) if errors else np.array([])
     
     np.savez(output_path, **data)
@@ -686,8 +746,16 @@ def main():
                         help='Simulation time per run (s, default: 30)')
     parser.add_argument('--rms-start', type=float, default=5.0,
                         help='Start time for RMS calculation (s, default: 5)')
-    parser.add_argument('--speed', type=float, default=5.0,
-                        help='Target speed (m/s)')
+    parser.add_argument(
+        '--speeds', type=float, nargs='+',
+        default=None,
+        metavar='MPS',
+        help='Target speeds (m/s) for full grid (default: 5 8)',
+    )
+    parser.add_argument(
+        '--speed', type=float, default=None,
+        help='Single target speed (m/s); overrides --speeds',
+    )
     parser.add_argument('--workers', '-j', type=int, default=None,
                         help='Number of parallel workers (default: CPU count - 1)')
     parser.add_argument('--sequential', action='store_true',
@@ -723,12 +791,19 @@ def main():
     # Validate all paths are feasible for the vehicle
     validate_path_configs()
     
+    if args.speed is not None:
+        v_targets = [float(args.speed)]
+    elif args.speeds is not None:
+        v_targets = list(args.speeds)
+    else:
+        v_targets = list(DEFAULT_BENCHMARK_SPEEDS_MPS)
+
     # Run benchmark
     if args.sequential:
         results = run_benchmark_sequential(
             n_runs=n_runs,
             sim_time=sim_time,
-            v_target=args.speed,
+            v_targets=v_targets,
             visualize=args.vis,
             no_noise=args.no_noise,
             no_path_reindex=args.no_reindex,
@@ -738,7 +813,7 @@ def main():
         results = run_benchmark_parallel(
             n_runs=n_runs,
             sim_time=sim_time,
-            v_target=args.speed,
+            v_targets=v_targets,
             n_workers=args.workers,
             no_noise=args.no_noise,
             no_path_reindex=args.no_reindex,

@@ -38,15 +38,25 @@ for name in ["mlp_12_2", "mlp_16_4", "mlp_16_8", "mlp_24_12", "mlp_32_16"]:
     MODEL_TYPE_MAP[name] = "static"
 for name in ["resnet_h8_b2", "resnet_h16_b2", "resnet_h16_b4", "resnet_h32_b2"]:
     MODEL_TYPE_MAP[name] = "static"
-for name in ["rate_mlp_16_8", "rate_mlp_24_12", "rate_resnet_h16_b2", "rate_resnet_h32_b2"]:
+for name in ["rate_mlp_12_2", "rate_mlp_16_4", "rate_mlp_16_8", "rate_mlp_24_12",
+             "rate_mlp_32_16", "rate_resnet_h8_b2", "rate_resnet_h16_b2",
+             "rate_resnet_h16_b4", "rate_resnet_h32_b2"]:
     MODEL_TYPE_MAP[name] = "rate"
-for prefix in ["temp_K3", "temp_K5", "temp_K10"]:
-    for suffix in ["mlp_16_8", "mlp_24_12", "resnet_h16", "resnet_h32"]:
-        MODEL_TYPE_MAP[f"{prefix}_{suffix}"] = "temporal"
 
 # Also add analytical
-for name in ["pacejka", "tmeasy", "linear"]:
+for name in ["pacejka", "tmeasy"]:
     MODEL_TYPE_MAP[name] = "analytical"
+
+# Auto-detect: any label starting with "temp_K" is temporal
+# (kept for backward compat with v1 results)
+def _infer_model_type(label):
+    if label in MODEL_TYPE_MAP:
+        return MODEL_TYPE_MAP[label]
+    if label.startswith("temp_K"):
+        return "temporal"
+    if label.startswith("rate_"):
+        return "rate"
+    return "unknown"
 
 TYPE_COLORS = {
     "static":     "#2196F3",
@@ -64,25 +74,26 @@ TYPE_LABELS = {
 TERRAIN_MARKERS = {"sand": "o", "clay": "s", "dirt": "^"}
 TERRAIN_COLORS = {"sand": "#E8A838", "clay": "#8B4513", "dirt": "#607D3B"}
 
-# Rough param counts for sizing
+# Rough param counts for sizing (static: 11 inputs, rate: 14 inputs, output: 2)
 PARAM_COUNTS = {
+    # Static MLPs
     "mlp_12_2": 176, "mlp_16_4": 270, "mlp_16_8": 414, "mlp_24_12": 744,
-    "mlp_32_16": 1202, "resnet_h8_b2": 382, "resnet_h16_b2": 1086,
+    "mlp_32_16": 1202,
+    # Static ResNets
+    "resnet_h8_b2": 382, "resnet_h16_b2": 1086,
     "resnet_h16_b4": 1918, "resnet_h32_b2": 3678,
-    "rate_mlp_16_8": 462, "rate_mlp_24_12": 816,
-    "rate_resnet_h16_b2": 1182, "rate_resnet_h32_b2": 3870,
-    "temp_K3_mlp_16_8": 726, "temp_K3_mlp_24_12": 1080,
-    "temp_K3_resnet_h16": 1374, "temp_K3_resnet_h32": 4254,
-    "temp_K5_mlp_16_8": 1038, "temp_K5_mlp_24_12": 1392,
-    "temp_K5_resnet_h16": 1662, "temp_K5_resnet_h32": 4542,
-    "temp_K10_mlp_16_8": 1818, "temp_K10_mlp_24_12": 2172,
-    "temp_K10_resnet_h16": 2442, "temp_K10_resnet_h32": 6114,
+    # Rate MLPs (14 inputs instead of 11)
+    "rate_mlp_12_2": 212, "rate_mlp_16_4": 318,
+    "rate_mlp_16_8": 462, "rate_mlp_24_12": 816, "rate_mlp_32_16": 1298,
+    # Rate ResNets (14 inputs)
+    "rate_resnet_h8_b2": 406, "rate_resnet_h16_b2": 1182,
+    "rate_resnet_h16_b4": 2014, "rate_resnet_h32_b2": 3870,
 }
 
 
 def load_data(csv_path):
     df = pd.read_csv(csv_path)
-    df["model_type"] = df["label"].map(MODEL_TYPE_MAP).fillna("unknown")
+    df["model_type"] = df["label"].apply(_infer_model_type)
     df["n_params"] = df["label"].map(PARAM_COUNTS).fillna(0).astype(int)
     # Solver "success" = converged (status 0) + max-iter (status 2).
     # Status 2 still yields a usable solution; only status 3/4 are true failures.
@@ -292,42 +303,97 @@ def plot_static_comparison(df, out_dir):
     return path
 
 
-# ── Plot 5: Solver success by temporal window K ──────────────────────
-def plot_temporal_vs_K(df, out_dir):
-    """Line plot: solver success vs temporal window K."""
-    temporal = df[df["model_type"] == "temporal"].copy()
+# ── Plot 5: Static vs Rate side-by-side comparison ───────────────────
+def plot_static_vs_rate(df, out_dir):
+    """Grouped bar: static vs rate models, same architecture sizes compared."""
+    ok = df[(df["status"] == "ok") & (df["model_type"].isin(["static", "rate"]))].copy()
+    if ok.empty:
+        print("  (skipped static_vs_rate — no data)")
+        return None
 
-    def extract_K(label):
-        for part in label.split("_"):
-            if part.startswith("K") and part[1:].isdigit():
-                return int(part[1:])
-        return 0
-    temporal["K"] = temporal["label"].apply(extract_K)
+    # Build architecture pairs: static label → rate label
+    pairs = [
+        ("mlp_12_2",      "rate_mlp_12_2",      "MLP 12-2"),
+        ("mlp_16_4",      "rate_mlp_16_4",      "MLP 16-4"),
+        ("mlp_16_8",      "rate_mlp_16_8",      "MLP 16-8"),
+        ("mlp_24_12",     "rate_mlp_24_12",     "MLP 24-12"),
+        ("mlp_32_16",     "rate_mlp_32_16",     "MLP 32-16"),
+        ("resnet_h8_b2",  "rate_resnet_h8_b2",  "ResNet h8-b2"),
+        ("resnet_h16_b2", "rate_resnet_h16_b2", "ResNet h16-b2"),
+        ("resnet_h16_b4", "rate_resnet_h16_b4", "ResNet h16-b4"),
+        ("resnet_h32_b2", "rate_resnet_h32_b2", "ResNet h32-b2"),
+    ]
+    # Only keep pairs where both exist in data
+    all_labels = set(ok["label"].unique())
+    pairs = [(s, r, n) for s, r, n in pairs if s in all_labels and r in all_labels]
+    if not pairs:
+        print("  (skipped static_vs_rate — no matching pairs)")
+        return None
 
-    # Also add static as K=0
-    static = df[df["model_type"] == "static"].copy()
-    static["K"] = 0
-    combined = pd.concat([static, temporal], ignore_index=True)
+    arch_names = [n for _, _, n in pairs]
+    static_cte = [ok[ok["label"] == s]["rms_cte_m"].mean() for s, _, _ in pairs]
+    rate_cte = [ok[ok["label"] == r]["rms_cte_m"].mean() for _, r, _ in pairs]
 
-    grouped = combined.groupby("K")["success_pct"].agg(["mean", "std"]).reset_index()
-    grouped = grouped.sort_values("K")
+    fig, ax = plt.subplots(figsize=(10, 5))
+    x = np.arange(len(pairs))
+    w = 0.35
+    ax.bar(x - w/2, static_cte, w, label="Static", color=TYPE_COLORS["static"],
+           edgecolor="black", linewidth=0.3)
+    ax.bar(x + w/2, rate_cte, w, label="Rate-augmented", color=TYPE_COLORS["rate"],
+           edgecolor="black", linewidth=0.3)
 
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.errorbar(grouped["K"], grouped["mean"], yerr=grouped["std"],
-                marker="o", capsize=5, color="#333", linewidth=2, markersize=8)
-    ax.fill_between(grouped["K"],
-                    (grouped["mean"] - grouped["std"]).clip(0),
-                    (grouped["mean"] + grouped["std"]).clip(0, 100),
-                    alpha=0.15, color="#2196F3")
-
-    ax.set_xlabel("Temporal Window K (0 = static)")
-    ax.set_ylabel("Solver Success Rate (%)")
-    ax.set_ylim(-5, 110)
-    ax.set_xticks(sorted(grouped["K"].unique()))
-    ax.axhline(100, color="gray", linestyle="--", linewidth=0.5)
-    ax.set_title("MPC Solver Success vs. Temporal Window Size")
+    ax.set_xticks(x)
+    ax.set_xticklabels(arch_names, rotation=30, ha="right", fontsize=9)
+    ax.set_ylabel("Mean RMS CTE (m)")
+    ax.legend()
+    ax.set_title("Static vs Rate-Augmented NN: Same Architecture Comparison")
     fig.tight_layout()
-    path = out_dir / "solver_success_vs_K.png"
+    path = out_dir / "static_vs_rate_comparison.png"
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    print(f"  {path.name}")
+    return path
+
+
+# ── Plot 5b: Rate model comparison across terrains ────────────────────
+def plot_rate_comparison(df, out_dir):
+    """Grouped bar: RMS CTE for each rate model, grouped by terrain."""
+    rate = df[(df["model_type"] == "rate") & (df["status"] == "ok")].copy()
+    if rate.empty:
+        print("  (skipped rate_comparison — no data)")
+        return None
+    rate = rate[rate["success_pct"] > 80]
+    if rate.empty:
+        print("  (skipped rate_comparison — no runs with >80% solver success)")
+        return None
+
+    pivot = rate.pivot_table(
+        values="rms_cte_m", index="label", columns="terrain", aggfunc="mean"
+    )
+    model_order = sorted(pivot.index, key=lambda x: PARAM_COUNTS.get(x, 9999))
+    pivot = pivot.reindex(model_order)
+    terrain_order = [t for t in ["sand", "clay", "dirt"] if t in pivot.columns]
+    pivot = pivot[terrain_order]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    x = np.arange(len(model_order))
+    width = 0.25
+
+    for i, terrain in enumerate(terrain_order):
+        vals = pivot[terrain].values
+        ax.bar(x + i * width, vals, width,
+               label=terrain.capitalize(),
+               color=TERRAIN_COLORS[terrain],
+               edgecolor="black", linewidth=0.3)
+
+    ax.set_xticks(x + width)
+    ax.set_xticklabels(model_order, rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel("RMS Cross-Track Error (m)")
+    ax.legend()
+    ax.set_title("Rate-Augmented NN Models: Tracking Accuracy by Terrain\n"
+                 "(only runs with >80% solver success)")
+    fig.tight_layout()
+    path = out_dir / "rate_model_comparison.png"
     fig.savefig(path, dpi=200)
     plt.close(fig)
     print(f"  {path.name}")
@@ -371,12 +437,16 @@ def plot_path_breakdown(df, out_dir):
     """Faceted bar: RMS CTE for static models, one subplot per path."""
     static = df[(df["model_type"] == "static") & (df["status"] == "ok")].copy()
     static = static[static["success_pct"] > 80]
-    paths = ["lane_change", "double_lane_change", "sinusoidal"]
+    paths = ["lane_change", "double_lane_change", "right_left", "sinusoidal"]
 
     model_order = sorted(static["label"].unique(),
                          key=lambda x: PARAM_COUNTS.get(x, 9999))
 
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5), sharey=True)
+    n_paths = len(paths)
+    fig_w = 3.6 * n_paths + 2.0
+    fig, axes = plt.subplots(1, n_paths, figsize=(fig_w, 4.5), sharey=True)
+    if n_paths == 1:
+        axes = [axes]
     for ax, pname in zip(axes, paths):
         sub = static[static["path"] == pname]
         pivot = sub.pivot_table("rms_cte_m", "label", "terrain", "mean")
@@ -429,16 +499,19 @@ def main():
     print(f"Output: {out_dir}\n")
 
     print("Generating plots:")
-    plot_solver_success_by_type(df, out_dir)
-    plot_solver_heatmap(df, out_dir)
-    plot_nn_vs_analytical(df, out_dir)
-    plot_cte_vs_solver(df, out_dir)
-    plot_static_comparison(df, out_dir)
-    plot_temporal_vs_K(df, out_dir)
-    plot_solve_time_vs_params(df, out_dir)
-    plot_path_breakdown(df, out_dir)
-
-    print(f"\nDone — 8 figures saved to {out_dir}")
+    plots = [
+        plot_solver_success_by_type(df, out_dir),
+        plot_solver_heatmap(df, out_dir),
+        plot_nn_vs_analytical(df, out_dir),
+        plot_cte_vs_solver(df, out_dir),
+        plot_static_comparison(df, out_dir),
+        plot_static_vs_rate(df, out_dir),
+        plot_rate_comparison(df, out_dir),
+        plot_solve_time_vs_params(df, out_dir),
+        plot_path_breakdown(df, out_dir),
+    ]
+    n = sum(1 for p in plots if p is not None)
+    print(f"\nDone — {n} figures saved to {out_dir}")
 
 
 if __name__ == "__main__":

@@ -3,12 +3,12 @@
 Task 5: Compare actual Chrono tire forces with NN predictions.
 ==============================================================
 Reads tire_force_log.json and state_history_log.json produced by
-dallas_chrono_demo.py's force-instrumented simulation loop, then
+launch_decoupled.py's force-instrumented simulation loop, then
 computes NN predictions at the same states and plots comparisons.
 
 Usage:
     1. Run a simulation:
-       python dallas_chrono_demo.py --controller nn --terrain clay --sim-time 15
+       python launch_decoupled.py --controller nn --terrain clay --sim-time 15
     2. Plot comparison:
        python compare_forces.py --model ../nn_models/v6_sweep_16_4/best_terrain_nn.pt \
                                 --scaler ../nn_models/v6_sweep_16_4/scalers.pkl \
@@ -98,7 +98,7 @@ def main():
 
     if not force_log.exists():
         print(f"ERROR: {force_log} not found. Run a simulation first with force logging enabled.")
-        print(f"  python simulation/dallas_chrono_demo.py --controller nn --terrain {args.terrain} --sim-time 15")
+        print(f"  python simulation/launch_decoupled.py --controller nn --terrain {args.terrain} --sim-time 15")
         sys.exit(1)
 
     # Load data

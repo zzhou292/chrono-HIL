@@ -98,6 +98,8 @@ def reference_path_x_end(
         return 25.0 + lead_in + 40.0
     if path_type == "double_lane_change":
         return 38.0 + lead_in + 40.0
+    if path_type == "right_left":
+        return 48.0 + lead_in + 40.0
     if path_type == "sinusoidal":
         return lead_in + 5.0 * sine_wavelength
     return 200.0
@@ -553,6 +555,17 @@ def main():
         default=None,
         help="Write benchmark JSON here (default: simulation/mpc_benchmark_results.json)",
     )
+    p.add_argument(
+        "--path",
+        default=COMMON["path"],
+        choices=[
+            "lane_change",
+            "double_lane_change",
+            "right_left",
+            "sinusoidal",
+        ],
+        help="Reference path for all runs (default: %(default)s)",
+    )
     args = p.parse_args()
 
     if args.discover:
@@ -575,6 +588,8 @@ def main():
         models = [(k, ALL_MODELS[k]) for k in keys]
 
     n = len(models)
+    bench_common = dict(COMMON)
+    bench_common["path"] = args.path
     jobs = []
     for i, (label, nn_model) in enumerate(models):
         plot_seg = _safe_plot_segment(nn_model)
@@ -588,7 +603,7 @@ def main():
                 "sim_port": 5600 + i * 10,
                 "ctrl_port": 5600 + i * 10 + 1,
                 "plot_parent": str(plot_parent.resolve()),
-                "common": dict(COMMON),
+                "common": dict(bench_common),
             }
         )
 

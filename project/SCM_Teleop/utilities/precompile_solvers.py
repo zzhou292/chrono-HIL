@@ -35,7 +35,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
 
 # ── Models (must match run_paper_benchmarks.py) ──────────────────────
-ANALYTICAL_TYPES = ["pacejka", "tmeasy", "linear"]
+ANALYTICAL_TYPES = ["pacejka", "tmeasy"]
 
 ALL_NN_MODELS = {
     # Static MLP
@@ -72,15 +72,13 @@ ALL_NN_MODELS = {
     "temp_K10_resnet_h32":  "paper_v1_resnet_temporal_K10_h32_b2",
 }
 
-# Solver construction parameters (must match acados_mpc_controller_node.py)
-DT_MPC = 0.1
-N_HORIZON = 30
-
 # Add simulation/ to sys.path for local imports
 _UTIL_DIR = Path(__file__).parent
 _PROJECT_ROOT = _UTIL_DIR.parent
 _SIM_DIR = _PROJECT_ROOT / "simulation"
 sys.path.insert(0, str(_SIM_DIR))
+
+from acados_mpc_solver import DEFAULT_MPC_DT, DEFAULT_MPC_HORIZON_STEPS
 
 
 def build_analytical(tire_model: str) -> dict:
@@ -92,10 +90,10 @@ def build_analytical(tire_model: str) -> dict:
     try:
         mpc = AcadosMPC(
             nn_tire_model=None,
-            dt=DT_MPC,
-            N=N_HORIZON,
+            dt=DEFAULT_MPC_DT,
+            N=DEFAULT_MPC_HORIZON_STEPS,
             lateral_load_transfer=True,
-            kappa_mode="zero",
+            kappa_mode="approx",
             tire_model=tire_model,
             build_dir=build_dir,
         )
@@ -136,10 +134,10 @@ def build_nn(label: str, nn_model_name: str) -> dict:
 
         mpc = AcadosMPC(
             nn_tire_model=nn_tire,
-            dt=DT_MPC,
-            N=N_HORIZON,
+            dt=DEFAULT_MPC_DT,
+            N=DEFAULT_MPC_HORIZON_STEPS,
             lateral_load_transfer=True,
-            kappa_mode="zero",
+            kappa_mode="approx",
             tire_model="nn",
             build_dir=build_dir,
         )

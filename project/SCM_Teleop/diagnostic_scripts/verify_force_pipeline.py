@@ -168,12 +168,12 @@ def main():
         sens = dFy / sr
         print(f"    sr={sr:.2f}: ΔFy = {dFy:.0f} N, sensitivity = {sens:.0f} N/(rad/s)")
 
-    # Dallas paper comparison
-    print(f"\n  Dallas paper context:")
-    print(f"    - Dallas uses δ̇ as BOTH control AND NN input per collocation point")
+    # Reference paper comparison
+    print(f"\n  Reference paper context:")
+    print(f"    - The reference paper uses δ̇ as BOTH control AND NN input per collocation point")
     print(f"    - Their NLOptControl uses LGR collocation: δ̇ varies at each node")
     print(f"    - Our MPC passes sr_meas as a CONSTANT PARAMETER for entire horizon")
-    print(f"    - Setting sr_meas=0 is correct given our implementation (not Dallas's)")
+    print(f"    - Setting sr_meas=0 is correct given our implementation (not the reference paper's)")
     print(f"    - To use sr correctly: make dynamics f() use zeta[0] (δ̇ control)")
     print(f"      as steering_rate at each RK4 sub-step — requires model retraining")
     print(f"      with lower sr sensitivity or clamping")
@@ -239,7 +239,7 @@ def main():
 
     print(f"\n  Fairness Assessment:")
     print(f"    - Pacejka uses μ=0.74, B=8.77, C=1.5874, E=0.376 (from HMMWV on-road .tir)")
-    print(f"    - Dallas paper explicitly states Pacejka was 'parameterized from on-road experiments'")
+    print(f"    - The reference paper explicitly states Pacejka was 'parameterized from on-road experiments'")
     print(f"    - This IS the intended comparison: on-road Pacejka vs terrain-aware NN")
     print(f"    - Pacejka cornering stiffness is {abs(Cf_pacejka/Cf_nn):.1f}x higher → models stiffer tires on hard surface")
     print(f"    - The comparison IS fair: it shows the NN captures reduced grip on deformable terrain")
@@ -379,23 +379,23 @@ def main():
     print(f"""
   Task 1 — Steering Rate:
     • v6 NN has ~{abs((Fy_by_sr[0.56][idx4] - Fy_by_sr[0.0][idx4]) / 0.56):.0f} N/(rad/s) Fy sensitivity to steering_rate (per wheel)
-    • Dallas uses δ̇ per collocation node; we use it as a constant parameter
+    • The reference paper uses δ̇ per collocation node; we use it as a constant parameter
     • Setting sr_meas=0 is correct for our implementation
-    • To match Dallas exactly: embed δ̇ control as NN input per RK4 step
+    • To match the reference paper exactly: embed δ̇ control as NN input per RK4 step
       (requires sensitivity ≤ ~200 N/(rad/s) to avoid instability)
 
   Task 2 — Pacejka vs NN Fairness:
     • Pacejka cornering stiffness: ~{abs(Cf_pacejka):.0f} N/rad (on-road μ=0.74)
     • NN cornering stiffness:      ~{abs(Cf_nn):.0f} N/rad ({args.terrain})
     • Ratio: {abs(Cf_pacejka/Cf_nn):.1f}x — Pacejka massively overestimates grip on soft terrain
-    • This IS the intended comparison per Dallas paper — fair by design
+    • This IS the intended comparison per the reference paper — fair by design
     • The gap quantifies the advantage of terrain-aware tire modeling
 
   Task 3 — Force Extraction:
     • C++ collector correctly uses global-frame forces from ChTireTestRig ✓
     • Forces implicitly include slip-angle frame rotation ✓
     • Steering rate correctly encoded as d(slip_angle)/dt ✓
-    • CSV output format matches Dallas Table I order ✓
+    • CSV output format matches reference Table I order ✓
 
   Task 4 — Force Usage:
     • MPC: -2.0 × per-wheel Fy → body-frame axle force ✓

@@ -4,7 +4,7 @@ set -e
 
 DATA="/home/kyle/Documents/chrono-HIL/chrono-HIL/project/SCM_Teleop/data/universal/scm_static_100k_v4.csv"
 MODELS="/home/kyle/Documents/chrono-HIL/chrono-HIL/project/SCM_Teleop/nn_models"
-TRAINER="/home/kyle/Documents/chrono-HIL/chrono-HIL/project/SCM_Teleop/nn_training/new/train_variant.py"
+TRAINER="/home/kyle/Documents/chrono-HIL/chrono-HIL/project/SCM_Teleop/nn_training/train_variant.py"
 
 EPOCHS=300
 LR=0.01
