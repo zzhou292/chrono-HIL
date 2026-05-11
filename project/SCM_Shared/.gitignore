@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+logs/
+plots/
+verification/generated/
+
+simulation/__pycache__/
+test_suite/__pycache__/
+utilities/__pycache__/
+my_paper/__pycache__/
