@@ -4,16 +4,27 @@ MPC-based HMMWV control on **SCM** (Soil Contact Model) deformable terrain using
 
 The NN tire model replaces analytical tire formulations (Pacejka, TMeasy, linear) inside the MPC, allowing the controller to reason about terrain-dependent tire forces on deformable soil parameterized by Bekker/Wong soil properties.
 
+Current layout note: active tire checkpoints are the `paper_v2_*` models under
+`nn_models/`; deprecated `paper_v1_*` checkpoints were moved to
+`archive/cleanup_20260420/nn_models/`.
+
+Current paper-scope note: the active adaptive stack keeps only the
+sliding-window terrain estimator (`simulation/learned_terrain_estimator.py`),
+the force residual adapter (`simulation/force_residual_adapter.py`), and the
+dynamics GP process model (`simulation/dynamics_gp_adapter.py`). Legacy UKF /
+hybrid terrain estimators, observer experiments, and GP force-residual code
+were moved under `archive/cleanup_20260420/`.
+
 ---
 
 ## Quick start
 
 ```bash
-conda activate chrono
+conda activate sim
 cd simulation
 
 # NN tire in MPC on clay double lane change
-python launch_decoupled.py --model nn --nn-model paper_v1_mlp_16_4 \
+python launch_decoupled.py --model nn --nn-model paper_v2_mlp_16_4 \
   --terrain clay --path double_lane_change --time 30 --speed 5 --lead-in 10
 
 # Analytical tire (TMeasy) for comparison
@@ -21,7 +32,7 @@ python launch_decoupled.py --model tmeasy --terrain clay --path double_lane_chan
   --time 30 --speed 5 --lead-in 10
 
 # Headless (no visualization, no live plot, no CSV output)
-python launch_decoupled.py --model nn --nn-model paper_v1_mlp_16_4 \
+python launch_decoupled.py --model nn --nn-model paper_v2_mlp_16_4 \
   --terrain dirt --path lane_change --no-vis --no-plot --no-csv
 ```
 
@@ -48,6 +59,10 @@ SCM_Teleop/
 │   ├── run_mpc_benchmarks.py      # Per-model MPC comparison (--discover)
 │   ├── benchmark_tire_models.py   # NN vs analytical tire comparisons
 │   ├── benchmark_nn_variants.py   # Multi-model closed-loop NN benchmark
+│   ├── collect_terrain_traces.py  # Open-loop terrain-estimator training traces
+│   ├── collect_diverse_terrains.py  # Off-manifold terrain trace generator
+│   ├── collect_closed_loop_traces.py  # MPC-in-the-loop trace collection
+│   ├── generate_random_terrains.py  # Random YAML terrain generator for validation
 │   └── generate_reference_paths.py  # Generate reference path CSVs
 │
 ├── nn_training/                   # NN training pipeline
@@ -73,7 +88,9 @@ SCM_Teleop/
 │
 ├── data_collection/           # C++/Python parallel LHS rig data collection
 ├── paths/                     # Reference path CSVs (lane_change, double_lane_change, sinusoidal)
-├── diagnostic_scripts/        # Force comparison & validation tools
+├── test_suite/                # Validation / regression entrypoints
+├── new_diagnostics/           # Force comparison & validation tools
+├── my_paper/                  # Abstract, references, and paper figure builders
 ├── docs/                      # Pipeline documentation
 ├── archive/                   # Archived models, data, and scripts from earlier experiments
 └── plots/                     # Benchmark output (CSV + JSON + figures)
@@ -113,7 +130,7 @@ Static models achieve R² ≈ 0.81 (Fx) / 0.86 (Fy). Temporal/rate models show m
 ## Dependencies
 
 ```
-conda activate chrono
+conda activate sim
 ```
 
 - **PyChrono** (vehicle, SCM terrain, Irrlicht visualization)
@@ -125,7 +142,7 @@ conda activate chrono
 
 ## Reproducing from scratch
 
-The sections below give step-by-step commands to recollect data, retrain models, and run benchmarks. All commands assume `conda activate chrono` and start from the `SCM_Teleop/` directory.
+The sections below give step-by-step commands to recollect data, retrain models, and run benchmarks. All commands assume `conda activate sim` and start from the `SCM_Teleop/` directory.
 
 ### Step 1 — Collect rig data (C++)
 
@@ -265,7 +282,7 @@ cd utilities
 python plot_paper_benchmarks.py
 
 # Or specify a custom CSV / output directory
-python plot_paper_benchmarks.py --csv ../simulation/plots/paper_benchmark/paper_benchmark_results.csv --out-dir ../paper_figures
+python plot_paper_benchmarks.py --csv ../simulation/plots/paper_benchmark/paper_benchmark_results.csv --out-dir ../my_paper/paper_figures
 ```
 
 Plots generated:

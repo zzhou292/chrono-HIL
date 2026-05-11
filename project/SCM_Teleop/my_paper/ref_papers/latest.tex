@@ -1,0 +1,608 @@
+\documentclass[10pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage[version=4]{mhchem}
+\usepackage{stmaryrd}
+\usepackage{graphicx}
+\usepackage[export]{adjustbox}
+\graphicspath{ {./images/} }
+\usepackage{caption}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=blue, filecolor=magenta, urlcolor=cyan,}
+\urlstyle{same}
+
+\title{Adaptive Model Predictive Control on Unknown Deformable Terrains Using Physics-Informed Learning Tire Models }
+
+\author{Yuya Onozuka, James Dallas, Makoto Suminaka, and John Subosits}
+\date{}
+
+
+%New command to display footnote whose markers will always be hidden
+\let\svthefootnote\thefootnote
+\newcommand\blfootnotetext[1]{%
+  \let\thefootnote\relax\footnote{#1}%
+  \addtocounter{footnote}{-1}%
+  \let\thefootnote\svthefootnote%
+}
+
+%Overriding the \footnotetext command to hide the marker if its value is `0`
+\let\svfootnotetext\footnotetext
+\renewcommand\footnotetext[2][?]{%
+  \if\relax#1\relax%
+    \ifnum\value{footnote}=0\blfootnotetext{#2}\else\svfootnotetext{#2}\fi%
+  \else%
+    \if?#1\ifnum\value{footnote}=0\blfootnotetext{#2}\else\svfootnotetext{#2}\fi%
+    \else\svfootnotetext[#1]{#2}\fi%
+  \fi
+}
+
+\begin{document}
+\maketitle
+\captionsetup{singlelinecheck=false}
+
+
+\begin{abstract}
+Vehicle mobility and control performance on deformable terrains is governed by the complex interaction that occurs at the tire-terrain interface. Unfortunately, on deformable terrains, accurately measuring terrain information is challenging, and discrepancies between assumed and actual parameters can degrade control performance and cause a loss of vehicle mobility. To address these challenges, this paper proposes an online adaptive Model Predictive Control (MPC) framework for autonomous vehicles operating in off-road environments with deformable terrains. First, we develop a physicsinformed learning tire model for deformable terrains that is adaptable online and compatible with MPC. A novel Model Predictive Control formulation is presented for autonomous vehicles operating on deformable terrains and the efficacy of the formulation and proposed tire model is evaluated in simulation with Project Chrono. Comparative experiments, with and without online adaptation, highlight improved speed and path tracking performance through online adaptation when a mismatch between assumed and actual terrain parameters is present.
+\end{abstract}
+
+Index Terms-Adaptive control, model predictive control, physics-informed neural networks, terramechanics, vehicle dynamics
+
+\section*{I. Introduction}
+Deformable terrains, such as sandy surfaces, pose significant challenges for vehicle control as the complex interaction occurring at the tire-terrain interface strongly influences vehicle mobility and maneuverability [1]. In light of this, several approaches have utilized semi-empirical terramechanics theory to capture this complex tire-terrain interaction in a computationally efficient manner for vehicle control [1], [2], [3], [4], [5], [6]. Among these control frameworks, model predictive control (MPC) is particularly promising for offroad navigation, as it can balance possibly conflicting control objectives such as speed and path tracking while imposing state constraints, such as rollover prevention and excessive tire slip [7], [8], [9].
+
+In [4], MPC was used for trajectory tracking, wheel traction, and steering control for rover navigation. Due to the operating range of the rover not exceeding $0.35 \mathrm{~m} / \mathrm{s}$, a linearized terramechanics model based upon the theory developed by Bekker, Janosi, and Hanamoto was utilized. However the utility of classical terramechanics theory becomes limited in higher speed operations due to the quasistatic and steady-state assumptions [10] which break down in higher-speed and dynamic operation. The Soil Contact Model (SCM) [11], extends upon classical terramechanics theory to
+
+\footnotetext{\begin{itemize}
+  \item Toyota Research Institute, Los Altos, CA, USA. Emails: \{yuya.onozuka.tmc, james.dallas, makoto.suminaka, john.subosits @ tri.global.
+\end{itemize}
+}\begin{figure}[h]
+\begin{center}
+  \includegraphics[alt={},max width=\textwidth]{cb6cedf5-1f6e-45ca-bc60-008ab59ad0af-1_639_779_545_1123}
+\captionsetup{labelformat=empty}
+\caption{Fig. 1: MPC framework with online updates.}
+\end{center}
+\end{figure}
+
+account for dynamic effects by discretizing the tire-terrain interface. While this can improve modeling of the tire-terrain interaction, the lack of twice continuous differentiablity and computational expense limit SCM's utility in gradient-based MPC frameworks.
+
+To address these limitations, machine learning can be utilized [12], [13]. In [13] a computationally efficient and twice continuously differentiable neural network based terramechanics model was develeoped. By incorporating dynamic effects such as velocity, slip, and load in the neural network inputs, lateral forces were predicted with precision comparable to SCM. The neural network was then leveraged to estimate the most sensitive terrain parameter via an Unscented Kalman filter and combined with MPC for terrain-adaptive MPC for vehicles operating on deformable terrains [5], [14]. The results showed the approach improved performance in achieving path and terminal goal objectives. By construction, the neural network treats terrain parameters as inputs, requiring parameter identification [15], [16], [17]. To minimize the set of parameters needed to be identified, the orthogonal method is used to identify the linearly independent subset [18], [19]. Alternatively, the dependence on terrain parameters can be removed by integrating a reinforcement learning-based compensation term into a predictive model to account for unmodeled dynamics [6]. While this framework removes the need for identifying terrain information, longitudinal forces are compensated for in a black-box manner, and dynamic effects such as slip ratio are not considered, which is critical to prevent immobilization due to slip induced sinkage [20].
+
+\begin{figure}[h]
+\begin{center}
+  \includegraphics[alt={},max width=\textwidth]{cb6cedf5-1f6e-45ca-bc60-008ab59ad0af-2_283_598_184_311}
+\captionsetup{labelformat=empty}
+\caption{Fig. 2: Schematic of single track model in a curvilinear (Frenet) coordinate system [24].}
+\end{center}
+\end{figure}
+
+In the on-road domain, Physics-Informed learning (PIL) [21], [22], [23] has been leveraged to learn models with less data than traditional networks through incorporating physical insights. Specifically, in [21], cornering stiffness was updated online and in [22] and [23], a PIL tire model was incorporated in MPC; however, PIL utility for off-road applications remains an open research question.
+
+While neural network terramechanics models have shown success in the off-road domain, current approaches have not simultaneously considered: (1) incorporating physical insights into their formulations; (2) exploring the coupling that occurs between lateral and longitudinal forces; and (3) removing explicit terrain-parameter dependency. In this work, we seek to address these limitations. We develop a PIL tire model for deformable terrains and incorporate it in an adaptive MPC framework for autonomous vehicles operating in off-road environments. The approach is then validated with the high-fidelity simulator Project Chrono. The original contributions are:
+
+\begin{enumerate}
+  \item a physics-informed learning-based deformable terrain terramechanics model that satisfies the requirements of gradient based MPC, is independent of terrain parameters, and enables the prediction of longitudinal and lateral tire forces simultaneously; and
+  \item an online adaptive MPC framework for vehicles operating on unknown deformable terrains.\\
+The rest of the paper is organized as follows. The deformable terrain PIL tire model is presented in Sec.II and the NMPC formulation is given in Section III. Sec. IV discusses the simulation setup, while results are discussed in Sec. V. Lastly, Sec. VI summarizes our findings and highlights possible future research directions.
+\end{enumerate}
+
+\section*{II. Physics-Informed Learning Tire Modeling}
+\section*{A. Vehicle States}
+The MPC prediction model is a single-track dynamic bicycle model in a curvilinear coordinate system which has shown to balance computation and fidelity [24], as shown in Fig. 2. The vehicle states and inputs are given in Eqs. (1) and (2), respectively. Wheelspeeds are included to control the slip ratio, and longitudinal load transfer is modeled to account for terrain deformation due to dynamic load change. To achieve smooth control, the inputs are the derivatives of steering angle, front axle torque, and rear axle torque. For simplicity, the subscripts $f$ and $r$ are dropped when distinguishing between the front and rear axle is not required.
+
+
+\begin{gather*}
+x=\left[\begin{array}{c}
+r \\
+V \\
+\beta \\
+\omega_{f} \\
+\omega_{r} \\
+e \\
+\Delta \phi \\
+d F_{z} \\
+\delta \\
+\tau_{f} \\
+\tau_{r}
+\end{array}\right]=\left[\begin{array}{c}
+\text { Yaw rate } \\
+\text { Velocity } \\
+\text { Sideslip } \\
+\text { Front wheelspeed } \\
+\text { Rear wheelspeed } \\
+\text { Lateral error } \\
+\text { Angular Deviation } \\
+\text { Longitudinal load transfer } \\
+\text { Roadwheel angle } \\
+\text { Front motor torque } \\
+\text { Rear motor torque }
+\end{array}\right]  \tag{1}\\
+u=\left[\begin{array}{c}
+\dot{\delta} \\
+\dot{\tau_{f}} \\
+\dot{\tau_{r}}
+\end{array}\right]=\left[\begin{array}{c}
+\text { Roadwheel angle rate } \\
+\text { Front motor torque rate } \\
+\text { Rear motor torque rate }
+\end{array}\right] \tag{2}
+\end{gather*}
+
+
+\section*{B. Physics-Informed Learning Tire Model for Deformable Terrarin}
+The PIL tire model is based on insights from classical terramechanics theory [25], where the shear stress is:
+
+
+\begin{equation*}
+\tau(\theta)=(c+\sigma(\theta) \tan \phi)\left(1-e^{-j(\theta) / k}\right) \tag{3}
+\end{equation*}
+
+
+where $\sigma$ is the normal stress and $j$ is the shear deformation. The terrain parameters are cohesion, $c$, internal friction angle, $\phi$, and shear deformation modulus, $k . \theta$ is the contact angle, and the tire forces can be obtained by integrating the stress across the contact area. In this work, we use a neural network (NN) to eliminate the dependency on terrain parameters and integration. The overall tire-curve follows a similar shape to on-road tire curves [17], such as the Fiala brush model [26]. Thus, we formulate the tire force equation using the combined slip $\kappa_{c}$ and leverage the structure of Eq. (3):
+
+
+\begin{equation*}
+F_{\text {total }}^{P}=a^{P}\left(1-\exp \left(-\frac{\kappa_{c}}{k^{P}}\right)\right) F_{z} \tag{4}
+\end{equation*}
+
+
+where $\left[a^{P}, k^{P}\right]=\mathrm{NN}_{1}^{\mathrm{P}}$ (feat). $\mathrm{NN}_{\mathrm{i}}^{\mathrm{P}}$ denotes a neural network, parameterized by the set $P$. The coefficients $a$ and $k$ determine the maximum tire force and the slope around $\kappa_{c}=0$, respectively. $F_{z}$ is the normal force, and the combined slip $\kappa_{c}$ is given as:
+
+
+\begin{equation*}
+\kappa_{c}=\sqrt{\kappa_{x}^{2}+\kappa_{y}^{2}} \tag{5}
+\end{equation*}
+
+
+where $\kappa_{x}$ and $\kappa_{y}$ are the longitudinal and lateral slip, respectively. Due to the impact of terrain deformation, slip is modified from [22], [24], as:
+
+
+\begin{gather*}
+\kappa_{x}=\frac{r_{w} \omega \cos \left(\lambda_{\theta} \theta_{n}^{P}+\Delta_{\theta}^{P}\right)-v}{v}  \tag{6}\\
+\kappa_{y}=\Delta_{\alpha}^{P}-\tan \alpha \tag{7}
+\end{gather*}
+
+
+$\kappa_{x}$ is calculated at the shear stress center, which shifts due to terrain deformation as shown in Fig. 3 [27]. The shear stress center angle $\theta_{s}=\lambda_{\theta} \theta_{n}^{P}+\Delta_{\theta}^{P}$ is utilized in Eq. (6), where $\theta_{n}=\lambda_{\theta} \theta_{n}^{P}$ represents the normal stress center angle, $\lambda_{\theta}$ normalize the scales of $\left[\theta_{n}^{P}, \Delta_{\theta}^{P}, \Delta_{\alpha}^{P}\right]$, and $\Delta_{\theta}$ is the
+
+\begin{figure}[h]
+\begin{center}
+  \includegraphics[alt={},max width=\textwidth]{cb6cedf5-1f6e-45ca-bc60-008ab59ad0af-3_364_538_182_352}
+\captionsetup{labelformat=empty}
+\caption{Fig. 3: Tire-terrain geometry.}
+\end{center}
+\end{figure}
+
+difference between the shear and normal stress center angles. $\Delta_{\alpha}$ accounts for the hysteresis effects of varying lateral slip [17]. These are calculated as $\left[\theta_{n}^{P}, \Delta_{\theta}^{P}, \Delta_{\alpha}^{P}\right]=\mathrm{NN}_{2}^{\mathrm{P}}$ (feat). Lastly, $r_{w}$ is the tire radius, $v$ is the wheel translational velocity, and $\alpha$ is the slip angle.
+
+The learned parameters $\left[a^{P}, k^{P}, \theta_{n}^{P}, \Delta_{\theta}^{P}, \Delta_{\alpha}^{P}\right]$ depend on the contact area and shear stress center, which in turn depends on the vehicle state. Therefore the feature set was chosen as feat $=\left[r, V, \beta, \omega, F_{z}\right] . \mathrm{NN}_{1}^{\mathrm{P}}$ and $\mathrm{NN}_{2}^{\mathrm{P}}$ are feedforward neural networks consisting of two hidden layers of 4 neurons and tanh activation functions. Inspired by [28], the longitudinal and lateral tire forces $F_{x}$ and $F_{y}$ are obtained from $F_{\text {total }}^{P}$ by an isotropic model:
+
+
+\begin{equation*}
+F_{x}^{P}=\frac{\kappa_{x}}{\kappa_{c}} F_{\text {total }}^{P}, F_{y}^{P}=\frac{\kappa_{y}}{\kappa_{c}} F_{\text {total }}^{P} \tag{8}
+\end{equation*}
+
+
+Due to the rolling resistance induced by the normal stress distribution, we define the wheel angular velocity as:
+
+
+\begin{equation*}
+\dot{\omega}=\frac{\tau-F_{x} r_{w}-F_{z} r_{w} \sin \lambda_{\theta} \theta_{n}^{P}}{I_{w}} \tag{9}
+\end{equation*}
+
+
+where $\tau$ is the axle torque and $I_{w}$ is the moment of inertia for the lumped axle. The third term in the numerator represents the rolling resistance.
+
+\section*{C. Data}
+In this work, SCM, implemented in Project Chrono, is used both for verification of controller effectiveness and generation of training data for the neural network. Further details on the simulation are given in Sec. IV. For training the neural network, $1,657,856$ ( 98 minutes) data samples were generated, and points with a velocity below the $1 \mathrm{~m} / \mathrm{s}$ threshold are removed. The samples are shuffled and randomly split into $70 \%$ training and $30 \%$ test sets. The data set acting as measurements is given as $\mathcal{D}= \left(r, V, \beta, \delta, \omega_{f, r}, \tau_{f, r}, F_{z f, r}, F_{x f, r}, F_{y f, r}, \theta_{n f, r}^{*}\right)_{i=1}^{N}$, where $\theta_{n}^{*}$ is:
+
+
+\begin{equation*}
+\theta_{n}^{*}=\arcsin \left(\frac{-F_{x} r_{w}-M_{y}}{F_{z} r_{w}}\right) \tag{10}
+\end{equation*}
+
+
+where $M_{y}$ is from the SCM forces acting in the wheel rotational direction. The tire forces $F_{x f, r}$ and $F_{y f, r}$ are used for training the PIL tire model. However, since tire-forces are difficult to accurately measure online, measurements of vehicle states are used for online adaptation, as detailed in Sec. III-D.
+
+\section*{D. Training}
+The neural network parameters, $P$, are optimized for through:
+
+$$
+\min _{P} \frac{1}{N} \sum_{\substack{r, V, \beta, \omega, F_{z}, F_{x}, F_{y}, \theta_{n}^{*} \in \mathcal{D}}}\left[\begin{array}{l}
+\left(F_{\text {total }}^{P}(\text { feat })-F_{\text {total }}\right)^{2}+\left(F_{x}^{P}-F_{x}\right)^{2} \\
++\left(F_{y}^{P}-F_{y}\right)^{2}+\left(\lambda_{\theta} \theta_{n}^{P}-\theta_{n}^{*}\right)^{2}
+\end{array}\right]
+$$
+
+where the measured total force from SCM is $F_{\text {total }}= \sqrt{F_{x}^{2}+F_{y}^{2}}$, and $\lambda_{\theta}$ is the scaling (normalization) parameter.
+
+The Adam optimization method in Haiku is used to train the neural network with a decay rate of 0.001 , and an exponentially decaying learning rate initialized at 0.002 with a decay rate of 0.1 [29], [30].
+
+\section*{III. MPC Formulation}
+\section*{A. Vehicle Dynamics}
+The vehicle dynamics are given below and the wheelspeed is given in Eq. (9):
+
+\[
+\left[\begin{array}{c}
+\dot{r}  \tag{11}\\
+\dot{V} \\
+\dot{\beta} \\
+\dot{e} \\
+\dot{\Delta \phi} \\
+\dot{d} \dot{F}_{z}
+\end{array}\right]=\left[\begin{array}{c}
+\frac{a F_{y f}^{P} \cos (\delta)+a F_{x f}^{P} \sin (\delta)-b F_{y r}^{P}+M_{z f}+M_{z r}}{I_{z}} \\
+\frac{-F_{y r}^{P} \sin (\delta-\beta)+F_{x f}^{P} \cos (\delta-\beta)+F_{y r}^{P} \sin (\beta)+F_{x r}^{P} \cos (\beta)}{m} \\
+\frac{F_{y f}^{P} \cos (\delta-\beta)+F_{x f}^{P} \sin (\delta-\beta)+F_{y r}^{P} \cos (\beta)-F_{x r}^{P} \sin (\beta)}{m V}-r \\
+V \sin (\Delta \phi) \\
+\dot{\phi}-\kappa_{\text {ref }} \frac{V \cos (\Delta \phi)}{1-\kappa_{\text {ref }} e} \\
+-k_{t}\left(d F_{z}-\frac{h_{\text {ce }}}{a+b} F_{x \text { net }}\right)
+\end{array}\right]
+\]
+
+where $a$ and $b$ are the distance from the center of gravity to the front and rear axles, respectively, $h_{\mathrm{cg}}$ is the center of gravity height, $m$ is the vehicle mass, and $I_{z}$ is the yaw moment of inertia for the chassis. $\kappa_{\text {ref }}$ is the curvature of the reference path, and $\dot{\phi}=\dot{\beta}+r$ is vehicle velocity vector's rotation rate. $M_{z f}$ and $M_{z r}$ are the yaw moment occurring from the rolling resistance difference between the left and right tires given as:
+
+
+\begin{equation*}
+M_{z}=-F_{x l} t_{h}+F_{x r} t_{h} \tag{12}
+\end{equation*}
+
+
+where $t_{h}$ is the vehicle half-width. Eq. (9), assumes drive torque is equally split such that $\tau_{l}=\tau_{r}$, and that $\theta_{n l} \approx \theta_{n r}=\lambda_{\theta} \theta_{n}^{P}$ due to the significantly higher sensitivity to $F_{z}$ variation over $\theta_{n}$ shift in rolling resistance. Additionally, $I_{w} \dot{\omega}_{l} \ll \tau_{l}-F_{z l} r_{w} \sin \theta_{n l}, I_{w} \dot{\omega}_{r} \ll \tau_{r}-F_{z r} r_{w} \sin \theta_{n r}$, where the right term is empirically shown to be two orders of magnitude larger than the left. Based on the last two assumptions, $I_{w} \dot{\omega}_{l}$ and $I_{w} \dot{\omega}_{r}$ can be neglected. Thus, the yaw moment can be expressed as:
+
+
+\begin{equation*}
+M_{z}=t_{h}\left(-F_{z l} \sin \left(\lambda_{\theta} \theta_{n}^{P}\right)+F_{z r} \sin \left(\lambda_{\theta} \theta_{n}^{P}\right)\right) \tag{13}
+\end{equation*}
+
+
+Equillibrium of the roll moment yields $t_{h}\left(-F_{z l}+F_{z r}\right)= h_{\text {cg }} F_{y \text { cg }}$ is satisfied, where $F_{y \text { cg }}$ is the lateral force acting at the vehicle's center of gravity. We can then express $M_{z}$ as:
+
+
+\begin{equation*}
+M_{z}=h_{\mathrm{cg}} F_{y \mathrm{cg}} \sin \left(\lambda_{\theta} \theta_{n}^{P}\right) \tag{14}
+\end{equation*}
+
+
+Lastly, $d \dot{F}_{z}$ is first-order dynamics of longitudinal load transfer [24]. The time constant is calibrated from pitch response of the vehicle and is $k_{t}=22.84$. The net longitudinal force is expressed as $F_{x \text { net }}=F_{x r}+F_{x f} \cos (\delta)-F_{y f} \sin (\delta)$.
+
+\section*{B. MPC Formulation}
+The NMPC formulation is inspired by [24] and given in general form as Eq. (15).
+
+\[
+\begin{array}{lll}
+\min J & & \\
+& x_{k+1}=f\left(x_{k}, u_{k}\right) & \forall k \in[1, N] \\
+& x_{\min } \leq x_{k} \leq x_{\max } & \forall k \in[1, N]  \tag{15}\\
+& u_{\min } \leq u_{k} \leq u_{\max } & \forall k \in[1, N] \\
+& x_{0}=x_{\text {lookahead }} &
+\end{array}
+\]
+
+$J$ represents the cost function, $x$ is the vehicle state vector, and $u$ is the input vector. The initial state $x_{0}$, is constrained to be equal to $x_{\text {lookahead }}$, the current vehicle state propagated by the average solve time. The state evolution is given by $f$, and $N$ is the number of prediction steps.
+
+The cost function, $J$, is expressed as
+
+
+\begin{equation*}
+J=J_{T}+\sum_{i=0}^{N}\left(J_{Q_{i}}+J_{S_{i}}\right) \cdot d s_{i} \tag{16}
+\end{equation*}
+
+
+$J_{Q_{i}}$ is a running cost on states and inputs, and $J_{S_{i}}$ is a bound violation cost, $d s_{i}$ is the step length. The terminal stability cost, $J_{T}$, is a terminal stability cost to account for the finite horizon. $J_{Q}$ is given as
+
+
+\begin{align*}
+J_{Q_{i}} & =w_{e}\left(e_{i}-e_{\mathrm{ref}_{i}}\right)^{2}+w_{V}\left(V_{i}-V_{\mathrm{ref}_{i}}\right)^{2} \\
+& +w_{\alpha} \alpha_{f_{i}}^{2}+w_{\kappa_{f}} \kappa_{f_{i}}^{2}+w_{\kappa_{r}} \kappa_{r_{i}}^{2} \\
+& +w_{b}\left(\frac{F_{x f_{i}}^{P}}{F_{z f_{i}}}-\frac{F_{x r_{i}}^{P}}{F_{z r_{i}}}\right)^{2}+w_{\tau}\left(\min \left(0, \tau_{f_{i}} \tau_{r_{i}}\right)\right)^{2}  \tag{17}\\
+& +w_{\delta} \ddot{\delta}_{i}^{2}+w_{\tau_{f}}{\ddot{\tau_{f i}}}^{2}+w_{\tau_{r}} \ddot{\tau}_{r i}^{2}
+\end{align*}
+
+
+where $w_{*}$ are the weights. The first and the second terms are reference trajectory tracking costs. The third to fifth terms are costs to avoid zero gradients at tire force saturation, inspired by [24]. The sixth term seeks to equally distribute longitudinal force. The seventh term prevents simultaneous positive (propulsive) and negative (braking) torques. Finally, the eighth to tenth terms promote smooth inputs.\\
+$J_{S_{i}}$ consists of soft constraints and are only active if bounds are exceeded. This is expressed as:
+
+
+\begin{align*}
+& J_{S_{i}}=w_{t b}\left(e_{i}-e_{\min _{i}, \max _{i}}\right)^{2}+w_{\phi}\left(\Delta \phi_{i}-\Delta \phi_{\min _{i}, \max _{i}}\right)^{2} \\
+& +w_{\mu}\left[\left(\frac{F_{x f_{i}}^{2}+F_{y f_{i}}^{2}}{F_{z f_{i}}^{2}}-F_{f \max }^{2}\right)^{2}\right. \\
+& \left.\quad+\left(\frac{F_{x r_{i}}^{2}+F_{y r_{i}}^{2}}{F_{z r_{i}}^{2}}-F_{r \max }^{2}\right)^{2}\right] \\
+& +w_{F_{z}} \sum_{q \in\{\mathrm{fl}, \mathrm{fr}, \mathrm{rl}, \mathrm{rr}\}}\left(F_{z, q}-F_{\min }\right)^{2} \tag{18}
+\end{align*}
+
+
+where the first term prevents track bound violation, and the second term bounds angular deviation. The third term penalizes exceeding a specified maximum tire force [24]. The fourth term is a roll over constraint that prevents tire lift off [31], [32].
+
+The terminal stability cost $J_{T}$, establishes first order restoring costs at the terminal state for angular and path error. Specifically:
+
+
+\begin{equation*}
+J_{T}=w_{\beta_{N}} d s_{N}\left(\dot{\beta}_{N}+k_{\beta} \beta_{N}\right)^{2}+w_{e_{N}} d s_{N}\left(\dot{e}_{N}+k_{e} e_{N}\right)^{2} \tag{19}
+\end{equation*}
+
+
+where $k_{\beta}$ and $k_{e}$ are constants.
+
+\section*{C. Implementation}
+The dynamics are converted to a spatial representation where $s$ is the path progress. The spatial representation of the dynamics is given as:
+
+
+\begin{equation*}
+\frac{d x}{d s}=\frac{1}{\dot{s}} \frac{d x}{d t}=\frac{\left(1-\kappa_{\mathrm{ref}} e\right)}{V \cos \Delta \phi} \frac{d x}{d t} \tag{20}
+\end{equation*}
+
+
+Finally, the NMPC horizon is discretized with a secondorder implicit Runge-Kutta method [33]. The horizon has 20 discreteization points, with a resolution $(d s=0.5 \mathrm{~m})$ for first 5 points and a resolution $(d s=1.5 \mathrm{~m})$ in the remaining points, resulting in a distance of 25 m . This was choosen to yield high accuracy short term predictions while maintaining a sufficently long horizon. The optimal control problem is implemented with CasADi [34] and the IPOPT solver [35].
+
+\section*{D. Online Update Method}
+To account for uncertain terrain conditions, an online adaptation method is added to the MPC framework as shown in Fig. 1. Specifically, the neural network is initialized as the model trained offline and stochastic gradient descent is used to update the parameters online [36], [37]. Since tire force measurement may not be available in deployment, and MPC is influenced by predicted vehicle states, the network parameters are updated by optimizing for state derivative errors:
+
+$$
+\min _{P} \frac{1}{N} \sum_{r, V, \beta, \omega, \delta, \theta_{n f, r}^{*} \in \mathcal{D}}\left[\begin{array}{l}
+\left(\dot{r}^{P}-\dot{r}\right)^{2}+\left(\dot{V}^{P}-\dot{V}\right)^{2} \\
++\left(\dot{\beta}^{P}-\dot{\beta}\right)^{2}+\left(a_{x}^{P}-a_{x}\right)^{2} \\
++w_{\theta}\left(\theta_{n f}^{*}-\theta_{n r}^{*}\right)
+\end{array}\right]
+$$
+
+where $\mathcal{D}$ is a mini batch of 300 data points, and $\dot{r}, \dot{V}$, and $\dot{\beta}$ measurementes obtained from finite differences and $\dot{r}^{P}, \dot{V}^{P}$, and $\dot{\beta}^{P}$ are obtained from Eq. (11). The final term prevents divergence between $\theta_{n f}^{*}$ and $\theta_{n r}^{*}$. Longitudinal acceleration $a_{x}$ is calculated as
+
+
+\begin{equation*}
+a_{x}=\dot{V} \cos (\beta)-V(\dot{\beta}+r) \sin (\beta) \tag{21}
+\end{equation*}
+
+
+and the measured longitudinal acceleration is obtained from:
+
+\begin{figure}[h]
+\begin{center}
+  \includegraphics[alt={},max width=\textwidth]{cb6cedf5-1f6e-45ca-bc60-008ab59ad0af-5_558_825_162_206}
+\captionsetup{labelformat=empty}
+\caption{Fig. 4: Reference path and velocity.}
+\end{center}
+\end{figure}
+
+
+\begin{align*}
+& a_{x}^{P}=\frac{1}{m}\left[\frac{\tau_{f}-I_{w f} \dot{\omega}_{f}-F_{z f} r_{w} \sin \theta_{n f}^{P}}{r_{w}} \cos \delta\right. \\
+& \left.+\frac{\tau_{r}-I_{w r} \dot{\omega}_{r}-F_{z r} r_{w} \sin \theta_{n r}^{P}}{r_{w}}-F_{y f}^{P} \sin \delta\right] \tag{22}
+\end{align*}
+
+
+Additionally, a constraint ensuring $\theta_{n}^{P}>0$ is imposed.\\
+Adam with a learning rate of 0.0001 is used to update the neural network parameters online. Measurements are updated with a sliding window approach as new measurements become available, and 10 epochs are used for each mini batch. The PIL tire model in MPC is then updated with the parameters, as shown in Fig. 1.
+
+\section*{IV. Simulation Setup}
+\section*{A. Plant Model}
+The High Mobility Multipurpose Wheeled Vehicle (HMMWV) with SCM terrain in Chrono (Fig. 1) serves as the plant model for simulation validation. The vehicle is AWD, and has rack-pinion steering and a double wishbone suspension. To directly control motor torque at each wheel, the torque converter and transmission is removed.
+
+To demonstrate the utility of the MPC framework, simulation is performed on two terrains with the parameters given in Table I. Offline training of the tire model utilizes the Sand parameters [38], and the Loose Sand acts as a terrain outside of the training set to demonstrate adaptability to unseen terrain. The Loose Sand is based on the Sand parameters but the sinkage exponent, $n$, which exhibits the highest sensitivity [18], is increased to the highest value reported in [25], [38], [39]. Additionally to reduce available force, the cohesion $c$ and internal friction angle, $\phi$, are decreased, and the shear deformation modulus, $k$, is increased to representative values reported in the literature [38], [40].
+
+\begin{table}[h]
+\begin{center}
+\begin{tabular}{c|c|c}
+\hline
+Parameter & Sand & Loose Sand \\
+\hline
+Cohesive modulus $k_{c}\left[\mathrm{kN} / \mathrm{m}^{n+1}\right]$ & 1.4 & 1.4 \\
+Friction modulus $k_{\phi}\left[\mathrm{kN} / \mathrm{m}^{n+2}\right]$ & 820 & 820 \\
+Sinkage exponent $n[-]$ & 1 & 1.74 \\
+Cohesion $c[\mathrm{kPa}]$ & 0.17 & 0.1 \\
+Internal friction angle $\phi[\mathrm{deg}]$ & 35 & 30 \\
+Shear deformation modulus $k[\mathrm{~m}]$ & 0.018 & 0.0254 \\
+\hline
+\end{tabular}
+\captionsetup{labelformat=empty}
+\caption{TABLE I: SCM Terrain Properties.}
+\end{center}
+\end{table}
+
+\begin{figure}[h]
+\begin{center}
+  \includegraphics[alt={},max width=\textwidth]{cb6cedf5-1f6e-45ca-bc60-008ab59ad0af-5_356_753_197_1136}
+\captionsetup{labelformat=empty}
+\caption{Fig. 5: Normalized Tire curve for front tire longitudinal force estimated by the learned model under the conditions of $r=0 \mathrm{rad} / \mathrm{s}, V=4 \mathrm{~m} / \mathrm{s}, \beta=0 \mathrm{rad}, \omega=9.4 \mathrm{rad} / \mathrm{s}, \alpha=0 \mathrm{rad}$.}
+\end{center}
+\end{figure}
+
+\begin{figure}[h]
+\begin{center}
+  \includegraphics[alt={},max width=\textwidth]{cb6cedf5-1f6e-45ca-bc60-008ab59ad0af-5_356_753_734_1136}
+\captionsetup{labelformat=empty}
+\caption{Fig. 6: Normalized Tire curve for front tire lateral force estimated by the learned model under the conditions of $V=4 \mathrm{~m} / \mathrm{s}, \omega=8.6 \mathrm{rad} / \mathrm{s}, F_{z}=13000 \mathrm{~N}$.}
+\end{center}
+\end{figure}
+
+\section*{B. Reference Path}
+The reference is an oval path with a velocity profile depicted in Fig. 4, generated with the approach in [24] for a prediction horizon of a complete lap.
+
+\section*{V. Results and Discussion}
+\section*{A. Evaluation of the Learned Tire Model}
+The PIL tire model was trained offline with the Sand parameters of Table I. The root-mean-square error (RMSE) of the tire force prediction is shown in Table II, which remains small at less than $10 \%$ of the maximum tire force. This is further depicted in Figs. 5 and 6, which shows the learned tire model and data (red). Figure 5 depicts the normalized longitudinal tire curve of the model with different vertical load $F_{z}$. As $F_{z}$ increases, the curve shifts to the right, and a steeper slope is observed near zero. This shift can be attributed to a larger load increasing sinkage, leading to a larger $\theta_{s}$ and hence inducing a larger resistance that leads to a rightward shift of the tire curve. Additionally, the increased sinkage leads to a larger contact area, improving traction at smaller longitudinal slips. The lateral force, $F_{y}$, is depicted in Fig. 6 for different $r$ and $\beta$. It is observed that the hysteresis effects caused by varying lateral slip described in [18] can be captured with $r$ and $\beta$.
+
+\begin{table}[h]
+\begin{center}
+\begin{tabular}{c|c|c|}
+\hline
+ & \multicolumn{2}{|c|}{RMSE} \\
+\hline
+ & Front & Rear \\
+\hline
+$\left|\Delta F_{x}\right|(\mathrm{N})$ & 330 & 485 \\
+$\left|\Delta F_{y}\right|$ & $(\mathrm{N})$ & 183 \\
+\hline
+\end{tabular}
+\captionsetup{labelformat=empty}
+\caption{TABLE II: RMSE absolute tire prediction.}
+\end{center}
+\end{table}
+
+\begin{figure}[h]
+\begin{center}
+  \includegraphics[alt={},max width=\textwidth]{cb6cedf5-1f6e-45ca-bc60-008ab59ad0af-6_639_751_206_236}
+\captionsetup{labelformat=empty}
+\caption{Fig. 7: Velocity and path tracking performance.}
+\end{center}
+\end{figure}
+
+\begin{table}[h]
+\begin{center}
+\begin{tabular}{c|c|c|c|c|c|c}
+\hline
+ & \multicolumn{3}{|c|}{Mean} & \multicolumn{3}{c}{Standard deviation} \\
+\hline
+Condition & baseline & \begin{tabular}{l}
+without \\
+update \\
+\end{tabular} & \begin{tabular}{c}
+with \\
+update \\
+\end{tabular} & baseline & \begin{tabular}{c}
+without \\
+update \\
+\end{tabular} & \begin{tabular}{c}
+with \\
+update \\
+\end{tabular} \\
+\hline
+$\Delta V(\mathrm{~m} / \mathrm{s})$ & -0.118 & -1.18 & $\mathbf{- 0 . 0 3 5}$ & 0.205 & $\mathbf{0 . 1 0 6}$ & 0.209 \\
+$e(\mathrm{~m})$ & 0.101 & 0.093 & $\mathbf{0 . 0 6 9}$ & 0.073 & $\mathbf{0 . 0 6 0}$ & 0.068 \\
+\hline
+\end{tabular}
+\captionsetup{labelformat=empty}
+\caption{TABLE III: Mean and standard deviation.}
+\end{center}
+\end{table}
+
+\section*{B. Online Adaptive MPC with Learned Tire Model}
+With the PIL terramechanics model developed, closed loop evaluations of MPC and the online updates are performed. As a baseline, simulations with the non-adaptive MPC and the offline trained tire model are performed with the Sand terrain. Additionally, simulations are performed with the plant driving on the Loose Sand terrain, with and without online updates. In the Loose Sand terrain without updates, the PIL terramechanics model parameters are fixed to the offline set trained on the Sand terrain.
+
+Results are shown in Fig. 7 for the velocity, $V$, and lateral error, $e$, from the reference for each condition. Additionally, Table III lists the mean and standard deviation of the errors. The lateral error remains small and consistent across the considered test cases; however, online updating on the Loose Sand terrain decreased the mean error but slightly increased the standard deviation, as the online updates cause corrective adjustments as the terramechanics model is learned, leading to a reduction in the mean but increased variance. Similarly in terms of velocity error, online updates significantly reduced the mean error but slightly increase the variance as compared to no updating.
+
+Figure 8 compares measured values (red) and estimated (blue) values for $F_{x f}$ (top), $F_{x r}$ (second), $\theta_{n f}$ (third), $\theta_{n r}$ (forth), and $\dot{V}$ (bottom) for the Loose Sand simulation. Results without online updates are shown on the left, while results with online updates are shown on the right. The errors for tire force and normal stress center angle are larger without online updates, which induces a larger error in $\dot{V}$. However, by updating online, which begins at $s=20 m$, the errors in forces and center angle are rapidly reduced, thus improving $\dot{V}$ estimation, as shown in Fig. 8b.
+
+\begin{table}[h]
+\begin{center}
+\begin{tabular}{|l|l|l|l|l|l|l|}
+\hline
+ & \multicolumn{3}{|c|}{Mean} & \multicolumn{3}{|c|}{Standard deviation} \\
+\hline
+Condition & baseline & without update & with update & baseline & without update & with update \\
+\hline
+$\Delta F_{x f}$ (N) & 267 & -1777 & -351 & 270 & 307 & 485 \\
+\hline
+$\Delta F_{x r}$ (N) & -88 & -2181 & 237 & 394 & 431 & 549 \\
+\hline
+$\Delta F_{y f}$ (N) & -194 & -91 & -152 & 194 & 355 & 231 \\
+\hline
+$\Delta F_{y r}(\mathrm{~N})$ & -140 & -225 & 29 & 203 & 394 & 137 \\
+\hline
+$\Delta M(\mathrm{Nm})$ & 121 & 67 & 154 & 212 & 432 & 300 \\
+\hline
+$\Delta \dot{r}\left(\mathrm{rad} / \mathrm{s}^{2}\right)$ & -0.004 & -0.006 & -0.021 & 0.071 & 0.13 & 0.053 \\
+\hline
+$\Delta \dot{V}\left(\mathrm{~m} / \mathrm{s}^{2}\right)$ & 0.045 & -1.56 & -0.056 & 0.23 & 0.21 & 0.27 \\
+\hline
+$\Delta \dot{\beta}(\mathrm{rad} / \mathrm{s})$ & -0.040 & -0.058 & -0.020 & 0.032 & 0.10 & 0.031 \\
+\hline
+\end{tabular}
+\captionsetup{labelformat=empty}
+\caption{TABLE IV: Mean and standard deviation of tire forces and derivatives prediction error. ( $\Delta M=\Delta M_{f z}+\Delta M_{r z}$ )}
+\end{center}
+\end{table}
+
+\begin{table}[h]
+\begin{center}
+\begin{tabular}{c|c|c}
+\hline
+ & Mean & Peak \\
+\hline
+Baseline & 0.059 s & 0.087 s \\
+Without update & 0.059 s & 0.096 s \\
+With update & 0.061 s & 0.136 s \\
+\hline
+\end{tabular}
+\captionsetup{labelformat=empty}
+\caption{TABLE V: IPOPT solve times.}
+\end{center}
+\end{table}
+
+As observed in $\theta_{n f, r}$ of Figure 8b, the rear value shows significantly more variation than the front, and is attributed to the multipass effect of the rear tire encountering the front tire tracks. For instance, the vehicle is cornering at a distance of 70 m , leading to the rear tire deviating from the front tire's tracks and causing $\theta_{n}$ to approach that of the front tire as the rear tire is encountering previously undeformed terrain. In contrast, the vehicle is on the straight at a distance of 140 $m$, and the rear tires pass over the deformed tracks from the front tire. Due to this compaction, sinkage is reduced and $\theta_{n}$ for the rear tire is smaller than that of the front tire. Despite these complex interactions, online updates of the PIL terramechanics model accounts for these effects.
+
+Figure 9 shows histograms for prediction errors for each timestep for the tire forces, the yaw moment component from the difference in rolling resistance between the left and right tires, and the derivatives of yaw rate, velocity, and sideslip respectively. The mean and standard deviation of the tire forces, the yaw moment, and the derivatives predictions are shown in Table IV. With online updates, the forces and yaw moment are predicted with comparable accuracy to the baseline, as shown in Table IV, leading to improved predictions in the state derivatives. With online updates, the prediction error for the derivative of velocity and sideslip decreased as compared to without online updates. On the other hand, the prediction error for yaw rate increased slightly, but the standard deviation decreased, suggesting that the prediction error is converging to 0 . This demonstrates the utility of the online adaptive PIL tire model and MPC framework.
+
+The mean and peak solve times are shown in Table V for an Intel Xeon E5-2690 v4 2.6 GHz CPU with 128 GB RAM. Online updates induces a mismatch with the previous solution, decreasing the effectiveness of the warmstart and thus slightly increasing solve time. However, as the updates occur gradually, the solve time remains sufficient for online application.
+
+\section*{VI. Conclusion}
+This work develops a PIL terramechanics model for deformable terrains that is independent of terrain parameters
+
+\begin{figure}[h]
+\begin{center}
+  \includegraphics[alt={},max width=\textwidth]{cb6cedf5-1f6e-45ca-bc60-008ab59ad0af-7_1378_1675_163_223}
+\captionsetup{labelformat=empty}
+\caption{Fig. 8: Comparison between measured values and estimated values.}
+\end{center}
+\end{figure}
+
+\begin{figure}[h]
+\begin{center}
+  \includegraphics[alt={},max width=\textwidth]{cb6cedf5-1f6e-45ca-bc60-008ab59ad0af-7_826_1655_1609_225}
+\captionsetup{labelformat=empty}
+\caption{Fig. 9: Histograms comparing prediction errors using the PIL tire model.}
+\end{center}
+\end{figure}
+
+and amenable to gradient-based optimization. The terramechanics model is then implemented in an MPC framework and online updates occur through stochastic gradient descent. Simulations in the high fidelity simulator Project Chrono demonstrate that the PIL tire model accurately captures tire forces and that the adaptive MPC framework reduces the prediction errors in the vehicle dynamics model, which leads to improved trajectory tracking over previously unseen terrain. Future work can extend the PIL tire model to threedimensional terrains. Additionally, experimental validation remains an important next step.
+
+\section*{References}
+[1] S. Taheri, C. Sandu, S. Taheri, E. Pinto, and D. Gorsich, "A technical survey on terramechanics models for tire-terrain interaction used in modeling and simulation of wheeled vehicles," Journal of Terramechanics, vol. 57, pp. 1-22, 2015.\\[0pt]
+[2] G. Ishigami, A. Miwa, K. Nagatani, and K. Yoshida, "Terramechanicsbased model for steering maneuver of planetary exploration rovers on loose soil," Journal of Field robotics, vol. 24, no. 3, pp. 233-250, 2007.\\[0pt]
+[3] H. Taghavifar and S. Rakheja, "A novel terramechanics-based pathtracking control of terrain-based wheeled robot vehicle with matchedmismatched uncertainties," IEEE Transactions on Vehicular Technology, vol. 69, no. 1, pp. 67-77, 2019.\\[0pt]
+[4] G. Binet, R. Krenn, A. Bemporad, et al., "Model predictive control applications for planetary rovers," in 11th International Symposium on Artificial Intelligence and Robotics in Space (iSAIRAS), 2012, pp. 4-6.\\[0pt]
+[5] J. Dallas, M. P. Cole, P. Jayakumar, and T. Ersal, "Terrain adaptive trajectory planning and tracking on deformable terrains," IEEE Transactions on Vehicular Technology, vol. 70, no. 11, pp. 11255-11268, 2021.\\[0pt]
+[6] P. Gupta, J. M. Smereka, and Y. Jia, "Reinforcement learning compensated model predictive control for off-road driving on unknown deformable terrain," arXiv preprint arXiv:2408.09253, 2024.\\[0pt]
+[7] T. Han, A. Liu, A. Li, A. Spitzer, G. Shi, and B. Boots, "Model predictive control for aggressive driving over uneven terrain," arXiv preprint arXiv:2311.12284, 2023.\\[0pt]
+[8] H. Lee, T. Kim, J. Mun, and W. Lee, "Learning terrain-aware kinodynamic model for autonomous off-road rally driving with model predictive path integral control," IEEE Robotics and Automation Letters, 2023.\\[0pt]
+[9] B. Li, Z. Pan, J. Liu, S. Zhou, S. Liu, S. Chen, and R. Wang, "Integrated control of a wheel-track hybrid vehicle based on adaptive model predictive control," Machines, vol. 12, no. 7, 2024.\\[0pt]
+[10] D. Rodríguez-Martínez, M. Van Winnendael, and K. Yoshida, "Highspeed mobility on planetary surfaces: A technical review," Journal of Field Robotics, vol. 36, no. 8, pp. 1436-1455, 2019.\\[0pt]
+[11] R. Krenn and G. Hirzinger, "Scm-a soil contact model for multibody system simulations," in 11th European Regional Conference of the International Society for Terrain-Vehicle Systems (ISTVS), 102009.\\[0pt]
+[12] A. J. R. Lopez-Arreguin and S. Montenegro, "Machine learning in planetary rovers: A survey of learning versus classical estimation methods in terramechanics for in situ exploration," Journal of Terramechanics, vol. 97, pp. 1-17, 2021.\\[0pt]
+[13] J. Dallas, M. P. Cole, P. Jayakumar, and T. Ersal, "Neural network based terramechanics modeling and estimation for deformable terrains," arXiv preprint arXiv:2003.02635, 2020.\\[0pt]
+[14] S. Yu, C. Shen, J. Dallas, B. I. Epureanu, P. Jayakumar, and T. Ersal, "A real-time terrain-adaptive local trajectory planner for high-speed autonomous off-road navigation on deformable terrains," IEEE Transactions on Intelligent Transportation Systems, 2024.\\[0pt]
+[15] K. Iagnemma, S. Kang, H. Shibly, and S. Dubowsky, "Online terrain parameter estimation for wheeled mobile robots with application to planetary rovers," IEEE transactions on robotics, vol. 20, no. 5, pp. 921-927, 2004.\\[0pt]
+[16] S. Banerjee, J. Harrison, P. M. Furlong, and M. Pavone, "Adaptive meta-learning for identification of rover-terrain dynamics," arXiv preprint arXiv:2009.10191, 2020.\\[0pt]
+[17] J. Dallas, K. Jain, Z. Dong, L. Sapronov, M. P. Cole, P. Jayakumar, and T. Ersal, "Online terrain estimation for autonomous vehicles on deformable terrains," Journal of Terramechanics, vol. 91, pp. 11-22, 2020.\\[0pt]
+[18] J. Dallas, "Terrain-aware autonomous navigation," Ph.D. dissertation, University of Michigan, 2021.\\[0pt]
+[19] H. Miao, X. Xia, A. S. Perelson, and H. Wu, "On identifiability of nonlinear ode models and applications in viral dynamics," SIAM review, vol. 53, no. 1, pp. 3-39, 2011.\\[0pt]
+[20] G. Sakayori and G. Ishigami, "Modeling of slip rate-dependent traversability for path planning of wheeled mobile robot in sandy terrain," Frontiers in Robotics and AI, vol. 11, 2024.\\[0pt]
+[21] K. Koysuren, A. F. Keles, and M. Cakmakci, "Online parameter estimation using physics-informed deep learning for vehicle stability algorithms," in 2023 American Control Conference (ACC). IEEE, 2023, pp. 466-471.\\[0pt]
+[22] F. Djeumou, J. Y. Goh, U. Topcu, and A. Balachandran, "Autonomous drifting with 3 minutes of data via learned tire models," in 2023 IEEE International Conference on Robotics and Automation (ICRA). IEEE, 2023, pp. 968-974.\\[0pt]
+[23] T. Kim, H. Lee, and W. Lee, "Physics embedded neural network vehicle model and applications in risk-aware autonomous driving using latent features," in 2022 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS). IEEE, 2022, pp. 4182-4189.\\[0pt]
+[24] J. Dallas, M. Thompson, J. Y. Goh, and A. Balachandran, "A hierarchical adaptive nonlinear model predictive control approach for maximizing tire force usage in autonomous vehicles," Field Robotics, vol. 3, pp. 222-242, 2023.\\[0pt]
+[25] J. Y. Wong, Terramechanics and Off-Road Vehicle Engineering: Terrain Behaviour and Off-Road Mobility. Elsevier, 2024.\\[0pt]
+[26] E. Fiala, "Seitenkraften am rollenden luftreifen," VdI, vol. 96, pp. 973-979, 1954.\\[0pt]
+[27] W. C. Smith, "Modeling of wheel-soil interaction for small ground vehicles operating on granular soil." Ph.D. dissertation, University of Michigan, 2014.\\[0pt]
+[28] Z. Jia, W. Smith, and H. Peng, "Fast analytical models of wheeled locomotion in deformable terrain for mobile robots," Robotica, vol. 31, no. 1, pp. 35-53, 2013.\\[0pt]
+[29] T. Hennigan, T. Cai, T. Norman, L. Martens, and I. Babuschkin, "Haiku: Sonnet for JAX," 2020. [Online]. Available: \href{http://github.com/deepmind/dm-haiku}{http://github.com/deepmind/dm-haiku}\\[0pt]
+[30] D. Kingma and J. Ba, "Adam: A method for stochastic optimization," International Conference on Learning Representations, 122014.\\[0pt]
+[31] H. Febbo, J. Liu, P. Jayakumar, J. L. Stein, and T. Ersal, "Moving obstacle avoidance for large, high-speed autonomous ground vehicles," in 2017 American Control Conference (ACC). IEEE, 2017, pp. 55685573.\\[0pt]
+[32] A. Rucco, G. Notarstefano, and J. Hauser, "On a reduced-order twotrack car model including longitudinal and lateral load transfer," in 2013 European Control Conference (ECC). IEEE, 2013, pp. 980985.\\[0pt]
+[33] M. Brown and J. Gerdes, "Coordinating tire forces to avoid obstacles using nonlinear model predictive control," IEEE Transactions on Intelligent Vehicles, vol. PP, pp. 1-1, 112019.\\[0pt]
+[34] J. A. E. Andersson, J. Gillis, G. Horn, J. B. Rawlings, and M. Diehl, "CasADi - A software framework for nonlinear optimization and optimal control," Mathematical Programming Computation, vol. 11, no. 1, pp. 1-36, 2019.\\[0pt]
+[35] A. Wächter and L. T. Biegler, "On the implementation of an interiorpoint filter line-search algorithm for large-scale nonlinear programming," Mathematical programming, vol. 106, 2006.\\[0pt]
+[36] L. Bottou, "Online algorithms and stochastic approximations," in Online Learning and Neural Networks, D. Saad, Ed. Cambridge, UK: Cambridge University Press, 1998, revised, oct 2012.\\[0pt]
+[37] N. Ding, M. Thompson, J. Dallas, J. Y. Goh, and J. Subosits, "Drifting with unknown tires: Learning vehicle models online with neural networks and model predictive control," in 2024 IEEE Intelligent Vehicles Symposium (IV). IEEE, 2024, pp. 2545-2552.\\[0pt]
+[38] G. Heiken, D. Vaniman, and B. M. French, Lunar sourcebook: A user's guide to the Moon. Cup Archive, 1991, no. 1259.\\[0pt]
+[39] M. G. Bekker, Introduction to Terrain-Vehicle Systems. Ann Arbor, MI: The University of Michigan Press, 1969.\\[0pt]
+[40] N. C. Costes, J. E. Farmer, and E. B. George, Mobility performance of the lunar roving vehicle: terrestrial studies, apollo 15 results. NASA, 1972, vol. 401.
+
+\begin{itemize}
+  \item 
+\end{itemize}
+
+
+\end{document}

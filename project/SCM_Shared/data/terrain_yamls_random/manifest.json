@@ -1,0 +1,28 @@
+[
+  {
+    "label": "terrain1",
+    "yaml": "/home/kyle/Documents/chrono-HIL/chrono-HIL/project/SCM_Shared/data/terrain_yamls_random/terrain1.yaml",
+    "true_n": 0.8837,
+    "coh_scale": 0.525,
+    "phi_delta_deg": -2.25,
+    "preset_proxy": "dirt",
+    "Kphi": 1518856.8,
+    "Kc": 3279.8,
+    "cohesion": 723.8,
+    "friction_angle": 27.21,
+    "janosi_shear": 0.025
+  },
+  {
+    "label": "terrain2",
+    "yaml": "/home/kyle/Documents/chrono-HIL/chrono-HIL/project/SCM_Shared/data/terrain_yamls_random/terrain2.yaml",
+    "true_n": 0.6339,
+    "coh_scale": 1.236,
+    "phi_delta_deg": 1.77,
+    "preset_proxy": "dirt",
+    "Kphi": 1243173.4,
+    "Kc": 7909.9,
+    "cohesion": 3098.7,
+    "friction_angle": 25.48,
+    "janosi_shear": 0.02
+  }
+]

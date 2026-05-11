@@ -1,0 +1,114 @@
+                                                                          The 12th Asian Conference on Multibody Dynamics
+                                                                                       October 25-29, 2026, Okinawa, Japan
+
+
+                        Terramechanics-Aware Shared Control for
+                      Off-Road Teleoperation on Deformable Terrain
+                           Kyle Sha, Zhenhao Zhou, Radu Serban, Dan Negrut
+
+                                   Department of Mechanical Engineering
+                                     University of Wisconsin–Madison
+                               1513 University Ave., Madison, WI 53706, USA
+                                {ksha2, zzhou292, serban, negrut}@wisc.edu
+
+Abstract
+We present a real-time, latency-aware human-in-the-loop framework for safe shared and autonomous
+control of vehicles on deformable Soil Contact Model (SCM) [4] terrain. A differentiable neural sur-
+rogate of the SCM tire force is embedded inside an ACADOS NMPC for terrain-aware trajectory gen-
+eration, while a learned online estimator regresses the dominant soil parameters from vehicle propri-
+oception so that both the planner and a latency-aware DOB-CBF-QP safety filter adapt to the ground
+and to the round-trip delay in real time. The framework runs on a Chrono HMMWV instrumented with
+Chrono::Sensor and driven by a Logitech G29 or keyboard fallback, with realistic teleoperation latency
+sampled from learned 5G traffic models [2] injected over a ZMQ bridge.
+Motivation and Contributions. Off-road teleoperation must contend with deformable-soil effects [1]
+that rigid-terrain tire models cannot capture without per-deployment recalibration [3], while time-varying
+network latency [2] requires latency-aware shared-control arbitration [8]. Building on Chrono [7] and
+Chrono::HIL [9], we contribute: (i) a differentiable neural SCM tire surrogate that augments the static
+MLP of [3] with rate-augmented and ResNet variants for an SQP-RTI NMPC; (ii) a learned online
+terrain estimator that replaces the UKF of [3] and conditions both the surrogate and the safety constraints
+from proprioception alone; (iii) a terrain- and latency-aware DOB-CBF-QP safety filter for obstacle
+avoidance; and (iv) a massively parallel data and benchmarking infrastructure with a randomised unseen-
+soil generator.
+
+Proposed Framework
+Real-Time HIL Stack. Chrono::Vehicle [5] runs an HMMWV on an SCM patch within Chrono::HIL [9].
+Chrono::Sensor provides a driver-POV camera and a MEMS-grade accelerometer / gyroscope (Gaussian
+noise + bias drift) that feed both the operator and the estimator. A second process running the NMPC and
+CBF-QP is coupled to the simulator over ZMQ, which also injects time-varying teleoperation latency
+sampled from learned 5G traffic models [2] rather than a constant offset (Fig. 1). The full stack closes
+the loop in real time on a single workstation.
+
+
+
+
+Figure 1: Left: shared-control architecture – the SCM surrogate and learned terrain estimator inform both the
+autonomous NMPC and the DOB-CBF-QP safety filter that screens delayed operator inputs. Right: closed-loop
+NMPC tracking benchmark over tire models, terrains and reference paths (RMS crosstrack error, mean ± std, 5
+runs/cell). Pacejka and TMeasy saturate on soft soils under sinusoidal excitation while all four neural variants stay
+below 0.35 m and most below 0.10 m.
+
+
+Differentiable SCM Surrogate. A small network maps wheel operating conditions and a reduced
+Bekker / Mohr–Coulomb parameter set [6] to longitudinal and lateral tire forces. Where [3] employ
+a static MLP, we additionally evaluate rate-augmented and ResNet variants that consume short propri-
+oceptive histories (Fig. 1, right). All variants are trained on parallelised Chrono SCM tire-rig sweeps
+and exported as CasADi expressions, so ACADOS auto-differentiates through the tire forces every solve
+step.
+Learned Online Terrain Estimator. Where Dallas et al. [3] drive an Unscented Kalman filter through
+their NN tire model to identify the dominant terrain parameter, we train a window MLP that regresses
+the Bekker sinkage exponent directly from a few seconds of proprioception (body velocities, yaw rate,
+IMU accelerations, wheel speeds, steering, throttle), using dimensionless coupling channels that make
+the descriptor approximately speed-invariant. The smoothed estimate re-conditions the surrogate and
+the CBF traction bound online. Trained on a mixed open-loop / closed-loop corpus that spans both on-
+manifold and off-manifold soil variations, the estimator converges within a few seconds on canonical
+clay, dirt and sand (Fig. 2, left) and generalises to randomly sampled unseen soils with off-manifold
+cohesion and friction perturbations. When this estimate re-conditions the differentiable surrogate, closed-
+loop NMPC tracking on soft soils improves by an order of magnitude over Pacejka and TMeasy (Fig. 1,
+right).
+Terrain-Aware Trajectory Generation and Obstacle Avoidance. The autonomous loop is an NMPC
+that minimises tracking, steering-rate and jerk penalties subject to a traction-aware lateral-acceleration
+constraint and smooth softplus obstacle penalties, so the solver plans around obstacles within its hori-
+zon. In HIL mode the operator’s delayed commands pass through a latency-aware DOB-CBF-QP safety
+filter [8] with a heading-aligned ellipsoidal barrier elongated ahead of the vehicle, so steering around ob-
+stacles is preferred over braking; safety margins and speed limits are computed online from the estimated
+terrain and the margin is inflated by an EMA-estimated round-trip delay drawn from the same 5G traffic
+model [2] that drives the latency injector.
+
+
+
+
+Figure 2: Left: convergence of n̂ on canonical clay/dirt/sand under closed-loop NMPC. Right: neural SCM
+surrogate Fy vs. Chrono SCM ground truth on a clay turn (front axle).
+
+
+
+Massively Parallel Data & Benchmarking Infrastructure. All training and benchmarking workloads
+run on a process-level parallelism layer that orchestrates dozens of independent Chrono processes simul-
+taneously, isolated by per-worker ZMQ ports and a shared YAML/CSV manifest. We open-source three
+such pipelines: (i) a tire-rig sweep harness that fans out Latin-Hypercube SCM contact-patch simulations
+across all available cores; (ii) a full-vehicle terrain-trace harness for many concurrent open/closed-loop
+runs over procedurally generated on- and off-manifold soils; and (iii) a closed-loop benchmarking suite
+that sweeps over (tire model, terrain, reference path, repeat) tuples in parallel – the 6 × 6 matrix in Fig. 1
+(180 NMPC runs) is produced in under half an hour on one workstation. Models, scripts, terrains and
+results are released publicly.
+
+References
+[1]   Bekker, M.G.: Introduction to Terrain-Vehicle Systems. University of Michigan Press, Ann Arbor, 1969.
+[2]   Choi, Y.-H. et al.: ML-based 5G traffic generation for practical simulations using open datasets. IEEE Communications
+      Magazine, Vol. 61, No. 10, pp. 98–104, 2023.
+[3]   Dallas, J.; Cole, M.P.; Jayakumar, P.; Ersal, T.: Terrain adaptive trajectory planning and tracking on deformable terrains.
+      IEEE Transactions on Vehicular Technology, Vol. 70, No. 11, pp. 11255–11268, 2021.
+[4]   Krenn, R.; Hirzinger, G.: SCM – a soil contact model for multi-body system simulations. In 11th European Regional
+      Conference of the International Society for Terrain-Vehicle Systems (ISTVS), Bremen, Germany, 2009.
+[5]   Serban, R.; Taylor, M.; Negrut, D.; Tasora, A.: Chrono::Vehicle – template-based ground vehicle modelling and simu-
+      lation. International Journal of Vehicle Performance, Vol. 5, No. 1, pp. 18–39, 2019.
+[6]   Shibly, H.; Iagnemma, K.; Dubowsky, S.: An equivalent soil mechanics formulation for rigid wheels in deformable
+      terrain, with application to planetary exploration rovers. Journal of Terramechanics, Vol. 42, No. 1, pp. 1–13, 2005.
+[7]   Tasora, A. et al.: Chrono: an open source multi-physics dynamics engine. In T. Kozubek (Ed.), High Performance
+      Computing in Science and Engineering, pp. 19–49, Springer, 2016.
+[8]   Zhang, H.; Zhang, H.; Wang, Y.; Zhou, Z.; Negrut, D.; Xu, X.: Shared control of teleoperated vehicles with delay-
+      compensated safety filtering. In Proceedings of the IEEE Conference on Control Technology and Applications (CCTA),
+      pp. 192–199, 2025.
+[9]   Zhou, Z. et al.: A Chrono-based framework for large-scale traffic simulation with human in the loop. In ECCOMAS
+      Thematic Conference on Multibody Dynamics, Lisbon, Portugal, 2023.
+

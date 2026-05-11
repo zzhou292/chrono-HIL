@@ -146,7 +146,7 @@ struct RateResult {
     double velocity;        // v at measurement (prescribed)
     double steering_rate;   // dα/dt at measurement
     double d_slip_ratio;    // dκ/dt at measurement
-    double d_slip_angle;    // dα/dt at measurement (= steering_rate)
+    double d_slip_angle;    // d(actual_alpha)/dt at measurement
     double d_velocity;      // dv/dt at measurement
     double Fz_avg, Fx_avg, Fy_avg;
     int n_samples;
@@ -444,9 +444,9 @@ RateResult CollectRateSample(
             result.slip_angle    = params.alpha_target;
             result.velocity      = params.velocity_target;
             result.steering_rate = params.dalpha;
-            result.d_slip_ratio  = params.dkappa;
-            result.d_slip_angle  = params.dalpha;
-            result.d_velocity    = params.dvelocity;
+            result.d_slip_ratio  = 0.0;
+            result.d_slip_angle  = 0.0;
+            result.d_velocity    = 0.0;
             result.n_samples     = count;
             result.actual_kappa    = sum_kappa / count;
             result.actual_alpha    = sum_alpha / count;
@@ -460,6 +460,12 @@ RateResult CollectRateSample(
             } else {
                 result.actual_dkappa = result.actual_dalpha = result.actual_dvelocity = 0;
             }
+            // Rate channels in the CSV represent finite differences of the
+            // measured states, matching how rate features are formed from
+            // time-series data in training.
+            result.d_slip_ratio = result.actual_dkappa;
+            result.d_slip_angle = result.actual_dalpha;
+            result.d_velocity   = result.actual_dvelocity;
             result.valid         = true;
         }
 
@@ -488,6 +494,27 @@ void WriteRateRecord(std::ofstream& csv, std::mutex& mtx,
                      const RateResult& result)
 {
     if (!result.valid) return;
+    auto finite = [](double v) { return std::isfinite(v); };
+    // Guard against rare rig glitches producing pathological rows that can
+    // dominate scaler statistics during NN training.
+    if (!finite(result.actual_kappa) || !finite(result.actual_alpha) ||
+        !finite(result.actual_velocity) || !finite(result.actual_dkappa) ||
+        !finite(result.actual_dalpha) || !finite(result.actual_dvelocity) ||
+        !finite(result.steering_rate) ||
+        !finite(result.Fz_avg) || !finite(result.Fx_avg) || !finite(result.Fy_avg)) {
+        return;
+    }
+    if (std::abs(result.actual_kappa) > 1.2 ||
+        std::abs(result.actual_alpha) > 0.7 ||
+        result.actual_velocity < 0.25 || result.actual_velocity > 20.0 ||
+        std::abs(result.actual_dkappa) > 5.0 ||
+        std::abs(result.actual_dalpha) > 2.0 ||
+        std::abs(result.actual_dvelocity) > 10.0 ||
+        std::abs(result.steering_rate) > 2.0 ||
+        result.Fz_avg < 1000.0 || result.Fz_avg > 10000.0 ||
+        std::abs(result.Fx_avg) > 5.0e4 || std::abs(result.Fy_avg) > 5.0e4) {
+        return;
+    }
 
     double mohr_friction_rad = params.mohr_friction * CH_DEG_TO_RAD;
 
@@ -498,10 +525,10 @@ void WriteRateRecord(std::ofstream& csv, std::mutex& mtx,
         << result.actual_alpha << ","
         << result.actual_velocity << ","
         << params.vertical_load << ","
-        << result.actual_dalpha << ","
-        << result.actual_dkappa << ","
-        << result.actual_dalpha << ","
-        << result.actual_dvelocity << ","
+        << result.steering_rate << ","
+        << result.d_slip_ratio << ","
+        << result.d_slip_angle << ","
+        << result.d_velocity << ","
         << params.bekker_Kphi << ","
         << params.bekker_Kc << ","
         << params.bekker_n << ","

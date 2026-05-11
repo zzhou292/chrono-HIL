@@ -113,6 +113,24 @@ struct StaticSampleParams {
     double mesh_spacing;
 };
 
+struct OperatingPointSample {
+    double slip_ratio;
+    double slip_angle;
+    double velocity;
+    double vertical_load;
+    double target_time;
+};
+
+struct TerrainPointSample {
+    double bekker_Kphi;
+    double bekker_Kc;
+    double bekker_n;
+    double mohr_cohesion;
+    double mohr_friction;
+    double janosi_shear;
+    double mesh_spacing;
+};
+
 // =============================================================================
 // Result from one simulation
 // =============================================================================
@@ -136,6 +154,31 @@ struct StaticResult {
 // =============================================================================
 // Latin Hypercube Sampling over all independently sampled parameters
 // =============================================================================
+std::vector<double> GenerateLHSDimension(int n, double lo, double hi, std::mt19937& rng) {
+    std::vector<double> v(n);
+    std::vector<int> perm(n);
+    std::iota(perm.begin(), perm.end(), 0);
+    std::shuffle(perm.begin(), perm.end(), rng);
+    std::uniform_real_distribution<> u(0.0, 1.0);
+    for (int i = 0; i < n; i++) {
+        v[i] = lo + ((perm[i] + u(rng)) / n) * (hi - lo);
+    }
+    return v;
+}
+
+void FinalizeSampleKinematics(StaticSampleParams& s, const ParameterRanges& r) {
+    double t_target = std::clamp(s.target_time, T_TARGET_MIN, T_TARGET_MAX);
+    if (r.steering_rate_max > 1e-8) {
+        double t_ramp_min = std::abs(s.slip_angle) / r.steering_rate_max;
+        double t_min_sr = t_ramp_min + T_SETTLE_MIN;
+        t_target = std::max(t_target, t_min_sr);
+    }
+    t_target = std::clamp(t_target, T_TARGET_MIN, T_TARGET_MAX);
+    s.target_time = t_target;
+    double t_ramp = s.target_time - T_SETTLE_MIN;
+    s.steering_rate = (std::abs(s.slip_angle) < 1e-8 || t_ramp < 1e-8) ? 0.0 : (s.slip_angle / t_ramp);
+}
+
 std::vector<StaticSampleParams> GenerateLHSSamples(int n, const ParameterRanges& r) {
     constexpr int NDIM = 12;  // steering_rate is derived from (slip_angle, target_time)
     std::mt19937 rng(42);
@@ -167,17 +210,7 @@ std::vector<StaticSampleParams> GenerateLHSSamples(int n, const ParameterRanges&
         // evaluates f(t - delay) instead of f(t). The polynomial f(x) = c1*x
         // becomes c1*(t - T_SETTLE_MIN) at sim time t. The effective ramp time
         // is therefore (t_target - T_SETTLE_MIN), not t_target.
-        double t_target = lerp(lhs[4][i], T_TARGET_MIN, T_TARGET_MAX);
-        // Respect requested steering-rate bound on the effective ramp time.
-        if (r.steering_rate_max > 1e-8) {
-            double t_ramp_min = std::abs(s.slip_angle) / r.steering_rate_max;
-            double t_min_sr = t_ramp_min + T_SETTLE_MIN;
-            t_target = std::max(t_target, t_min_sr);
-        }
-        t_target = std::clamp(t_target, T_TARGET_MIN, T_TARGET_MAX);
-        s.target_time = t_target;
-        double t_ramp = s.target_time - T_SETTLE_MIN;
-        s.steering_rate = (std::abs(s.slip_angle) < 1e-8 || t_ramp < 1e-8) ? 0.0 : (s.slip_angle / t_ramp);
+        s.target_time = lerp(lhs[4][i], T_TARGET_MIN, T_TARGET_MAX);
         s.bekker_Kphi   = lerp(lhs[5][i], r.bekker_Kphi_min, r.bekker_Kphi_max);
         s.bekker_Kc     = lerp(lhs[6][i], r.bekker_Kc_min, r.bekker_Kc_max);
         s.bekker_n      = lerp(lhs[7][i], r.bekker_n_min, r.bekker_n_max);
@@ -185,7 +218,76 @@ std::vector<StaticSampleParams> GenerateLHSSamples(int n, const ParameterRanges&
         s.mohr_friction = lerp(lhs[9][i], r.mohr_friction_min, r.mohr_friction_max);
         s.janosi_shear  = lerp(lhs[10][i], r.janosi_shear_min, r.janosi_shear_max);
         s.mesh_spacing  = lerp(lhs[11][i], r.mesh_spacing_min, r.mesh_spacing_max);
+        FinalizeSampleKinematics(s, r);
     }
+    return samples;
+}
+
+std::vector<StaticSampleParams> GenerateFactoredSamples(int n, const ParameterRanges& r, int terrain_bank_size) {
+    std::mt19937 rng(42);
+    int n_terrain = std::max(1, std::min(terrain_bank_size, n));
+    int n_ops = std::max(1, (n + n_terrain - 1) / n_terrain);
+
+    auto slip_ratios = GenerateLHSDimension(n_ops, r.slip_ratio_min, r.slip_ratio_max, rng);
+    auto slip_angles = GenerateLHSDimension(n_ops, r.slip_angle_min, r.slip_angle_max, rng);
+    auto velocities = GenerateLHSDimension(n_ops, r.velocity_min, r.velocity_max, rng);
+    auto vertical_loads = GenerateLHSDimension(n_ops, r.vertical_load_min, r.vertical_load_max, rng);
+    auto target_times = GenerateLHSDimension(n_ops, T_TARGET_MIN, T_TARGET_MAX, rng);
+
+    auto bk_Kphis = GenerateLHSDimension(n_terrain, r.bekker_Kphi_min, r.bekker_Kphi_max, rng);
+    auto bk_Kcs = GenerateLHSDimension(n_terrain, r.bekker_Kc_min, r.bekker_Kc_max, rng);
+    auto bk_ns = GenerateLHSDimension(n_terrain, r.bekker_n_min, r.bekker_n_max, rng);
+    auto mc_cohesions = GenerateLHSDimension(n_terrain, r.mohr_cohesion_min, r.mohr_cohesion_max, rng);
+    auto mc_frictions = GenerateLHSDimension(n_terrain, r.mohr_friction_min, r.mohr_friction_max, rng);
+    auto j_shears = GenerateLHSDimension(n_terrain, r.janosi_shear_min, r.janosi_shear_max, rng);
+    auto meshes = GenerateLHSDimension(n_terrain, r.mesh_spacing_min, r.mesh_spacing_max, rng);
+
+    std::vector<OperatingPointSample> ops(n_ops);
+    for (int i = 0; i < n_ops; i++) {
+        ops[i] = OperatingPointSample{
+            slip_ratios[i], slip_angles[i], velocities[i], vertical_loads[i], target_times[i],
+        };
+    }
+    std::vector<TerrainPointSample> terrains(n_terrain);
+    for (int i = 0; i < n_terrain; i++) {
+        terrains[i] = TerrainPointSample{
+            bk_Kphis[i], bk_Kcs[i], bk_ns[i], mc_cohesions[i],
+            mc_frictions[i], j_shears[i], meshes[i],
+        };
+    }
+
+    std::vector<int> op_perm(n_ops);
+    std::vector<int> terrain_perm(n_terrain);
+    std::iota(op_perm.begin(), op_perm.end(), 0);
+    std::iota(terrain_perm.begin(), terrain_perm.end(), 0);
+    std::shuffle(op_perm.begin(), op_perm.end(), rng);
+    std::shuffle(terrain_perm.begin(), terrain_perm.end(), rng);
+
+    std::vector<StaticSampleParams> samples;
+    samples.reserve(n);
+    for (int o = 0; o < n_ops && static_cast<int>(samples.size()) < n; o++) {
+        int terrain_offset = (o * 7) % n_terrain;
+        const auto& op = ops[op_perm[o]];
+        for (int j = 0; j < n_terrain && static_cast<int>(samples.size()) < n; j++) {
+            const auto& terrain = terrains[terrain_perm[(j + terrain_offset) % n_terrain]];
+            StaticSampleParams s{};
+            s.slip_ratio = op.slip_ratio;
+            s.slip_angle = op.slip_angle;
+            s.velocity = op.velocity;
+            s.vertical_load = op.vertical_load;
+            s.target_time = op.target_time;
+            s.bekker_Kphi = terrain.bekker_Kphi;
+            s.bekker_Kc = terrain.bekker_Kc;
+            s.bekker_n = terrain.bekker_n;
+            s.mohr_cohesion = terrain.mohr_cohesion;
+            s.mohr_friction = terrain.mohr_friction;
+            s.janosi_shear = terrain.janosi_shear;
+            s.mesh_spacing = terrain.mesh_spacing;
+            FinalizeSampleKinematics(s, r);
+            samples.push_back(s);
+        }
+    }
+
     return samples;
 }
 
@@ -466,7 +568,8 @@ void signal_handler(int) { g_stop = 1; }
 // =============================================================================
 #ifdef __linux__
 void CollectWithSubprocessBatching(int n_samples, const std::string& output_file,
-                                   int num_threads, bool use_parallel, int batch_size)
+                                   int num_threads, bool use_parallel, int batch_size,
+                                   bool use_factored_sampling, int terrain_bank_size)
 {
     std::cout << "\n=== Subprocess-Batched Static Data Collection ===\n"
               << "Total samples: " << n_samples << "\n"
@@ -481,9 +584,10 @@ void CollectWithSubprocessBatching(int n_samples, const std::string& output_file
         std::ofstream hdr(output_file);
         hdr << CSV_HEADER;
     }
-
     ParameterRanges ranges;
-    auto all_samples = GenerateLHSSamples(n_samples, ranges);
+    auto all_samples = use_factored_sampling
+        ? GenerateFactoredSamples(n_samples, ranges, terrain_bank_size)
+        : GenerateLHSSamples(n_samples, ranges);
 
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
@@ -539,7 +643,8 @@ void CollectWithSubprocessBatching(int n_samples, const std::string& output_file
 // Single-process collection
 // =============================================================================
 void CollectStaticData(int n_samples, const std::string& output_file,
-                       int num_threads, bool use_parallel, bool visualize)
+                       int num_threads, bool use_parallel, bool visualize,
+                       bool use_factored_sampling, int terrain_bank_size)
 {
     std::cout << "\n=== Static SCM Data Collection ===\n"
               << "Samples: " << n_samples << "\n"
@@ -548,7 +653,9 @@ void CollectStaticData(int n_samples, const std::string& output_file,
               << "Target crossing time (per sample): [" << T_TARGET_MIN << ", " << T_TARGET_MAX << "] s\n"
               << "Measurement window: " << T_MEASURE << "s\n"
               << "Visualization: " << (visualize ? "ON" : "OFF") << "\n"
-              << "LHS over 11 independent parameters (+ steering_rate derived from slip/time)\n";
+              << (use_factored_sampling
+                  ? "Factored sampling: separate terrain bank and operating-point bank\n"
+                  : "LHS over 11 independent parameters (+ steering_rate derived from slip/time)\n");
 
 #ifdef CHRONO_OPENMP
     if (use_parallel) {
@@ -572,7 +679,9 @@ void CollectStaticData(int n_samples, const std::string& output_file,
 
     std::mutex csv_mtx;
     ParameterRanges ranges;
-    auto samples = GenerateLHSSamples(n_samples, ranges);
+    auto samples = use_factored_sampling
+        ? GenerateFactoredSamples(n_samples, ranges, terrain_bank_size)
+        : GenerateLHSSamples(n_samples, ranges);
     std::atomic<int> completed{0};
     std::atomic<int> success{0};
     std::atomic<int> n_alpha_warn{0};
@@ -661,8 +770,10 @@ int main(int argc, char* argv[]) {
     std::string output_file = "scm_static_data.csv";
     bool use_parallel = true;
     bool visualize = false;
+    bool use_factored_sampling = false;
     int num_threads = 0;
     int batch_size = 0;
+    int terrain_bank_size = 0;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -674,12 +785,19 @@ int main(int argc, char* argv[]) {
             use_parallel = false;
         } else if (arg == "--visualize" || arg == "-v") {
             visualize = true;
+        } else if (arg == "--factored") {
+            use_factored_sampling = true;
+        } else if (arg == "--terrain-bank-size") {
+            if (i + 1 < argc) terrain_bank_size = std::atoi(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [num_samples] [output.csv] [options]\n\n"
                       << "Collects static steady-state tire force data for NN training.\n"
                       << "Linear-only mode with alpha(0)=0.\n"
                       << "11 parameters are independently sampled via LHS; steering_rate is\n"
                       << "derived from (slip_angle / target_time) for kinematic consistency.\n\n"
+                      << "Factored mode separates terrain sampling from operating-point sampling,\n"
+                      << "then pairs them systematically so each terrain appears under multiple\n"
+                      << "operating conditions without biasing toward any named preset.\n\n"
                       << "Linear-only profile: alpha(t)=sr*t with alpha(0)=0.\n"
                       << "Per-sample target crossing time is clamped to ["
                       << T_TARGET_MIN << ", " << T_TARGET_MAX << "] s.\n"
@@ -690,6 +808,8 @@ int main(int argc, char* argv[]) {
                       << "  N                   Number of samples (default: 10000)\n"
                       << "  --visualize, -v     Enable Irrlicht visualization (single-thread only)\n"
                       << "  --sequential, -s    Single-threaded\n"
+                      << "  --factored          Use separate terrain/op sampling banks\n"
+                      << "  --terrain-bank-size N  Terrain bank size for --factored (default: sqrt(N))\n"
                       << "  --threads N, -t N   OpenMP threads (0=auto)\n"
                       << "  --batch-size N, -b N  Subprocess batch size (prevents OOM)\n"
                       << "  --help, -h          Show help\n";
@@ -704,6 +824,11 @@ int main(int argc, char* argv[]) {
     SetChronoDataPath(CHRONO_DATA_DIR);
 
     try {
+        if (use_factored_sampling && terrain_bank_size <= 0) {
+            terrain_bank_size = std::max(16, static_cast<int>(std::sqrt(std::max(1, n_samples))));
+        }
+        terrain_bank_size = std::max(1, std::min(terrain_bank_size, n_samples));
+
         if (visualize) {
 #ifndef CHRONO_IRRLICHT
             std::cerr << "Error: built without Irrlicht support. "
@@ -722,11 +847,17 @@ int main(int argc, char* argv[]) {
 
 #ifdef __linux__
         if (batch_size > 0) {
-            CollectWithSubprocessBatching(n_samples, output_file, num_threads, use_parallel, batch_size);
+            CollectWithSubprocessBatching(
+                n_samples, output_file, num_threads, use_parallel, batch_size,
+                use_factored_sampling, terrain_bank_size
+            );
             return 0;
         }
 #endif
-        CollectStaticData(n_samples, output_file, num_threads, use_parallel, visualize);
+        CollectStaticData(
+            n_samples, output_file, num_threads, use_parallel, visualize,
+            use_factored_sampling, terrain_bank_size
+        );
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;

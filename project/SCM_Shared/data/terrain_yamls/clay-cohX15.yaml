@@ -1,0 +1,9 @@
+Kphi: 692200
+Kc: 13200
+n: 0.5
+cohesion: 6210.0
+friction_angle: 13.0
+janosi_shear: 0.01
+elastic_stiffness: 200000000.0
+damping: 30000.0
+description: clay_coh_x1.5

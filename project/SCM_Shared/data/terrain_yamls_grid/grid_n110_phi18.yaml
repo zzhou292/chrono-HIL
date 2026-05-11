@@ -1,0 +1,9 @@
+Kphi: 1523400.0
+Kc: 900.0
+n: 1.1
+cohesion: 1000.0
+friction_angle: 18.0
+janosi_shear: 0.025
+elastic_stiffness: 200000000.0
+damping: 30000.0
+description: grid_n1.10_phi18

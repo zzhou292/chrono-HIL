@@ -26,9 +26,6 @@ Usage:
     # Pacejka MPC tire model with sensor visualization
     python launch_decoupled.py --model pacejka --vis-mode sensor
 
-    # Simple linear tire model, no delay compensation
-    python launch_decoupled.py --model linear --no-delay-comp
-
     # Remote controller (sim on this machine, controller elsewhere)
     python launch_decoupled.py --ctrl-host 192.168.1.50
 """
@@ -49,8 +46,8 @@ def main():
         epilog="""
 Examples:
   %(prog)s --path sinusoidal --terrain clay --time 20
-  %(prog)s --model linear --no-vis
-  %(prog)s --model pacejka                   # Pacejka Magic Formula MPC
+  %(prog)s --model pacejka                   # Pacejka Magic Formula MPC (rigid-terrain params)
+  %(prog)s --model pacejka-oracle --terrain clay  # Oracle Pacejka (terrain-fitted, upper bound)
   %(prog)s --model tmeasy                    # TMeasy MPC tire model
   %(prog)s --vis-mode sensor                 # Driver POV via Chrono Sensor
   %(prog)s --vis-mode both                   # Irrlicht + Sensor simultaneously
@@ -74,6 +71,9 @@ Examples:
     p.add_argument("--vis-mode", default=None,
                    choices=["irrlicht", "sensor", "both", "none"],
                    help="Visualization mode: irrlicht, sensor (driver POV), both, or none")
+    p.add_argument("--irrlicht-window-size", type=int, nargs=2,
+                   metavar=("WIDTH", "HEIGHT"), default=[4320, 720],
+                   help="Irrlicht window size in pixels")
     p.add_argument("--no-rt",  action="store_true",
                    help="Disable real-time pacing (fast-forward; breaks MPC sync)")
     p.add_argument("--no-noise", action="store_true",
@@ -93,19 +93,32 @@ Examples:
 
     # Controller-specific
     p.add_argument("--model", default="nn",
-                   choices=["nn", "pacejka", "tmeasy", "linear"],
-                   help="MPC tire model: nn, pacejka (Magic Formula), tmeasy, or linear")
-    p.add_argument("--nn-model", default="paper_v1_mlp_16_4")
+                   choices=["nn", "pacejka", "pacejka-oracle", "tmeasy"],
+                   help="MPC tire model: nn, pacejka (rigid-terrain defaults), "
+                        "pacejka-oracle (terrain-fitted params, oracle upper bound), "
+                        "or tmeasy")
+    p.add_argument("--nn-model", default="paper_v2_mlp_16_4")
     p.add_argument("--kappa", default="measured", choices=["zero", "approx", "measured"])
     p.add_argument("--no-lat-transfer", action="store_true")
     p.add_argument("--no-delay-comp", action="store_true")
     p.add_argument("--no-path-reindex", action="store_true")
     p.add_argument("--no-temporal-staged", action="store_true",
                    help="Disable stage-varying temporal history")
-    p.add_argument("--symbolic-rates", action="store_true",
-                   help="Compute rate features symbolically in MPC dynamics")
+    p.add_argument(
+        "--symbolic-rates",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Compute rate features symbolically in MPC dynamics (default: on). "
+             "Use --no-symbolic-rates to disable.",
+    )
     p.add_argument("--rms-time-start", type=float, default=2.0,
                    help="Start time for RMS calculation (s)")
+    p.add_argument("--dob-ki", type=float, default=0.15,
+                   help="Throttle DOB integrator gain [throttle/(m/s)/s]; 0 disables DOB")
+    p.add_argument("--dob-max", type=float, default=0.35,
+                   help="Asymmetric upper clip on the DOB throttle bias")
+    p.add_argument("--dob-bleed", type=float, default=0.5,
+                   help="Exponential bleed rate of DOB during MPC braking [1/s]")
     p.add_argument("--no-plot", action="store_true",
                    help="Skip generating end-of-run plots")
     p.add_argument("--live-plot", action="store_true",
@@ -188,53 +201,79 @@ Examples:
     p.add_argument("--tc-ema-alpha", type=float, default=0.3,
                    help="EMA smoothing for terrain classifier (0=smooth, 1=raw)")
 
-    # Live residual adaptation
-    p.add_argument("--residual-adapt", action="store_true",
-                   help="Enable l4acados-style online residual adaptation in controller")
-    p.add_argument("--residual-checkpoint", default=None,
-                   help="Path to residual_model.pt used when --residual-adapt is enabled")
-    p.add_argument("--residual-no-online", action="store_true",
-                   help="Residual inference only (disable online updates)")
-    p.add_argument("--residual-correction-gain", type=float, default=1.0)
-    p.add_argument("--residual-online-lr", type=float, default=2e-4)
-    p.add_argument("--residual-online-epochs", type=int, default=4)
-    p.add_argument("--residual-online-batch-size", type=int, default=256)
-    p.add_argument("--residual-update-interval", type=int, default=5)
-    p.add_argument("--residual-buffer-size", type=int, default=4096)
-    p.add_argument("--residual-warmup-samples", type=int, default=128)
-    p.add_argument("--residual-clip-u", type=float, default=0.25)
-    p.add_argument("--residual-clip-v", type=float, default=0.25)
-    p.add_argument("--residual-clip-omega", type=float, default=0.08)
-    p.add_argument("--residual-log-json", default=None,
-                   help="Optional JSON output path for residual adapter summary")
+    # Online terrain parameter estimator
+    p.add_argument("--terrain-estimator", action="store_true",
+                   help="Enable online terrain parameter estimation from speed capability "
+                        "and inertial cues (sensor-realistic, replaces classifier for MPC param updates)")
+    p.add_argument("--te-window", type=int, default=50)
+    p.add_argument("--te-update-interval", type=int, default=10)
+    p.add_argument("--te-lr", type=float, default=0.01)
+    p.add_argument("--te-steps", type=int, default=20)
+    p.add_argument("--te-min-excitation", type=float, default=0.3)
+    p.add_argument("--te-min-confidence", type=float, default=0.3)
+    p.add_argument("--learned-terrain-model-dir", default=None,
+                   help="Path to the retained sliding-window terrain-estimator checkpoint "
+                        "(defaults to nn_models/terrain_window_mlp_v3_cl)")
+    p.add_argument("--te-verbose", action="store_true",
+                   help="Print verbose terrain-estimator predictions in the "
+                        "controller (useful for offline log parsing)")
 
     # Force-level residual (corrects Fy across horizon)
     p.add_argument("--force-residual", action="store_true",
                    help="Enable force-level residual correction (ΔFy per horizon stage)")
     p.add_argument("--force-residual-checkpoint", default=None,
                    help="Path to force_residual_model.pt")
-    p.add_argument("--force-residual-no-online", action="store_true",
-                   help="Disable online bias adaptation for force residual")
+    p.add_argument("--force-residual-online", action="store_true",
+                   help="Enable online EMA bias adaptation for force residual (off by default)")
     p.add_argument("--force-residual-clip", type=float, default=500.0,
                    help="Symmetric clip on ΔFy corrections (N)")
     p.add_argument("--force-residual-gain", type=float, default=1.0,
                    help="Output scaling for force residual (<1 = conservative)")
+    p.add_argument("--force-residual-online-lr", type=float, default=0.03,
+                   help="EMA alpha for force residual online bias adaptation (0.01–0.15)")
+
+    p.add_argument("--gp-max-inducing", type=int, default=200,
+                   help="Maximum number of inducing points in sparse GP")
+    p.add_argument("--gp-noise-var", type=float, default=0.1,
+                   help="GP observation noise variance")
+
+    # Dynamics GP (persistent bicycle model residual learning)
+    p.add_argument("--dynamics-gp", action="store_true",
+                   help="Enable GP-based persistent dynamics residual learning [Δu̇,Δv̇,Δω̇]")
+    p.add_argument("--dynamics-gp-state", default="data/gp_residual/dynamics_gp_state.npz",
+                   help="Path to dynamics GP state file. Relative paths are resolved from the project root.")
+    p.add_argument("--dynamics-gp-clip", type=float, default=2.0,
+                   help="Symmetric clip on dynamics residuals (m/s² or rad/s²)")
+    p.add_argument("--dynamics-gp-gain", type=float, default=0.5,
+                   help="Output scaling for dynamics GP (<1 = conservative, default: 0.5)")
+    p.add_argument("--gp-uncertainty-speed", action="store_true",
+                   help="Scale v_ref down proportionally to GP variance; recovers full speed as GP learns")
+    p.add_argument("--gp-speed-scale-min", type=float, default=0.7,
+                   help="Minimum speed scale when GP is fully uncertain (default: 0.7)")
+    p.add_argument("--gp-terrain-gate", nargs="*", default=[],
+                   help="Only apply GP corrections when terrain estimate is in this list (e.g. clay)")
 
     p.add_argument("--ax-filter-tau", type=float, default=0.5,
                    help="Complementary filter time constant (s) for IMU ax (0 = no filter)")
+    p.add_argument("--vel-filter-tau", type=float, default=0.05,
+                   help="EMA time constant (s) for smoothing noisy [u, v, omega] (0 = off)")
 
     args = p.parse_args()
+    script_dir = Path(__file__).resolve().parent
+    project_root = script_dir.parent
     if args.use_prediction:
         args.terrain_classifier = True
     # Default lead-in for sinusoidal path (cold-start infeasibility without it)
     if args.path == 'sinusoidal' and args.lead_in == 0.0:
         args.lead_in = 0.0
-    if args.residual_adapt and not args.residual_checkpoint:
-        p.error("--residual-adapt requires --residual-checkpoint")
     if args.force_residual and not args.force_residual_checkpoint:
         p.error("--force-residual requires --force-residual-checkpoint")
 
-    script_dir = Path(__file__).parent
+    if args.dynamics_gp:
+        gp_state = Path(args.dynamics_gp_state).expanduser()
+        if not gp_state.is_absolute():
+            gp_state = project_root / gp_state
+        args.dynamics_gp_state = str(gp_state.resolve())
 
     # Resolve vis mode: --no-vis is shorthand for --vis-mode none
     vis_mode = args.vis_mode
@@ -256,6 +295,8 @@ Examples:
         "--ctrl-port", str(args.ctrl_port),
         "--bumpiness", str(args.bumpiness),
         "--vis-mode", vis_mode,
+        "--irrlicht-window-size", str(args.irrlicht_window_size[0]),
+        str(args.irrlicht_window_size[1]),
     ]
     if args.no_rt:
         sim_cmd.append("--no-rt")
@@ -317,6 +358,9 @@ Examples:
         "--ctrl-port", str(args.ctrl_port),
         "--rms-time-start", str(args.rms_time_start),
         "--plot-dir", args.plot_dir,
+        "--dob-ki", str(args.dob_ki),
+        "--dob-max", str(args.dob_max),
+        "--dob-bleed", str(args.dob_bleed),
     ]
     if args.no_delay_comp:
         ctrl_cmd.append("--no-delay-comp")
@@ -328,6 +372,8 @@ Examples:
         ctrl_cmd.append("--no-temporal-staged")
     if args.symbolic_rates:
         ctrl_cmd.append("--symbolic-rates")
+    else:
+        ctrl_cmd.append("--no-symbolic-rates")
     if args.no_plot:
         ctrl_cmd.append("--no-plot")
     if args.live_plot:
@@ -345,33 +391,46 @@ Examples:
         ctrl_cmd.append("--use-prediction")
     if args.prediction_min_confidence > 0.0:
         ctrl_cmd.extend(["--prediction-min-confidence", str(args.prediction_min_confidence)])
-    if args.residual_adapt:
-        ctrl_cmd.append("--residual-adapt")
-        ctrl_cmd.extend(["--residual-checkpoint", str(args.residual_checkpoint)])
-        if args.residual_no_online:
-            ctrl_cmd.append("--residual-no-online")
-        ctrl_cmd.extend(["--residual-correction-gain", str(args.residual_correction_gain)])
-        ctrl_cmd.extend(["--residual-online-lr", str(args.residual_online_lr)])
-        ctrl_cmd.extend(["--residual-online-epochs", str(args.residual_online_epochs)])
-        ctrl_cmd.extend(["--residual-online-batch-size", str(args.residual_online_batch_size)])
-        ctrl_cmd.extend(["--residual-update-interval", str(args.residual_update_interval)])
-        ctrl_cmd.extend(["--residual-buffer-size", str(args.residual_buffer_size)])
-        ctrl_cmd.extend(["--residual-warmup-samples", str(args.residual_warmup_samples)])
-        ctrl_cmd.extend(["--residual-clip-u", str(args.residual_clip_u)])
-        ctrl_cmd.extend(["--residual-clip-v", str(args.residual_clip_v)])
-        ctrl_cmd.extend(["--residual-clip-omega", str(args.residual_clip_omega)])
-        if args.residual_log_json:
-            ctrl_cmd.extend(["--residual-log-json", str(args.residual_log_json)])
+    if args.terrain_estimator:
+        ctrl_cmd.append("--terrain-estimator")
+        ctrl_cmd.extend(["--te-window", str(args.te_window)])
+        ctrl_cmd.extend(["--te-update-interval", str(args.te_update_interval)])
+        ctrl_cmd.extend(["--te-lr", str(args.te_lr)])
+        ctrl_cmd.extend(["--te-steps", str(args.te_steps)])
+        ctrl_cmd.extend(["--te-min-excitation", str(args.te_min_excitation)])
+        ctrl_cmd.extend(["--te-min-confidence", str(args.te_min_confidence)])
+        if args.learned_terrain_model_dir:
+            ctrl_cmd.extend(["--learned-terrain-model-dir",
+                             str(args.learned_terrain_model_dir)])
+        if args.te_verbose:
+            ctrl_cmd.append("--te-verbose")
 
     if args.force_residual:
         ctrl_cmd.append("--force-residual")
         ctrl_cmd.extend(["--force-residual-checkpoint", str(args.force_residual_checkpoint)])
-        if args.force_residual_no_online:
-            ctrl_cmd.append("--force-residual-no-online")
+        if args.force_residual_online:
+            ctrl_cmd.append("--force-residual-online")
         ctrl_cmd.extend(["--force-residual-clip", str(args.force_residual_clip)])
         ctrl_cmd.extend(["--force-residual-gain", str(args.force_residual_gain)])
+        ctrl_cmd.extend(["--force-residual-online-lr", str(args.force_residual_online_lr)])
+
+    if args.dynamics_gp:
+        ctrl_cmd.append("--dynamics-gp")
+        ctrl_cmd.extend(["--dynamics-gp-state", str(args.dynamics_gp_state)])
+        ctrl_cmd.extend(["--dynamics-gp-clip", str(args.dynamics_gp_clip)])
+        ctrl_cmd.extend(["--dynamics-gp-gain", str(args.dynamics_gp_gain)])
+        if args.gp_uncertainty_speed:
+            ctrl_cmd.append("--gp-uncertainty-speed")
+            ctrl_cmd.extend(["--gp-speed-scale-min", str(args.gp_speed_scale_min)])
+        if args.gp_terrain_gate:
+            ctrl_cmd.extend(["--gp-terrain-gate"] + args.gp_terrain_gate)
+
+    if args.dynamics_gp:
+        ctrl_cmd.extend(["--gp-max-inducing", str(args.gp_max_inducing)])
+        ctrl_cmd.extend(["--gp-noise-var", str(args.gp_noise_var)])
 
     ctrl_cmd.extend(["--ax-filter-tau", str(args.ax_filter_tau)])
+    ctrl_cmd.extend(["--vel-filter-tau", str(args.vel_filter_tau)])
 
     # ---- Terrain classifier command ----
     tc_cmd = [

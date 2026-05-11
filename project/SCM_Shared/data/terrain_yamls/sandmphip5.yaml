@@ -1,0 +1,9 @@
+Kphi: 1523400
+Kc: 900
+n: 1.1
+cohesion: 1000
+friction_angle: 35.0
+janosi_shear: 0.025
+elastic_stiffness: 200000000.0
+damping: 30000.0
+description: sand_phi+5

@@ -1,0 +1,9 @@
+Kphi: 1103600.0
+Kc: 9250.0
+n: 0.6
+cohesion: 2920.0
+friction_angle: 21.0
+janosi_shear: 0.0175
+elastic_stiffness: 200000000.0
+damping: 30000.0
+description: interp_n_0.60

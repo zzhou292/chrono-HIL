@@ -1,0 +1,55 @@
+==============================================================================
+[exp] joint (n, phi) estimation summary
+      windows: train=89392 val=22348 held=792
+==============================================================================
+
+--- model: n_only ---
+  val  : n_rmse=0.0384 bias=+0.0017
+  hold : n_rmse=0.0722 bias=+0.0096
+      VAL            clay  k=3848  n_rmse=0.0587  n_bias=+0.0348
+      VAL            dirt  k=12321  n_rmse=0.0366  n_bias=-0.0070
+      VAL            sand  k=6179  n_rmse=0.0226  n_bias=-0.0016
+      HELD           clay  k= 264  n_rmse=0.1049  n_bias=+0.0811
+      HELD           dirt  k= 264  n_rmse=0.0676  n_bias=-0.0575
+      HELD           sand  k= 264  n_rmse=0.0095  n_bias=+0.0052
+      ---- per held-out trace label ----
+      HELD             claymphim5  k= 132  true=(0.50)  n_pred=0.62  n_rmse=0.135
+      HELD             claymphip5  k= 132  true=(0.50)  n_pred=0.55  n_rmse=0.062
+      HELD             dirtmphim5  k= 132  true=(0.70)  n_pred=0.62  n_rmse=0.086
+      HELD             dirtmphip5  k= 132  true=(0.70)  n_pred=0.66  n_rmse=0.041
+      HELD             sandmphim5  k= 132  true=(1.10)  n_pred=1.10  n_rmse=0.008
+      HELD             sandmphip5  k= 132  true=(1.10)  n_pred=1.11  n_rmse=0.011
+
+--- model: phi_only ---
+  val  : phi_rmse=2.9481 bias=-0.0170
+  hold : phi_rmse=3.4775 bias=-0.3898
+      VAL            clay  k=3848  phi_rmse=5.6404  phi_bias=+3.1566
+      VAL            dirt  k=12321  phi_rmse=2.3459  phi_bias=-0.9945
+      VAL            sand  k=6179  phi_rmse=0.8053  phi_bias=-0.0443
+      HELD           clay  k= 264  phi_rmse=3.0952  phi_bias=+2.4907
+      HELD           dirt  k= 264  phi_rmse=5.0971  phi_bias=-4.1993
+      HELD           sand  k= 264  phi_rmse=0.8471  phi_bias=+0.5393
+      ---- per held-out trace label ----
+      HELD             claymphim5  k= 132  true=(8.00)  phi_pred=11.20  phi_rmse=3.591
+      HELD             claymphip5  k= 132  true=(18.00)  phi_pred=19.78  phi_rmse=2.503
+      HELD             dirtmphim5  k= 132  true=(24.00)  phi_pred=18.92  phi_rmse=5.935
+      HELD             dirtmphip5  k= 132  true=(34.00)  phi_pred=30.68  phi_rmse=4.091
+      HELD             sandmphim5  k= 132  true=(25.00)  phi_pred=25.48  phi_rmse=0.719
+      HELD             sandmphip5  k= 132  true=(35.00)  phi_pred=35.59  phi_rmse=0.959
+
+--- model: joint ---
+  val  : n_rmse=0.0418 bias=+0.0010  |  phi_rmse=2.9754 bias=+0.0255
+  hold : n_rmse=0.0846 bias=+0.0092  |  phi_rmse=3.3856 bias=-0.1833
+      VAL            clay  k=3848  n_rmse=0.0598  n_bias=+0.0344  phi_rmse=5.8690  phi_bias=+3.4033
+      VAL            dirt  k=12321  n_rmse=0.0400  n_bias=-0.0047  phi_rmse=2.2454  phi_bias=-0.8974
+      VAL            sand  k=6179  n_rmse=0.0301  n_bias=-0.0086  phi_rmse=0.7175  phi_bias=-0.2377
+      HELD           clay  k= 264  n_rmse=0.1179  n_bias=+0.0993  phi_rmse=3.6926  phi_bias=+2.9561
+      HELD           dirt  k= 264  n_rmse=0.0862  n_bias=-0.0671  phi_rmse=4.5148  phi_bias=-3.4771
+      HELD           sand  k= 264  n_rmse=0.0107  n_bias=-0.0046  phi_rmse=0.6074  phi_bias=-0.0288
+      ---- per held-out trace label ----
+      HELD             claymphim5  k= 132  true=(0.50,8.00)  n_pred=0.64  n_rmse=0.153  phi_pred=11.73  phi_rmse=4.217
+      HELD             claymphip5  k= 132  true=(0.50,18.00)  n_pred=0.56  n_rmse=0.067  phi_pred=20.18  phi_rmse=3.080
+      HELD             dirtmphim5  k= 132  true=(0.70,24.00)  n_pred=0.60  n_rmse=0.114  phi_pred=19.21  phi_rmse=5.679
+      HELD             dirtmphip5  k= 132  true=(0.70,34.00)  n_pred=0.66  n_rmse=0.044  phi_pred=31.83  phi_rmse=2.918
+      HELD             sandmphim5  k= 132  true=(1.10,25.00)  n_pred=1.09  n_rmse=0.012  phi_pred=25.30  phi_rmse=0.546
+      HELD             sandmphip5  k= 132  true=(1.10,35.00)  n_pred=1.10  n_rmse=0.010  phi_pred=34.64  phi_rmse=0.663

@@ -1,0 +1,1170 @@
+Online terrain estimation for autonomous vehicles on deformable
+terrains q
+James Dallas a, Kshitij Jain a, Zheng Dong a, Leonid Sapronov b, Michael P. Cole c, Paramsothy Jayakumar c,
+Tulga Ersal a,⇑
+a Department of Mechanical Engineering, University of Michigan, 1231 Beal Ave, Ann Arbor, MI 48109, USA
+b Robotic Research, 555 Quince Orchard Road, Suite 300, Gaithersburg, MD 20878, USA
+c U.S. Army Ground Vehicle Systems Center, 6501 E Eleven Mile Rd, Warren, MI 48397, USA
+a r t i c l e i n f o
+Article history:
+Received 19 October 2019
+Revised 19 February 2020
+Accepted 30 March 2020
+Available online 22 April 2020
+Keywords:
+Terramechanics
+Parameter estimation
+Wheeled vehicles
+Deformable terrain
+Control
+Kalman filter
+a b s t r a c t
+In this work, a terrain estimation framework is developed for autonomous vehicles operating on deform-
+able terrains. Previous work in this area usually relies on steady state tire operation, linearized classical
+terramechanics models, or on computationally expensive algorithms that are not suitable for real-time
+estimation. To address these shortcomings, this work develops a reduced-order nonlinear terramechanics
+model as a surrogate of the Soil Contact Model (SCM) through extending a state-of-the-art Bekker model
+to account for additional dynamic effects. It is shown that this reduced-order surrogate model is able to
+accurately replicate the forces predicted by the SCM while reducing the computation cost by an order of
+magnitude. This surrogate model is then utilized in an unscented Kalman filter to estimate the sinkage
+exponent. Simulations suggest this parameter can be estimated within 4% of its true value for clay and
+sandy loam terrains. It is also shown in simulation and experiment that utilizing this estimated param-
+eter can reduce the prediction errors of the future vehicle states by orders of magnitude, which could
+assist with achieving more robust model-predictive autonomous navigation strategies.
+Ó 2020 ISTVS. Published by Elsevier Ltd. All rights reserved.
+1. Introduction
+Autonomous ground vehicles (AGVs) have drawn interest for
+military applications to perform tasks, such as supply transport,
+in unsafe environments that could pose a threat to human opera-
+tors (Iagnemma and Dubowsky, 2002). Three considerations about
+military AGVs are important to motivate this work. First, military
+vehicles often need to operate off-road on deformable terrains,
+where the vehicle’s mobility is dependent on the highly nonlinear
+tire forces generated at the tire-terrain interface (Taheri et al.,
+2015). Second, increasing the mobility of military AGVs is a critical
+need (Liu et al., 2017). Third, state-of-the-art approaches to navi-
+gate such vehicles typically rely on model dependent architectures,
+such as Model Predictive Control (MPC) (Liu et al., 2017; Liu et al.,
+2018). Therefore, when the AGVs are operated on deformable ter-
+rains, a more accurate knowledge of the terrain parameters
+becomes a critical enabler to maximize the mobility of the AGVs.
+Much research has been performed in developing terramechan-
+ics models for off-road applications, which can be divided into
+empirical models, physics-based models, and semi-empirical mod-
+els (Taheri et al., 2015). Empirical models are the simplest; how-
+ever, such models do not generalize well beyond the
+experimental test conditions used for their development. On the
+other hand, physics-based finite and discrete element models have
+proven to be of the highest fidelity, but the large computational
+efforts required renders them infeasible for real-time tire force
+prediction, thus limiting their applicability for use in AGVs and
+real-time terrain estimation (Taheri et al., 2015). More promising
+candidates, and perhaps the most widely used, for real-time tire
+force prediction on deformable terrains are the semi-empirical
+models based upon the classical terramechanics theory developed
+by Bekker, including the Soil Contact Model (Gallina et al., 2014;
+Ishigami et al., 2007; Smith, 2014; Guo, 2016). In these models,
+the tire is typically assumed rigid and the deformation is assumed
+to occur only in the terrain (Smith, 2014). To model the complex
+tire-terrain interactions, these terramechanics models rely on
+knowledge of terrain-specific parameters such as cohesion, inter-
+nal friction angle, or sinkage exponent. During vehicle operation,
+these parameters may not be explicitly known or may be varying
+https://doi.org/10.1016/j.jterra.2020.03.001
+0022-4898/Ó 2020 ISTVS. Published by Elsevier Ltd. All rights reserved.
+q This work was funded by U.S. Department of Defense under the prime contract
+number W56HZV-17-C-0005. DISTRIBUTION STATEMENT A. Approved for public
+release; distribution unlimited. OPSEC #2942.
+⇑ Corresponding author.
+E-mail address: tersal@umich.edu (T. Ersal).
+Journal of Terramechanics 91 (2020) 11–22
+Contents lists available at ScienceDirect
+Journal of Terramechanics
+j o u r n a l h o m e p a g e : w w w . e l s e v i e r . c o m / l o c a t e / j t e r r a
+due to non-uniform terrains. Therefore, real-time terrain estima-
+tion is necessary in AGVs to improve the accuracy of the terrame-
+chanics models online and generate better informed control
+commands. Having this capability would also provide insight into
+traversability of terrains, such that path planning algorithms can
+reroute the vehicle to avoid regions where loss of mobility or
+excessive power consumption is likely to occur (Iagnemma, 2006).
+Researchers have already recognized this need and a limited
+number of results are available in the literature. In particular,
+Gallina et al. (2014, 2016) utilized a Bayesian procedure for terrain
+parameter identification, but making this approach work online is
+subject to future research. Other researchers have proposed an
+online algorithm for estimating soil cohesion and internal friction
+angle utilizing a linear least-squares estimator for a rover
+(Iagnemma and Dubowsky, 2002; Iagnemma et al., 2004). The
+algorithm relies on simplifying classical terramechanics equations
+through linear approximations to increase computational effi-
+ciency and subjects the rover to periodic high and low speed tra-
+verses (Iagnemma and Dubowsky, 2002). Similarly, Ding et al.
+(2015) estimated multiple terrain parameters through least
+squares curve fitting with promising results for a sand-like terrain.
+Due to large computation times in the Bekker-based model, on the
+order of 10 s to estimate the parameter, the model is linearized.
+Multiple linearized models are analyzed, which take on the order
+of 15 ms to hundreds of ms depending on model simplicity, sacri-
+ficing estimation accuracy for computational efficiency.
+Hutangkabodee et al. (2006) utilized the Composite Simpson’s Rule
+and Newton Raphson method for online determination of terrain
+parameters from measured forces. Ray (2009) used a multi-
+model approach to efficiently select a terrain parameter set from
+a precompiled library of parameter sets and mappings determined
+a priori. Finally, Setterfield and Ellery (2013) developed polynomial
+models representing terrain response from measurements includ-
+ing rover velocities and forces rather than explicitly estimating
+the terrain parameters, but real-time implementation was not
+achieved.
+While existing results are promising, several limitations of the
+existing literature are important for this work: (1) linear approxi-
+mations can lead to inaccurate stress approximations, particularly
+in terrains with low sinkage exponents such as clay (Jia et al.,
+2011), and hence inaccurate force prediction, (2) these algorithms
+often rely on measurements obtained from force and torque sen-
+sors, which are not necessarily standard on AGVs, and (3) periodi-
+cally operating at low speeds is not desirable when maximum
+mobility is desired. Hence, online estimation of deformable terrain
+parameters for off-road AGVs is still an open research area and is
+the focus of this work.
+This study presents a new approach for online terrain parame-
+ter estimation. First, due to the large computation time associated
+with integrating stresses in SCM and limitations of classical ter-
+ramechanics equations, a nonlinear reduced-order model is devel-
+oped by extending the work presented in Jia et al. (2011) to
+account for additional dynamic effects such that a sufficient agree-
+ment with SCM can be achieved. Then, the reduced-order terrame-
+chanics model is incorporated in a 3 degree-of-freedom (DoF)
+bicycle model (Liu et al., 2018) to create an estimation model,
+whereas the actual vehicle is represented with an 11 DoF plant
+model with SCM or a physical vehicle operating on a grass field.
+The predictions from the estimation model are fused with mea-
+surements from the plant model, independent of forces and torque
+measurement, in an Unscented Kalman filter (UKF) to identify the
+dominant terrain parameter, namely, the sinkage exponent. The
+result is an online terrain estimation approach that can be used
+to better inform control and path-planning algorithms for AGVs.
+The rest of this paper is organized as follows. Section 2 first
+briefly reviews the SCM model used in the plant model. Then a
+state-of-the-art fast terramechanics model used as a benchmark
+is introduced and the significant deviations of its predictions from
+SCM are demonstrated. This model is then modified to improve its
+accuracy vis-à-vis SCM, so that a suitable estimation model is
+obtained. Section 3 presents the vehicle models, both the plant
+model as well as the estimation model. The terrain estimation pro-
+cedure based on UKF is summarized in Section 4. Sections 5 and 6
+give the simulation and experimental conditions. Section 7 gives
+the simulation results, including the accuracy of the estimations
+and their ability to improve the predictive accuracy of the 3 DoF
+model, and the experimental results on grass. Finally, Section 8
+gives the conclusions drawn from this work.
+2. Terramechanics models
+2.1. Soil Contact Model (SCM)
+This section briefly reviews the terramechanics model adopted
+in this work to represent the tire-terrain interactions in the plant
+simulations with high fidelity. This model is also used to evaluate
+the accuracy of the fast terramechanics models, including a state-
+of-the-art model and the surrogate model developed in this work.
+As such, this model serves as the ground truth for the purposes of
+this work.
+The terramechanics model used in this study for generating the
+lateral tire forces acting on the vehicle is based on the Soil Contact
+Model (SCM) reported in Gallina et al. (2014) and Krenn and
+Gibbesch (2011). Verification of the model can be found in Krenn
+and Hirzinger (2009). The SCM calculates relevant forces and tor-
+ques acting on a 3 dimensional object in contact with a deformable
+terrain as summarized below.
+The SCM algorithm relies on a discretized mesh of the tire and
+terrain to search for contact points at the tire-terrain interface. In
+the contact detection step, the vertices of the tire mesh are pro-
+jected onto the nearest vertices of the terrain digital elevation
+map, effectively arranging the contact vertices in individual col-
+umns. The sinkage at each vertex can be determined from the min-
+ima of each column, assuming the vertex location is a point of
+sinkage. The effective contact width, b, can then be determined
+from the footprint’s area and contour length (Krenn and
+Gibbesch, 2011).
+Following contact detection, the algorithm calculates the stres-
+ses at each contact node of the footprint as follows. The pressure, r,
+is expressed as (Bekker, 1962)
+r ¼ ðkc=b þ k/Þhn ð1Þ
+The shear stress, s, is expressed as (Janosi et al., 1961)
+s ¼ smaxð1  ej=kÞ ð2Þ
+with smax given as
+smax ¼ ðc þ r tan /Þ ð3Þ
+In the above expressions h is the sinkage, b is the tire effective
+width, and j is the shear deformation. The remaining parameters
+are internal parameters characterizing the terrain as summarized
+Table 1
+SCM terrain parameters.
+Parameter Symbol Unit
+Cohesive modulus kc N=mnþ1
+Frictional modulus k/ N=mnþ2
+Sinkage exponent n –
+Shear deformation modulus k m
+Cohesion c Pa
+Angle of internal friction / rad
+12 J. Dallas et al. / Journal of Terramechanics 91 (2020) 11–22
+in Table 1. The forces generated at the tire-terrain interface can
+then be given by integrating the stresses over the entire contact
+patch. The above overview is a summary of (Gallina et al., 2014);
+a more complete discussion is given in Krenn and Gibbesch (2011).
+SCM is a rather complex model due to the discretizations and
+integrations involved and may thus not be suitable for real-time
+parameter identification purposes. It has been shown that the
+accuracy of SCM is heavily influenced by the discretization resolu-
+tion (Krenn and Gibbesch, 2011). Furthermore, several SCM opera-
+tions are of N2 complexity, where N is the number of grid nodes
+(Krenn and Gibbesch, 2011). As an example, for a discretization
+of just 200 total nodes (100 per tire in a bicycle model), the time
+required by SCM can be around 20 ms (Krenn and Gibbesch,
+2011). Furthermore, for the UKF, the estimation method used in
+this work, 17 sigma points must be generated as discussed in Sec-
+tion 4, each calling the terramechanics model twice (once per tire
+in the bicycle model). Thus the total time spent calculating tire
+forces can be around 350 ms per a single UKF iteration. Finally, tak-
+ing into account that many UKF iterations are needed to achieve
+estimation convergence, a UKF with SCM can be expected to take
+several minutes to converge, which is impractically long. There-
+fore, faster terramechanics models are needed.
+2.2. State-of-the-art fast terramechanics model
+Much less computationally demanding solutions better suited
+for online estimation are given by Bekker-based models. These
+models are again based on (1)–(3); however, r; s; h, and, j are
+now replaced by functions of the angle of contact, h. As such,
+(1)–(3) are rewritten as:
+rðhÞ ¼ ðkc=b þ k/ÞhðhÞn ð4Þ
+sðhÞ ¼ smaxð1  ejðhÞ=kÞ ð5Þ
+smax ¼ ðc þ rðhÞ tan /Þ ð6Þ
+where hðhÞ is given by
+hðhÞ ¼ rðcos h  cos hf Þ hm 6 h 6 hf
+rðcos he  cos hf Þ hr 6 h 6 hm
+
+ð7Þ
+with
+hm ¼ ða0 þ a1sÞhf ð8Þ
+hf ¼ cos1ð1  hf =rÞ ð9Þ
+he ¼ hf  ðh  hrÞðhf  hmÞ=ðhm  hrÞ ð10Þ
+hr ¼ cos1ð1  Kh=rÞ ð11Þ
+where r is the radius of the tire; hf is the angle at which the front of
+the tire comes into contact with the terrain; hm is the location of
+maximum normal stress with a0 and a1 as terrain parameters typi-
+cally taking on values of 0.4 and 0–0.3, respectively (Wong and
+Reece, 1967); s is the longitudinal slip of the tire; he is the equiva-
+lent front contact angle for angles less than hm; hr is the angle at
+which the rear of the tire loses contact with the terrain; and K is
+a property of the terrain characterizing the sinkage ratio. Note that
+Kh in Eq. (11) corresponds to the hr in Fig. 1a.
+Finally, jðhÞ is given as
+jðhÞ ¼ r½ðhf  hÞ  ð1  sÞðsin hf  sin hÞ s P 0
+r½ðhf  hÞ  ð1=ð1 þ sÞÞðsin hf  sin hÞ s < 0
+
+ð12Þ
+The maximum sinkage can be calculated in an iterative fashion
+by using the Newton-Raphson method as proposed in Guo (2016)
+as follows. The maximum sinkage is initialized as the static sink-
+age, which is based on the load on the tire W:
+h0 ¼ 3W
+bð3  nÞðkc=b þ k/Þ ffiffiffiffiffi
+2r
+p
+" # 2
+2nþ1
+ð13Þ
+However, due to dynamic effects, such as slippage, additional sink-
+age is induced. To account for this, the reaction force is calculated as
+Fz ¼
+Z hf
+hr
+rbðsðhÞ sinðhÞ þ rðhÞ cosðhÞÞdh ð14Þ
+and a new sinkage is determined using the Newton-Raphson root
+finding method as
+h0
+0 ¼ h0  Fzðh0Þ=F 0
+zðh0Þ ð15Þ
+where F0
+z denotes the derivative of the reaction force with respect to
+sinkage. The iterative procedure terminates when the calculated
+reaction force is within a specified tolerance of the normal force
+applied to the tire. Once the maximum sinkage is determined, the
+lateral force Fy can then be calculated in a similar fashion as in
+Ishigami et al. (2007) and Guo (2016), i.e.,
+Fy ¼
+Z hf
+hr
+rbsyðhÞ ð16Þ
+with syðhÞ given as
+syðhÞ ¼ smaxð1  ejjyðhÞj=ky Þ ð17Þ
+where
+jyðhÞ ¼ rð1  sÞðhf  hÞ tan b ð18Þ
+Fig. 1. Tire-terrain geometry for positive slip.
+J. Dallas et al. / Journal of Terramechanics 91 (2020) 11–22 13
+and b is the side slip angle given as
+b ¼ arctan v y
+v x
+ 
+ð19Þ
+Depending on the soil type syðhÞ can also be represented with a
+different formulation such as
+syðhÞ ¼ smaxðj=kyÞðe1jyðhÞ=ky Þ ð20Þ
+Other formulations can be found in Smith (2014). All relevant vari-
+ables are depicted in Fig. 1.
+To assess the accuracy of Eq. (16) compared to SCM, a simula-
+tion is run in Chrono (Tasora et al., 2016). The simulation utilizes
+a single wheel test bed operating on a sand-like terrain using
+Chrono’s built-in SCM terrain. The test bed allows for individual
+control of the tire’s velocity, load, longitudinal slip, and lateral slip.
+The terrain properties used in this simulation are representative of
+sand and given in Table 2. The simulation sweeps the tire through a
+range of lateral slips with a 1 Hz sine wave. The load, longitudinal
+slip, camber angle, and linear velocity of the tire are all held at the
+constant values given in Table 3.
+Fig. 2 shows the results of an SCM simulation run in Chrono (or-
+ange) and the force predicted by Eq. (16) (blue). The term k is
+assumed to be constant, rather than a function of lateral slip as
+in Ishigami et al. (2007). This is to maintain consistency with the
+SCM formulation used in Chrono. As seen in the figure, the base
+model of Eq. (16) captures the overall trend, at least in the linear
+region around zero lateral slip, but averages the two distinct curves
+seen in SCM. This is because the current formulation does not
+account for the hysteresis effects of varying lateral slip; i.e., the
+shear deformation of Eq. (18) does not account for the shearing
+resulting from the tire rotation that induces the lateral slip. Note
+that in this work the lateral slip is varied by the steering angle
+applied to the tire.
+Recognizing this shortcoming in the state-of-the-art fast ter-
+ramechanics model, a new surrogate model for SCM is developed
+in the next section.
+2.3. New surrogate model
+This section presents the new terramechanics model developed
+as a fast surrogate for the SCM.
+The new surrogate is obtained by replacing Eqs. (17) and (20)
+with the following expressions, respectively.
+s
+yðhÞ ¼ smaxð1  ejj
+yðhÞj=k
+y Þg1ðv; s; Fz; nÞ ð21Þ
+s
+yðhÞ ¼ smaxðj=k
+yÞðe1j
+yðhÞ=k
+y Þg1ðv; s; Fz; nÞ ð22Þ
+with
+j
+yðhÞ ¼ jrð1  sÞðhf  hÞ tan bjþ
+signðbÞ r sinðhÞDd g2ðv; s; Fz; nÞð Þ ð23Þ
+where Dd is the change in the steering angle. ky, a parameter origi-
+nally describing the shear displacement required to generate peak
+shear stress, is now empirically estimated as a function of the wheel
+states, i.e.,
+k
+y ¼ g3ðv; s; Fz; nÞ ð24Þ
+The lateral force acting on the vehicle is then determined as in
+Eq. (16). It should be noted that an additional term in Eq. (16) is
+often given representing the bulldozing force; however, simula-
+tions suggest this contribution is minimal for this application.
+Additionally, integrating the original nonlinear functions over the
+contact patch is a computationally demanding task. Therefore,
+the quadratic approximation proposed in Jia et al. (2011) is
+adopted in the surrogate model. Furthermore, the modifications
+shown represent the lateral force acting on the vehicle frame, not
+the lateral forces in the tire reference frame.
+Simulations covering the operating range of a notional military
+AGV are run to develop the modifying functions g1ðÞ  g3ðÞ. For
+each slip range of the clay simulation, as described in the Appendix
+A, the simulations are run at 4 equispaced wheel loads, 5 slips, 5
+translational velocities, and 7 sinkage exponents, i.e.,
+4 þ 5 þ 5 þ 7 samples. This could potentially cause a loss of inter-
+action effects between the inputs; however, training with
+4 þ 5 þ 5 þ 7 samples rather than 4  5  5  7 samples leads to
+much faster development time. Furthermore, to ensure this
+approach causes minimal loss of accuracy from interaction effects,
+over 1,500 independent validation tests were performed for cases
+where interaction effects would occur, as described in the follow-
+ing paragraphs. Finally, other terrain parameters are set to their
+nominal values, because only the sinkage exponent is selected as
+the parameter to be estimated due to the higher sensitivity of tire
+forces to sinkage exponent than other parameters (Gallina et al.,
+2014; Ishigami, 2008). Table 4 shows the range of inputs covered
+in the simulations. In these simulations, the inputs are held at con-
+stant values and the lateral slip is varied with a sinusoidal input.
+Following this, correction factors are determined for sy; jyðhÞ, and
+ky to match the output of Eq. (16) with each of the SCM simula-
+tions. Least squares curve fitting is then used to derive the relation-
+Table 2
+Terrain parameters for sand (Guo, 2016).
+Parameter Value
+kc 1000 (N=mnþ1)
+k/ 1528600 (N=mnþ2)
+n 1.08 (–)
+k 0.024 (m)
+c 200 (Pa)
+/ 0.4712 (rad)
+Table 3
+Wheel states for benchmark simulation.
+State Value
+Normal load 2500 (N)
+Longitudinal slip 0.2 (–)
+Camber angle 0 (rad)
+Speed 5.5 (m/s)
+Fig. 2. Simulation results for SCM (orange) and model based on Eq. (16) (blue). The
+simulation uses the inputs given in Table 3 and the terrain properties given in
+Table 2. (For interpretation of the references to colour in this figure legend, the
+reader is referred to the web version of this article.)
+14 J. Dallas et al. / Journal of Terramechanics 91 (2020) 11–22
+ship between the correction factors and the simulation inputs of
+Table 4, resulting in the modification functions g1ðÞ  g3ðÞ. To
+ensure the model was not subject to overfitting or a loss of accu-
+racy from interaction effects, over 1,500 independent validation
+simulations were performed as described in the following
+paragraphs.
+Several parameters in the surrogate terramechanics model have
+distinct effects on the lateral force prediction and can be modified
+to achieve better agreement with SCM. For illustration purposes,
+the effects of each input on a sand terrain are shown in Figs. 3–5.
+The slope of the linear region can be set by modifying ky with
+g3ðÞ, the distance between the two curves can be set by adjusting
+jy with g2ðÞ, and the overall magnitude of the force can be adjusted
+with g1ðÞ. The effect of the wheel states on g1ðÞ  g3ðÞ are as fol-
+lows. The effect of wheel load can be captured with linear func-
+tions for g1ðÞ  g3ðÞ. Increased wheel load tends to increase the
+magnitude of the lateral force, increase the slope of the linear
+region, and increase the separation between the top and bottom
+curves as shown in Fig. 3 for a load of 2000 N (blue) and 3000 N
+(orange). The effect of longitudinal slip can be modeled by polyno-
+mials for g1ðÞ  g3ðÞ. As seen in Fig. 4, for positive slips, lower
+magnitude longitudinal slips tend to increase the slope of the lin-
+ear region, while also causing a larger spread between the top
+and bottom curve. Fig. 4 shows these results for a slip of 0.2 (blue),
+0.4 (orange), and 0.6 (yellow). The effect of translational velocity
+can be captured with a power function for g2ðÞ alone, because it
+has minimal effect on g1ðÞ and g3ðÞ. Hence, g1ðÞ and g3ðÞ do not
+depend on translational velocity. As seen in Fig. 5, for a speed of
+2.5 m/s (blue) and 4.5 m/s (orange), increased translational veloc-
+ity tends to have little effect on the slope of the linear region, but
+reduces the hysteresis. Example formulations of g1ðÞ  g3ðÞ for a
+clay terrain are given in the Appendix A.
+Once g1ðÞ  g3ðÞ are determined, over 1500 independent vali-
+dation simulations are ran using equispaced samples for the wheel
+states of Table 4. The mean absolute error for 1500 SCM clay sim-
+ulations is 62.97 N, suggesting the surrogate model is able to accu-
+rately predict the tire forces beyond the training set and incurs
+minimal loss of accuracy from the interaction effects of the training
+method. The results of the surrogate model are shown in Fig. 6
+(blue) while SCM is shown in (orange), for the same SCM simula-
+tion of Fig. 2. Much better agreement is observed between the sur-
+rogate model and the SCM simulation compared to Fig. 2. It should
+also be noted that the surrogate model runs in 200–400 ls, which
+Table 4
+Wheel states and terrain ranges for development of g1ðÞ  g3ðÞ.
+State Value
+Normal load 1000–4000 (N)
+Longitudinal slip -0.9–0.9 (–)
+Camber angle 0 (rad)
+Speed 2.5–8.5 (m/s)
+n 0.4–1.3 (–)
+Fig. 3. Simulation results for SCM with Fz being 2000 N (blue) and 3000 N (orange).
+The simulation uses the inputs given in Table 3 and the terrain properties given in
+Table 2, except for the normal load and slip (0.5). (For interpretation of the
+references to colour in this figure legend, the reader is referred to the web version of
+this article.)
+Fig. 4. Simulation results for SCM with slip being 0.2 (blue), 0.4 (orange), 0.6
+(yellow). The simulation uses the inputs given in Table 3 and the terrain properties
+given in Table 2, except for the slip. (For interpretation of the references to colour in
+this figure legend, the reader is referred to the web version of this article.)
+Fig. 5. Simulation results for SCM with speed being 2.5 m/s (blue) and 4.5 m/s
+(orange). The simulation uses the inputs given in Table 3 and the terrain properties
+given in Table 2, except for the speed and slip (0.5). (For interpretation of the
+references to colour in this figure legend, the reader is referred to the web version of
+this article.)
+Fig. 6. Simulation results for SCM (blue) and the new surrogate model (orange) for
+the inputs given in Table 3 and the terrain properties given in Table 2. (For
+interpretation of the references to colour in this figure legend, the reader is referred
+to the web version of this article.)
+J. Dallas et al. / Journal of Terramechanics 91 (2020) 11–22 15
+is an order of magnitude more efficient than what is reported for
+SCM and more suitable for online terrain estimation.
+3. Vehicle models
+Two vehicle models are employed in this work; an 11 DoF
+model to represent the plant and a 3 DoF bicycle model to be used
+as part of the estimator. This section describes these models.
+3.1. Plant model
+To represent the actual vehicle in the simulation-based valida-
+tion of the proposed surrogate model and terrain estimator, the
+Chrono software is utilized to simulate the dynamics of a notional
+military vehicle, specifically a Polaris MRZR 4, as well as to imple-
+ment the SCM (Tasora et al., 2016). For the purposes of this work,
+the vehicle is modeled with a double wishbone suspension, rack-
+pinion steering, 4 wheel drive, and a simple powertrain without
+a torque converter or transmission. This results in an 11 DoF vehi-
+cle model that is then combined with the SCM as the tire-terrain
+interaction model. Fig. 7 depicts the plant operating on a sand
+SCM terrain in Chrono. The data received from the plant is then
+corrupted with Gaussian noise and serves as the measurement yk
+in Eq. (29) in Section 4. Table 5 lists the standard deviations used
+in the noise model for each state. Actual sensors typically offer
+lower noise levels; hence the chosen standard deviations represent
+a worse-case scenario to test the ability of the estimator (Ryu et al.,
+2002).
+3.2. Bicycle model
+As part of the terrain estimation process that is detailed in Sec-
+tion 4, a vehicle model is needed to predict future vehicle states
+based on the tire forces from the surrogate model. For this work,
+a 3 DoF bicycle model with forward Euler integration is adopted,
+as it provides a proper level of fidelity while maintaining enough
+simplicity for short-horizon predictions (Liu et al., 2016). Fig. 8
+depicts the bicycle model schematic. Mathematically, the bicycle
+model takes on the following form:
+_zb ¼
+u cos w  ðv þ LfxzÞ sin w
+u sin w þ ðv þ LfxzÞ cos w
+wz
+ax
+ðFyf þ FyrÞ=Mt  uxz
+ðFyf Lf  FyrLrÞ=Izz
+2
+6
+6
+6
+6
+6
+6
+6
+6
+4
+3
+7
+7
+7
+7
+7
+7
+7
+7
+5
+ð25Þ
+where the state vector, zb, is defined as
+zb :¼
+x
+y
+w
+u
+v
+xz
+2
+6
+6
+6
+6
+6
+6
+6
+6
+4
+3
+7
+7
+7
+7
+7
+7
+7
+7
+5
+¼
+global x position of front axle
+global y position of front axle
+yaw angle
+longitudinal velocity
+lateral velocity
+yaw rate
+2
+6
+6
+6
+6
+6
+6
+6
+6
+4
+3
+7
+7
+7
+7
+7
+7
+7
+7
+5
+ð26Þ
+with Mt being the vehicle mass, Izz being the vehicle’s yaw moment
+of inertia, and Lf and Lr being the distance from the vehicle’s center
+of gravity to the front and rear axles, respectively. Finally, Fyf and Fyr
+are the lateral forces generated from the front and rear tires acting
+on the vehicle body, as obtained from the terramechanics model.
+4. Terrain estimation
+The terrain parameter to be estimated is chosen as the sinkage
+exponent n, because it has been shown to be the dominant param-
+eter (Gallina et al., 2014). All other terrain parameters are assumed
+to be some nominal values based on the specific terrain type,
+which can be determined from terrain classification algorithms
+such as the ones described in Iagnemma (2006) and Weiss et al.
+(2008).
+To estimate the unknown terrain parameter n, it is appended to
+the 3 DoF bicycle model in Eq. (25) with trivial dynamics. Here n is
+given as a 2x1 vector to account for the front and rear tires. This is
+to mitigate the influence of unmodeled multipass effects and in the
+case of a discrete terrain change where the front tire and rear tire
+may operate on different terrains. The augmented state vector and
+state dynamics are given as
+z :¼ zb
+n
+ 
+; _z ¼ _zb
+0
+ 
+ð27Þ
+Table 5
+Measurement standard deviations used for sensor simulation.
+State Noise (r)
+x 1.2 (m)
+y 1.2 (m)
+w 0.0175 (rad)
+u 0.25 (m/s)
+v 0.25 (m/s)
+xz 0.0175 (rad/s)
+Fig. 8. Bicycle model schematic (Liu et al., 2017).
+Fig. 7. Plant operating on sand SCM terrain in Chrono.
+16 J. Dallas et al. / Journal of Terramechanics 91 (2020) 11–22
+Given the measurements of the vehicle states in Eq. (26), the
+augmented dynamics are utilized in an unscented Kalman filter
+(UKF) to estimate the augmented state vector in Eq. (27) including
+the sinkage exponent. It is worth noting that many other algo-
+rithms are available in the literature for nonlinear parameter esti-
+mation, including, but not limited to, extended Kalman filters,
+transitional Markov Chain Monte Carlo algorithms, and particle fil-
+ters. Among these options the UKF is preferred in this work,
+because preliminary explorations suggest that the UKF offers a
+good balance between accuracy and computational speed for this
+application.
+The UKF is composed of two general steps; a time update step
+and a measurement update step. Assume that a system is given
+in discrete time as:
+zkþ1 ¼ Fðzk; qkÞ ð28Þ
+yk ¼ Hðzk; ckÞ ð29Þ
+where z is the state, y is the observation, and q and c are the process
+and observation noise, respectively. The functions FðÞ and HðÞ are
+nonlinear functions describing the dynamics and outputs. In this
+application, z takes the form of the state vector in Eq. (27) and
+FðÞ is obtained by discretizing the state equation in Eq. (27) using
+the forward Euler method. HðÞ is given as the state vector in Eq.
+(26).
+First, a set of 2L þ 1 sigma points are created to capture the sta-
+tistical distribution of the states, where L is the dimension of the
+state vector z. The sigma points are determined as follows:
+Zk1 ¼ ½^z ^z  ð ffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffi
+ðL þ kÞPz
+p Þi ð30Þ
+where ^z is the mean value of z. k is a scaling parameter given as:
+k ¼ a2ðL þ jÞ  L ð31Þ
+where a is a tunable scaling parameter that typically takes a value
+between 0 and 1, j is another scaling parameter that is typically set
+to 0. At the time update step, the sigma points are propagated
+through the original nonlinear system as:
+Zz
+kjk1 ¼ FðZz
+k1; Zv
+k1Þ ð32Þ
+The following weights are then calculated
+W m
+0 ¼ k=ðL þ kÞ ð33Þ
+W c
+0 ¼ k=ðL þ kÞ þ ð1  a2 þ fÞ ð34Þ
+W m;c
+i ¼ 1=ð2ðL þ kÞÞ ð35Þ
+where f is set to 2 for Gaussian distributions. The statistics of the
+time update step are then given by:
+^z
+k ¼ X2L
+i¼0
+W m
+i Zz
+i;kjk1 ð36Þ
+P
+k ¼ X2L
+i¼0
+W c
+i ðZz
+i;kjk1  ^z
+k ÞðZz
+i;kjk1  ^z
+k ÞT ð37Þ
+Y kjk1 ¼ HðZz
+kjk1; Zn
+k1Þ ð38Þ
+^y
+k ¼ X2L
+i¼0
+W m
+i Y i;kjk1 ð39Þ
+Finally, the measurement update step is given by the following
+set of equations:
+P^yk^yk ¼ X2L
+i¼0
+W c
+i ðY i;kjk1  ^y
+k ÞðY i;kjk1  ^y
+k ÞT ð40Þ
+Pzkyk ¼ X2L
+i¼0
+W c
+i ðZi;kjk1  ^z
+k ÞðY i;kjk1  ^y
+k ÞT ð41Þ
+K ¼ Pzkyk P1
+^yk^yk ð42Þ
+^zk ¼ ^z
+k þ Kðyk  ^y
+k Þ ð43Þ
+Pk ¼ P
+k  KP^yk^yk K T ð44Þ
+The above process is a summary of the algorithm given in Wan and
+Van Der Merwe (2000). Intuitively, the process works by merging
+model-based predictions of the states with their measurements
+from the plant by exploiting the uncertainties associated with each
+to determine the best estimates of the states. For further discussion
+of UKF and details of its implementation, the reader is referred to
+Wan and Van Der Merwe (2000) and Kolås et al. (2009). It is also
+worth noting that while this work only focuses on estimating the
+dominant parameter n, other terrain parameters could be estimated
+simultaneously, as well. However, this would incur additional com-
+putational costs as the state space dimension increases, thus
+increasing the number of sigma points necessary in the UKF.
+5. Simulation setup
+Simulations are performed utilizing Chrono’s SCM deformable
+terrain and the developed AGV model in Section 3.1. Two terrains
+are considered including sandy loam and clay. Relevant terrain
+parameters are given in Table 6. The simulation subjects the AGV
+to sinusoidal steering commands, steering fully to the left and right
+over a three second period. The throttle is also varied with a sinu-
+soidal command such that varying speeds are achieved. No braking
+command is given. The applied steering and speed profiles for the
+clay simulation are shown in Fig. 9. Throttle and steering com-
+mands of the same frequency are given in the sandy loam simula-
+tion, as well. Two remarks are in order. First, as seen in Fig. 9, no
+requirement on constraining the vehicle to low speeds (on the
+order of 10 cm/s) is made, which is in contrast to previous efforts
+(Iagnemma et al., 2004). This enables enhanced mobility, which
+is critical for military applications. Second, a sinusoidal steering
+input is selected to induce lateral dynamics for the vehicle. Since
+the bicycle model only utilizes the lateral forces acting on the vehi-
+cle, it is critical for the estimation that the vehicle operates in such
+a way that lateral dynamics are induced. Otherwise, the lack of
+information on the lateral dynamics leads to parameter variations
+having negligible effects on the output of the bicycle model. In
+other words, if Fyf and Fyr are zero, it is not possible to estimate ter-
+rain parameters based on lateral forces. If estimation is required in
+such a scenario, additional measurement should be exploited.
+In all simulations, the simulation time step is set to 2 ms in
+Chrono. The purpose of these simulations is to determine the esti-
+mation algorithm’s accuracy and utility under different terrain
+conditions. Once the simulations are complete, noise is added to
+the outputs to simulate sensors, as discussed in Section 3.1. The
+estimator is then run at a 12 ms time step and the simulated mea-
+surements are received at every 24 ms. The terrain parameter n is
+Table 6
+Terrain parameters for simulated terrains (Smith, 2014).
+Parameter Sandy Loam Clay
+kc 5300 (N=mnþ1) 13200 (N=mnþ1)
+k/ 1515000 (N=mnþ2) 692200 (N=mnþ2)
+n 0.7 (–) 0.5 (–)
+k 0.025 (m) 0.01 (m)
+c 1700 (Pa) 4140 (Pa)
+/ 0.5061 (rad) 0.2269 (rad)
+J. Dallas et al. / Journal of Terramechanics 91 (2020) 11–22 17
+initialized with a value off of the true terrain parameter used in the
+plant simulation. The remaining terrain parameters are set to their
+true values given in Table 6. Note that the true values are used here
+only to assess how closely the algorithm can converge to the true
+sinkage exponent.
+6. Experimental setup
+Experiments were performed with a Polaris MRZR 4, example
+shown in Fig. 11, equipped with sensors to measure the relevant
+states required for the measurement update of the UKF as
+described in Section 4. Actuators were controlled with TORC
+ByWire, Actus ERC 722 for throttle and braking, and Allied Motion
+GLOBE POW-R STEER Electric Power Assisted Steering (EPAS) for
+steering. A Robotic Research RR-N140 navigation system was used
+for high accuracy localization, which is composed of a Global Nav-
+igation Satellite System (GNSS)/Global Positioning System (GPS) as
+well as an Inertial Measurement Unit (IMU). In addition, Honey-
+well SNDH-T4L-G01 Hall-effect quadrature speed and direction
+sensors were used for wheel encoders. Sensor noise values are
+given in Table 5. Measurements were received by the UKF at a fre-
+quency of 25 Hz and the bicycle model predictions were made at a
+frequency of 50 Hz.
+The vehicle was subjected to a series of Figure 8 maneuvers as
+exemplified in Fig. 10 (a) with a longitudinal velocity profile given
+in 10 (b). This maneuver was selected to induce lateral dynamics.
+The location of the maneuver was a wet open grass field. While
+the exact terrain parameters of the field are unknown, the litera-
+ture provides several parameter sets for various grass terrains
+(Okello et al., 1998). The terrain parameters found in the literature
+for a terrain most comparable to the test site were chosen as
+shown in Table 7 due to the moisture content and surface type.
+7. Results and discussion
+7.1. Simulation results
+In this section the performance of the terrain estimator is eval-
+uated. The performance is evaluated from two different points of
+view: (1) the accuracy of the estimated sinkage exponent n, and
+(2) the accuracy of the predicted state trajectories of the vehicle.
+The former assesses the algorithm’s ability to find the true sinkage
+exponent, whereas the latter assesses the utility of estimating the
+sinkage exponent in the larger picture of predicting the future
+states of the vehicle. Note that if the assumed nominal values for
+the non-estimated parameters are not representative of the true
+terrain type, then the estimator may not necessarily converge to
+the true terrain parameter, as it will attempt to find a value that
+compensates for the errors in the non-estimated values and
+achieves the best prediction capability of the vehicle model. For
+the ultimate aim of more accurately predicting the future mobility
+capabilities of the vehicle, the second evaluation criterion is the
+more relevant one.
+Fig. 9. Steering and velocity profiles used in simulation.
+Fig. 10. Position and velocity profiles from the experiment on grass.
+Table 7
+Terrain parameters for grass field (Okello et al., 1998).
+Parameter Value
+kc 16000 (N=mnþ1)
+k/ 1180000 (N=mnþ2)
+n 0.26 (–)
+kw 0.046 (m)
+c 24000 (Pa)
+/ 0.75 (rad)
+Fig. 11. Example Polaris MRZR 4 (dvidshub, accessed January 30, 2020).
+18 J. Dallas et al. / Journal of Terramechanics 91 (2020) 11–22
+Table 8 displays the initial guess of the value of the sinkage
+exponent n, its converged estimate by the algorithm, and the error
+associated with the estimated parameter. The initial terrain
+parameter for sandy loam is chosen to be representative of Buchele
+(Michigan) sandy loam and the initial terrain parameter for clay is
+chosen to be representative of Thailand clay (Wong, 2001). On both
+terrains, the percent error in the estimated terrain parameter is
+less than 4%, where the estimated value is taken to be the final
+value by the end of the simulation. Fig. 12 shows the estimated ter-
+rain parameters for the two considered terrains as time evolves.
+The differences between the converged and true terrain values
+can be due to model discrepancies between the high fidelity
+Chrono model and the 3 DoF bicycle model along with discrepan-
+cies arising from the reduced order terramechanics model. Never-
+theless, the estimator converges within 10% of the estimated
+parameter within 5 s for both cases.
+In addition, Fig. 13 depicts the ability of the estimator to con-
+verge despite large initialization errors. As can bee seen, in both
+terrains the estimator converges to the same value as in Fig. 12;
+however, a larger convergence time is observed due to the larger
+deviation in the initial guess from the true terrain value. Note that
+such large initialization errors would create unrealistic values
+beyond those typically reported in the literature, and thus would
+not be used in practice; however, it depicts the ability of the esti-
+mator to converge to the true value despite a large error in the ini-
+tial terrain guess.
+The peak computation time of the estimator is 10.5 ms and
+7.5 ms for clay and sandy loam simulations respectively, thus
+demonstrating the potential to achieve real-time estimation. The
+platform running this estimation consists of 16 GB Memory and
+a single core 3 GHz Intel Core i7 processor.
+While estimating the terrain properties accurately is a worthy
+goal in and of itself, it is more of interest to evaluate to what extent
+the estimations can improve the predictive capability of the bicycle
+model as motivated above. To accomplish this second evaluation,
+the bicycle model, with the terramechanics model parameterized
+by either the initial guess or the converged terrain parameter, is
+used to predict the vehicle states approximately 0.5, 2.5, and 5.0
+s into the future for the clay case. After this time the vehicle states
+are reset to the true values received from Chrono. As such, this pro-
+cedure mimics the operational procedure of a model predictive
+control approach, where a receding finite horizon optimal control
+problem is solved periodically with updated information available
+from sensors (Liu et al., 2017).
+Table 9 depicts the mean squared errors (MSE) of the state esti-
+mates given by the 3 DoF bicycle model for both the case when the
+initial guess for the sinkage exponent for clay is used and the case
+when the converged estimate is used over the entire 32.89 s sim-
+ulation. The model parameterized by the estimated terrain prop-
+erty yields significantly better predictions, especially at larger
+time horizons with order of magnitude reductions in MSE. Fig. 14
+shows a portion of the simulation, using the 2.5s time horizon
+and depicting the true vehicle positions from the plant (blue solid
+line), and the predicted positions using the bicycle model with the
+initial guess of the sinkage exponent (black dotted line) and with
+the converged sinkage exponent (red dashed line). As can be seen,
+the converged value yields much more accurate predictions, thus
+demonstrating the ability of the estimator to significantly improve
+prediction fidelity. Similar results are also observed for the other
+terrains, but they are not reported here due to space limitations.
+This improvement in turn could lead to better performance in
+model predictive controllers, which is subject to future research.
+Table 8
+Initial guess, estimated value, and estimation errors of the sinkage exponent n for
+simulated terrains.
+Terrain Initial guess True val. Converged val. % error
+Sandy loam 0.9 0.7 0.722 3.1%
+Clay 0.7 0.5 0.519 3.8%
+Fig. 12. Simulated sinkage exponent estimation results.
+Fig. 13. Simulated sinkage exponent estimation results for larger initialization errors.
+J. Dallas et al. / Journal of Terramechanics 91 (2020) 11–22 19
+7.2. Experimental results
+Fig. 15 shows the estimated sinkage exponent for the experi-
+mental tests on grass described in Section 6. Here, the initial guess
+of the sinkage exponent corresponds to that of Table 7 and all other
+terrain parameters are set to nominal values given in Table 7.
+While the true sinkage exponent of the grass test site is unknown,
+the converged value of 0.39 is within the range reported for grass
+of 0.26–0.7 as given in Okello et al. (1998).
+Table 10 displays the MSE of the state predictions of a 3 DoF
+bicycle model parameterized by the initial sinkage exponent guess
+(n ¼ 0:26) and the converged estimate (n ¼ 0:39) as compared to
+measurements on the experimental vehicle over a 2.5 s horizon.
+As can be seen, the model parameterized by the estimate signifi-
+cantly reduces the MSE for all states, demonstrating the utility of
+estimator. Furthermore, this result provides confidence in the esti-
+mated parameter value despite uncertainty in its true value. This is
+demonstrated by Fig. 16, which plots the normalized sum squared
+error (SSE) over the entire experiment between a bicycle model
+prediction (one time step into the future) as compared to state
+measurements from the vehicle as a function of the sinakge expo-
+nent. As can be seen, the sinkage exponent that minimizes this
+error is approximately 0.395, which is within 1.5% of the estimated
+parameter value. Thus the experimental results demonstrate the
+ability of the estimator to improve the prediction capabilities of
+the bicycle model, which could prove beneficial in model predic-
+tive navigation strategies.
+7.3. Remarks
+While the results of the estimator are promising, there are two
+limiting assumptions of the proposed scheme. The first is that the
+estimator assumes the terrain is homogeneous. This is common
+among the approaches reported in the literature (Iagnemma
+et al., 2004). However, in reality, terrain parameters may be chang-
+ing and evaluating the performance of the estimator in this sce-
+Table 9
+Mean squared error over entire simulation with varying prediction horizons for clay using estimated terrain parameter (n ¼ 0:519) and initial guess (n ¼ 0:7).
+Time horizon 0.5 (s) 2.5 (s) 5 (s)
+State n = 0.519 n = 0.7 n = 0.519 n = 0.7 n = 0.519 n = 0.7
+x (m) 0.0034 0.0025 0.037 0.01 0.075 0.078
+y (m) 0.0035 0.0051 0.022 0.15 0.12 0.34
+w (rad) 3.17e05 1.8e04 2.45e04 0.0089 9.9e04 0.0115
+u (m/s) 6.46e05 6.46e05 1.33e04 1.33e04 1.2e04 1.2e04
+v (m/s) 0.0027 0.013 0.0047 0.15 0.005 0.28
+xz (rad/s) 6.2e04 0.004 9.01e04 0.023 9.05e04 0.04
+Fig. 16. Normalized sum squared error predictions for various sinkage exponents
+for the experiment on grass.
+Fig. 14. Simulated vehicle positions for AGV operating on clay. True vehicle
+positions from Chrono (blue solid line), bicycle model parameterized by n ¼ 0:519
+(red dashed line), and bicycle model parameterized by initial terrain guess n ¼ 0:7
+(black dotted line). (For interpretation of the references to colour in this figure
+legend, the reader is referred to the web version of this article.)
+Fig. 15. Sinkage exponent estimation results for the experiment on grass.
+Table 10
+Mean squared error over entire experiment with 2.5 s prediction horizon for the
+experiment on grass.
+State n = 0.39 n = 0.26
+(estimated value) (initial guess)
+x 0.3132 (m) 1.7305 (m)
+y 0.4378 (m) 1.6483 (m)
+w 0.0117 (rad) 0.0209 (rad)
+u 1.8747e04 (m/s) 1.8747e04 (m/s)
+v 0.1740 (m/s) 0.3989 (m/s)
+xz 0.0100 (rad/s) 0.0204 (rad/s)
+20 J. Dallas et al. / Journal of Terramechanics 91 (2020) 11–22
+nario is subject to future work. The second limiting assumption is
+that SCM is treated as the ground truth and the surrogate terrame-
+chanics model is parameterized accordingly. The reality may be
+different than SCM. For example, SCM was originally developed
+for rover applications, which tend to occur at lower speeds. At high
+speeds, inertial effects may impact model fidelity. However, in that
+case, a similar procedure in developing the surrogate model could
+potentially be used by replacing the SCM simulations with an
+experimental single wheel test bed. While the experimental results
+presented herein suggest the estimator is able to improve the pre-
+diction capability of the bicycle model despite this second limita-
+tion, it is still of interest to experimentally validate the
+developed terramechanics model, which is subject to future work.
+8. Conclusion
+This paper considers AGVs operating on deformable terrains
+with unknown terrain properties and develops a novel terrain esti-
+mation framework towards increasing the terrain-awareness of the
+AGV. In particular, the novelty of the framework is the develop-
+ment of a new surrogate terramechanics model for SCM and its
+use in conjunction with a bicycle model in a UKF. The results sug-
+gest that this new framework can estimate the dominant terrain
+parameter, namely the sinkage exponent, with high accuracy and
+high computational efficiency. It is therefore concluded that the
+framework is an important step towards achieving a good balance
+between estimation accuracy and computational speed. The results
+also show that the increase in the accuracy of the terrain parame-
+ter due to the developed estimation framework leads to a signifi-
+cant increase in the predictive accuracy of the bicycle model,
+especially for longer prediction time horizons. It is therefore con-
+cluded that the proposed framework could be useful to increase
+the performance of AGVs when they are controlled with model
+predictive schemes.
+Future work includes evaluating the estimator on varying ter-
+rain conditions. The need for and ability of estimating multiple ter-
+rain parameters also needs to be investigated. It is also of interest
+to perform experimental validation of the developed surrogate ter-
+ramechanics model, and investigate the utility of the estimator in a
+model predictive control framework for terrain-aware autonomous
+navigation.
+Declaration of Competing Interest
+The authors declare that they have no known competing finan-
+cial interests or personal relationships that could have appeared to
+influence the work reported in this paper.
+Appendix A
+The following depicts the formulas for g1  g3 for a clay terrain.
+In this work the equations for g1  g3 are determined for four sep-
+arate slip ranges for better agreement. The slip ranges are:
+0:16 6 s ð45Þ
+0 6 s < 0:16 ð46Þ
+ 0:157 < s < 0 ð47Þ
+s 6 0:157 ð48Þ
+The dependencies for g1  g3 on each input is determined through
+curve fitting to simulation data as discussed in Section 2.3. The
+below equations are valid for the slip range of 0 6 s < 0:16. For
+the lower curve of Fig. 6, the equations are given as:
+g1 ¼ g1n g1s ð49Þ
+g2 ¼ g2n g2s g2Fz g2v ð50Þ
+g3 ¼ g3n g3s g3Fz ð51Þ
+where
+g1n ¼ 128:3n5  415:4n4 þ 523:3n3
+320n2 þ 95:07n  9:942 ð52Þ
+g1s ¼ 563:5s4  107:9s3  4:848s2
+þ1:761s þ 1:024 ð53Þ
+g2n ¼ maxð1:8n  1:08; 0Þ ð54Þ
+g2s ¼ 1:367  106s4  3:71  105s3
+þ2:809  104s2  545:7s þ 70 ð55Þ
+g2Fz ¼ ð0:0001Fz þ 0:7Þ ð56Þ
+g2v ¼ ð4:908v 0:9295Þ ð57Þ
+g3n ¼ 0:1235n2 þ 0:7287n þ 0:08425 ð58Þ
+g3s ¼ 309:5s4 þ 90:48s3  8:983s2
+þ0:2631s þ 0:086 ð59Þ
+g3Fz ¼ ð8:3  105ÞFz þ 0:76 ð60Þ
+The same process yields the following equations for the upper
+curve of Fig. 6
+g1 ¼ g1s ð61Þ
+g2 ¼ g2n g2s g2Fz g2v ð62Þ
+g3 ¼ g3n g3s g3Fz ð63Þ
+where
+g1s ¼ 1:16ð1913s4  520:6s3 þ 49:57s2
+1:204s þ 1:024Þ ð64Þ
+g2n ¼ maxð1:8n  1:08; 0Þ ð65Þ
+g2s ¼ 1:367  106s4  3:71  105s3þ
+2:809  104s2  545:7s þ 70 ð66Þ
+g2Fz ¼ ð0:0001Fz þ 0:7Þ ð67Þ
+g2v ¼ ð4:908v 0:9295Þ ð68Þ
+g3n ¼ 0:22 ð69Þ
+g3s ¼ 1609s4  529s3 þ 58:88s2  2:467s þ 0:082 ð70Þ
+g3Fz ¼ ð8:3  105ÞFz þ 0:76 ð71Þ
+The equations for other slip ranges can easily be determined by
+repeating the curve fitting process on data in those ranges. Further-
+more, it should be noted that these particular equations are only
+J. Dallas et al. / Journal of Terramechanics 91 (2020) 11–22 21
+valid for the specific tire under consideration. Should these be used
+for a different tire, for example of different radius, the equations
+are no longer valid and the process would need to be repeated.
+References
+Bekker, M.G., 1962. Theory of Land Locomotion. The University of Michigan Press,
+Ann Arbor, MI.
+Ding, L., Gao, H., Liu, Z., Deng, Z., Liu, G., 2015. Identifying mechanical property
+parameters of planetary soil using in-situ data obtained from exploration
+rovers. Planet. Space Sci. 119, 121–136. https://doi.org/10.1016/j.
+pss.2015.09.003.
+dvidshub, accessed January 30, 2020. Polaris MRZR 4. https://static.dvidshub.
+net/media/thumbs/photos/1504/1876593/1000w_q95.jpg.
+Gallina, A., Krenn, R., Schäfer, B., 2016. On the treatment of soft soil parameter
+uncertainties in planetary rover mobility simulations. J. Terrramech. 63, 33–47.
+https://doi.org/10.1016/J.JTERRA.2015.08.002.
+Gallina, A., Krenn, R., Scharringhausen, M., Uhl, T., Schäfer, B., 2014. Parameter
+identification of a planetary rover wheel-soil contact model via a bayesian
+approach. J. Field Rob. 31, 161–175. https://doi.org/10.1002/rob.21480.
+Guo, T., 2016. Power Consumption Models for Tracked and Wheeled Small
+Unmanned Ground Vehicles on Deformable Terrains Ph.D. thesis. University
+of Michigan.
+Hutangkabodee, S., Zweiri, Y.H., Seneviratne, L.D., Althoefer, K., 2006. Performance
+prediction of a wheeled vehicle on unknown terrain using identified soil
+parameters. In: IEEE International Conference on Robotics and Automation, pp.
+3356–3361. https://doi.org/10.1109/Rob.2006.1642214.
+Iagnemma, K., 2006. Terrain Estimation Methods For Enhanced Autonomous Rover
+Mobility. In: Howard, A., Tunstel, E. (Eds.), Intelligence for Space Robotics. TSI
+Press. chapter 17, p. 425.
+Iagnemma, K., Kang, S., Shibly, H., Dubowsky, S., 2004. Online terrain parameter
+estimation for wheeled mobile robots with application to planetary rovers. IEEE
+Trans. Rob. 20, 921–927. https://doi.org/10.1109/TRO.2004.829462.
+Iagnemma, K.D., Dubowsky, S., 2002. Terrain estimation for high-speed rough-
+terrain autonomous vehicle navigation. Unmanned Ground Veh. Technol. IV,
+256–266. https://doi.org/10.1117/12.474457.
+Ishigami, G., 2008. Terramechanics-based Analysis and Control for Lunar/Planetary
+Exploration Robots Ph.D. thesis. Tohoku University.
+Ishigami, G., Miwa, A., Nagatani, K., Yoshida, K., 2007. Terramechanics-based model
+for steering maneuver of planetary exploration rovers on loose soil. J. Field Rob.
+24, 233–250. https://doi.org/10.1002/rob.20187.
+Janosi, Z., Hanamoto, B., Ferraris, 1961. The analytical determination of drawbar pull
+as a function of slip for tracked vehicles in deformable soils. In: International
+Conference of the Mechanics of Soil-Vehicle Systems, Torino, Italy.
+Jia, Z., Smith, W., Peng, H., 2011. Fast computation of wheel-soil interactions for safe
+and efficient operation of mobile robots. IEEE/RSJ Int. Conf. Intell. Rob. Syst.,
+3004–3010 https://doi.org/10.1109/IROS.2011.6094507.
+Kolås, S., Foss, B., Schei, T., 2009. Constrained nonlinear state estimation based on
+the UKF approach. Comput. Chem. Eng. 33, 1386–1401. https://doi.org/10.1016/
+J.COMPCHEMENG.2009.01.012.
+Krenn, R., Gibbesch, A., 2011. Soft Soil Contact Modeling Technique for Multi-Body
+System Simulation. Springer, Berlin, Heidelberg.
+Krenn, R., Hirzinger, G., 2009. SCM-a soil contact model for multi-body system
+simulations. In: European Regional Conference of the International Society for
+Terrain-Vehicle Systems, Bremen, Germany.
+Liu, J., Jayakumar, P., Stein, J.L., Ersal, T., 2016. A study on model fidelity for model
+predictive control-based obstacle avoidance in high-speed autonomous ground
+vehicles. Veh. Syst. Dyn. 54, 1629–1650. https://doi.org/10.1080/
+00423114.2016.1223863.
+Liu, J., Jayakumar, P., Stein, J.L., Ersal, T., 2017. Combined speed and steering control
+in high speed autonomous ground vehicles for obstacle avoidance using model
+predictive control. IEEE Trans. Veh. Technol. 66, 8746–8763.
+Liu, J., Jayakumar, P., Stein, J.L., Ersal, T., 2018. A nonlinear model predictive control
+formulation for obstacle avoidance in high-speed autonomous ground vehicles
+in unstructured environments. Veh. Syst. Dyn. 56, 853–882. https://doi.org/
+10.1080/00423114.2017.1399209.
+Okello, J., Watany, M., Crolla, D., 1998. A theoretical and experimental investigation
+of rubber track performance models. J. Agric. Eng. Res. 69, 15–24. https://doi.
+org/10.1006/JAER.1997.0220.
+Ray, L.E., 2009. Estimation of terrain forces and parameters for rigid-wheeled
+vehicles. IEEE Trans. Rob. 25, 717–726. https://doi.org/10.1109/
+TRO.2009.2018971.
+Ryu, J., Rossetter, E.J., Gerdes, J.C., 2002. Vehicle sideslip and roll parameter
+estimation using GPS. In: International Symposium on Advanced Vehicle
+Control. Hiroshima, Japan, pp. 373–380.
+Setterfield, T.P., Ellery, A., 2013. Terrain response estimation using an instrumented
+rocker-bogie mobility system. IEEE Trans. Rob. 29, 172–188. https://doi.org/
+10.1109/TRO.2012.2223591.
+Smith, W.C., 2014. Modeling of Wheel-Soil Interaction for Small Ground Vehicles
+Operating on Granular Soil Ph.D. thesis. University of Michigan.
+Taheri, S., Sandu, C., Taheri, S., Pinto, E., Gorsich, D., 2015. A technical survey on
+terramechanics models for tire–terrain interaction used in modeling and
+simulation of wheeled vehicles. J. Terrramech. 57, 1–22. https://doi.org/
+10.1016/J.JTERRA.2014.08.003.
+Tasora, A., Serban, R., Mazhar, H., Pazouki, A., Melanz, D., Fleischmann, J., Taylor, M.,
+Sugiyama, H., Negrut, D., 2016. Chrono: an open source multi-physics dynamics
+engine, international conference on high performance. Comput. Sci. Eng., 19–49
+Wan, E., Van Der Merwe, R., 2000. The unscented Kalman filter for nonlinear
+estimation. In: IEEE Adaptive Systems for Signal Processing, Communications,
+and Control Symposium, pp. 153–158. doi:10.1109/ASSPCC.2000.882463.
+Weiss, C., Tamimi, H., Zell, A., 2008. A combination of vision- and vibration-based
+terrain classification. In: IEEE/RSJ International Conference on Intelligent Robots
+and Systems, pp. 2204–2209. https://doi.org/10.1109/IROS.2008.4650678.
+Wong, J.Y., 2001. Theory of Ground Vehicles. John Wiley, Hoboken, New Jersey.
+Wong, J.Y., Reece, A., 1967. Prediction of rigid wheel performance based on the
+analysis of soil-wheel stresses part I. Performance of driven rigid wheels. J.
+Terrramech. 4, 81–98. https://doi.org/10.1016/0022-4898(67)90105-X.
+22 J. Dallas et al. / Journal of Terramechanics 91 (2020) 11–22

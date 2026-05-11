@@ -1,0 +1,9 @@
+Kphi: 692200
+Kc: 13200
+n: 0.5
+cohesion: 4140
+friction_angle: 8.0
+janosi_shear: 0.01
+elastic_stiffness: 200000000.0
+damping: 30000.0
+description: clay_phi-5

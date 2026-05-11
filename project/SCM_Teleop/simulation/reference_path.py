@@ -213,20 +213,20 @@ class ReferencePath:
         6. Store as a 1-D interpolant v_max(s) for fast lookup.
         """
         # Proactive but not over-conservative defaults for SCM terrain.
-        ay_comfort = 3.2   # m/s² — lateral acceleration budget in turns
-        a_brake = 1.8      # m/s² — reduced decel authority -> earlier slowdown
-        a_accel = 2.5      # m/s² — acceleration out of turns (was 1.5 — too slow to reach target)
+        ay_comfort = 3.5   # m/s² — lateral acceleration budget in turns
+        a_brake = 2.0      # m/s² — MPC ax_min=-2.6 so profile can be slightly more aggressive
+        a_accel = 3.0      # m/s² — acceleration out of turns (was 2.5 — too slow to recover)
 
         # Terrain-aware ay_comfort: on low-friction surfaces (e.g. clay φ=13°,
         # μ≈0.23) the physical lateral acceleration limit is μ·g ≈ 2.26 m/s².
-        # Using a default of 3.2 leads to reference speeds that are physically
-        # impossible to maintain through turns, causing overshoot and CTE blow-up.
-        # On SCM deformable terrain, cohesion adds to traction beyond the
-        # Coulomb friction μ=tan(φ), so we use a moderate safety factor.
+        # SCM terrain has cohesion-based traction above the Coulomb μ·g floor,
+        # (cohesion+janosi shear contribute ~30-40% to the slip-angle traction).
+        # safety=0.75 allows ~30% more speed through curves vs the original 0.50,
+        # while the NN model handles the extra cornering demand without instability.
         if self._friction_angle_deg is not None:
             mu = np.tan(np.radians(self._friction_angle_deg))
             ay_physical = mu * 9.81
-            safety = 0.50  # SCM terrain has cohesion-based traction above μ·g
+            safety = 0.65  # SCM cohesion adds ~30-40% to Coulomb floor
             ay_terrain = ay_physical * safety
             ay_comfort = min(ay_comfort, ay_terrain)
         preview_dist = 3.0  # m — anticipatory slowdown lookahead
@@ -397,6 +397,24 @@ class ReferencePath:
         v_ref = np.minimum(v_ref, v_profile)
 
         return x_ref, y_ref, psi_ref, v_ref, x_ref[-1], y_ref[-1], psi_ref[-1]
+
+    # ------------------------------------------------------------------
+    # Path completion check
+    # ------------------------------------------------------------------
+
+    def is_complete(self, threshold: float = 1.0) -> bool:
+        """True when the vehicle's progress index is within *threshold* metres of
+        the path end.
+
+        Uses the last closest-waypoint index updated by ``get_reference``; call
+        ``get_reference`` at least once before checking.
+
+        Args:
+            threshold: Distance-from-end (m) below which the path is considered
+                complete.  Default 1.0 m gives a clean stopping margin before
+                the very last waypoint.
+        """
+        return self.s[self._last_idx] >= (self.s_max - threshold)
 
     # ------------------------------------------------------------------
     # Point evaluation (for analytics / error computation)

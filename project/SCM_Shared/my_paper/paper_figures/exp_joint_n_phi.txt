@@ -1,0 +1,22 @@
+==============================================================================
+[exp] joint (n, phi) estimation summary
+      windows: train=43158 val=10789 held=0
+==============================================================================
+
+--- model: n_only ---
+  val  : n_rmse=0.0448 bias=+0.0021
+      VAL            clay  k=1593  n_rmse=0.0700  n_bias=+0.0456
+      VAL            dirt  k=7572  n_rmse=0.0385  n_bias=-0.0040
+      VAL            sand  k=1624  n_rmse=0.0401  n_bias=-0.0123
+
+--- model: phi_only ---
+  val  : phi_rmse=3.9385 bias=-0.0254
+      VAL            clay  k=1593  phi_rmse=8.5928  phi_bias=+6.7212
+      VAL            dirt  k=7572  phi_rmse=2.5020  phi_bias=-1.2760
+      VAL            sand  k=1624  phi_rmse=1.1990  phi_bias=-0.8124
+
+--- model: joint ---
+  val  : n_rmse=0.0476 bias=+0.0026  |  phi_rmse=3.9145 bias=+0.1374
+      VAL            clay  k=1593  n_rmse=0.0691  n_bias=+0.0461  phi_rmse=8.4485  phi_bias=+6.7634
+      VAL            dirt  k=7572  n_rmse=0.0416  n_bias=-0.0022  phi_rmse=2.5744  phi_bias=-1.1435
+      VAL            sand  k=1624  n_rmse=0.0481  n_bias=-0.0180  phi_rmse=0.9407  phi_bias=-0.3897

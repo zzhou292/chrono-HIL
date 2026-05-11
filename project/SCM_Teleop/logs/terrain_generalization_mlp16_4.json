@@ -1,0 +1,74 @@
+{
+  "config": {
+    "data": "data/normal_mlp_resnet/scm_static_100k_v4.csv",
+    "arch": "mlp",
+    "hidden": [
+      16,
+      4
+    ],
+    "hidden_dim": 16,
+    "n_blocks": 2,
+    "epochs": 50,
+    "patience": 10,
+    "batch_size": 512,
+    "lr": 0.01,
+    "seed": 42,
+    "terrain_clusters": 64,
+    "group_repeats": 3,
+    "test_size": 0.1,
+    "val_size": 0.1,
+    "max_rows": 0,
+    "output_json": "logs/terrain_generalization_mlp16_4.json",
+    "cpu": false
+  },
+  "metrics": [
+    {
+      "name": "random_row_split",
+      "n_train": 80000,
+      "n_val": 10000,
+      "n_test": 10000,
+      "r2_fx": 0.9838685989379883,
+      "r2_fy": 0.9826236963272095,
+      "rmse_fx": 229.28544743670497,
+      "rmse_fy": 168.2930328976069,
+      "mae_fx": 145.87757873535156,
+      "mae_fy": 99.83858489990234
+    },
+    {
+      "name": "terrain_group_1",
+      "n_train": 78164,
+      "n_val": 10964,
+      "n_test": 10872,
+      "r2_fx": 0.9824012517929077,
+      "r2_fy": 0.982263445854187,
+      "rmse_fx": 270.88073944081,
+      "rmse_fy": 192.2936800183511,
+      "mae_fx": 171.4739990234375,
+      "mae_fy": 119.13858795166016
+    },
+    {
+      "name": "terrain_group_2",
+      "n_train": 78041,
+      "n_val": 11179,
+      "n_test": 10780,
+      "r2_fx": 0.9825828075408936,
+      "r2_fy": 0.981312096118927,
+      "rmse_fx": 263.08308751704277,
+      "rmse_fy": 194.61013711713477,
+      "mae_fx": 178.2705535888672,
+      "mae_fy": 121.95719909667969
+    },
+    {
+      "name": "terrain_group_3",
+      "n_train": 77866,
+      "n_val": 11430,
+      "n_test": 10704,
+      "r2_fx": 0.9810786843299866,
+      "r2_fy": 0.9799551963806152,
+      "rmse_fx": 290.35383855306617,
+      "rmse_fy": 213.74032324587236,
+      "mae_fx": 189.56024169921875,
+      "mae_fy": 129.27774047851562
+    }
+  ]
+}

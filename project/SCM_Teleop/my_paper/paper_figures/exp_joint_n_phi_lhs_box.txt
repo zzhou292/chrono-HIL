@@ -1,0 +1,73 @@
+==============================================================================
+[exp] joint (n, phi) estimation summary
+      windows: train=48574 val=12144 held=3024
+==============================================================================
+
+--- model: n_only ---
+  val  : n_rmse=0.0252 bias=-0.0009
+  hold : n_rmse=0.1112 bias=-0.0622
+      VAL            clay  k=2676  n_rmse=0.0362  n_bias=+0.0145
+      VAL            dirt  k=4450  n_rmse=0.0283  n_bias=-0.0061
+      VAL            sand  k=5018  n_rmse=0.0113  n_bias=-0.0044
+      HELD           dirt  k=3024  n_rmse=0.1112  n_bias=-0.0622
+      ---- per held-out trace label ----
+      HELD        grid_n080_phi24  k= 112  true=(0.80)  n_pred=0.69  n_rmse=0.129
+      HELD   lhs0100_n0753_phi260  k= 224  true=(0.75)  n_pred=0.59  n_rmse=0.195
+      HELD   lhs0107_n0773_phi205  k= 224  true=(0.77)  n_pred=0.70  n_rmse=0.120
+      HELD   lhs0108_n0775_phi229  k= 224  true=(0.78)  n_pred=0.61  n_rmse=0.197
+      HELD   lhs0110_n0782_phi240  k= 224  true=(0.78)  n_pred=0.63  n_rmse=0.191
+      HELD   lhs0113_n0792_phi265  k= 224  true=(0.79)  n_pred=0.77  n_rmse=0.042
+      HELD   lhs0114_n0792_phi268  k= 224  true=(0.79)  n_pred=0.76  n_rmse=0.054
+      HELD   lhs0115_n0797_phi228  k= 224  true=(0.80)  n_pred=0.68  n_rmse=0.160
+      HELD   lhs0123_n0821_phi279  k= 224  true=(0.82)  n_pred=0.82  n_rmse=0.009
+      HELD   lhs0127_n0832_phi245  k= 224  true=(0.83)  n_pred=0.82  n_rmse=0.016
+      HELD   lhs0138_n0866_phi257  k= 224  true=(0.87)  n_pred=0.86  n_rmse=0.012
+      HELD   lhs0143_n0882_phi260  k= 224  true=(0.88)  n_pred=0.88  n_rmse=0.009
+      HELD   lhs0146_n0888_phi270  k= 224  true=(0.89)  n_pred=0.88  n_rmse=0.009
+      HELD   lhs0147_n0892_phi267  k= 224  true=(0.89)  n_pred=0.89  n_rmse=0.010
+
+--- model: phi_only ---
+  val  : phi_rmse=1.2186 bias=-0.0080
+  hold : phi_rmse=5.2857 bias=-3.2176
+      VAL            clay  k=2676  phi_rmse=1.6980  phi_bias=+0.7140
+      VAL            dirt  k=4450  phi_rmse=1.4292  phi_bias=-0.5255
+      VAL            sand  k=5018  phi_rmse=0.4950  phi_bias=+0.0658
+      HELD           dirt  k=3024  phi_rmse=5.2857  phi_bias=-3.2176
+      ---- per held-out trace label ----
+      HELD        grid_n080_phi24  k= 112  true=(24.00)  phi_pred=15.57  phi_rmse=8.942
+      HELD   lhs0100_n0753_phi260  k= 224  true=(26.04)  phi_pred=17.52  phi_rmse=9.482
+      HELD   lhs0107_n0773_phi205  k= 224  true=(20.49)  phi_pred=17.49  phi_rmse=4.302
+      HELD   lhs0108_n0775_phi229  k= 224  true=(22.91)  phi_pred=17.11  phi_rmse=6.688
+      HELD   lhs0110_n0782_phi240  k= 224  true=(23.97)  phi_pred=16.92  phi_rmse=8.151
+      HELD   lhs0113_n0792_phi265  k= 224  true=(26.49)  phi_pred=22.20  phi_rmse=6.246
+      HELD   lhs0114_n0792_phi268  k= 224  true=(26.79)  phi_pred=22.87  phi_rmse=5.925
+      HELD   lhs0115_n0797_phi228  k= 224  true=(22.76)  phi_pred=17.77  phi_rmse=5.940
+      HELD   lhs0123_n0821_phi279  k= 224  true=(27.88)  phi_pred=27.90  phi_rmse=0.461
+      HELD   lhs0127_n0832_phi245  k= 224  true=(24.53)  phi_pred=22.67  phi_rmse=2.553
+      HELD   lhs0138_n0866_phi257  k= 224  true=(25.66)  phi_pred=25.35  phi_rmse=0.679
+      HELD   lhs0143_n0882_phi260  k= 224  true=(25.95)  phi_pred=25.93  phi_rmse=0.599
+      HELD   lhs0146_n0888_phi270  k= 224  true=(26.99)  phi_pred=27.16  phi_rmse=0.531
+      HELD   lhs0147_n0892_phi267  k= 224  true=(26.72)  phi_pred=27.08  phi_rmse=0.615
+
+--- model: joint ---
+  val  : n_rmse=0.0257 bias=-0.0002  |  phi_rmse=1.2404 bias=+0.0555
+  hold : n_rmse=0.1147 bias=-0.0749  |  phi_rmse=4.4925 bias=-2.8473
+      VAL            clay  k=2676  n_rmse=0.0379  n_bias=+0.0165  phi_rmse=1.8891  phi_bias=+0.6556
+      VAL            dirt  k=4450  n_rmse=0.0275  n_bias=-0.0059  phi_rmse=1.3275  phi_bias=-0.3009
+      VAL            sand  k=5018  n_rmse=0.0127  n_bias=-0.0041  phi_rmse=0.5080  phi_bias=+0.0516
+      HELD           dirt  k=3024  n_rmse=0.1147  n_bias=-0.0749  phi_rmse=4.4925  phi_bias=-2.8473
+      ---- per held-out trace label ----
+      HELD        grid_n080_phi24  k= 112  true=(0.80,24.00)  n_pred=0.63  n_rmse=0.188  phi_pred=16.87  phi_rmse=7.585
+      HELD   lhs0100_n0753_phi260  k= 224  true=(0.75,26.04)  n_pred=0.56  n_rmse=0.209  phi_pred=17.62  phi_rmse=9.244
+      HELD   lhs0107_n0773_phi205  k= 224  true=(0.77,20.49)  n_pred=0.67  n_rmse=0.135  phi_pred=17.41  phi_rmse=4.178
+      HELD   lhs0108_n0775_phi229  k= 224  true=(0.78,22.91)  n_pred=0.62  n_rmse=0.172  phi_pred=17.29  phi_rmse=6.223
+      HELD   lhs0110_n0782_phi240  k= 224  true=(0.78,23.97)  n_pred=0.63  n_rmse=0.173  phi_pred=17.97  phi_rmse=6.577
+      HELD   lhs0113_n0792_phi265  k= 224  true=(0.79,26.49)  n_pred=0.72  n_rmse=0.088  phi_pred=23.29  phi_rmse=3.810
+      HELD   lhs0114_n0792_phi268  k= 224  true=(0.79,26.79)  n_pred=0.72  n_rmse=0.091  phi_pred=23.79  phi_rmse=3.950
+      HELD   lhs0115_n0797_phi228  k= 224  true=(0.80,22.76)  n_pred=0.67  n_rmse=0.141  phi_pred=18.49  phi_rmse=4.884
+      HELD   lhs0123_n0821_phi279  k= 224  true=(0.82,27.88)  n_pred=0.82  n_rmse=0.012  phi_pred=27.80  phi_rmse=0.524
+      HELD   lhs0127_n0832_phi245  k= 224  true=(0.83,24.53)  n_pred=0.80  n_rmse=0.050  phi_pred=23.21  phi_rmse=1.874
+      HELD   lhs0138_n0866_phi257  k= 224  true=(0.87,25.66)  n_pred=0.86  n_rmse=0.011  phi_pred=25.51  phi_rmse=0.502
+      HELD   lhs0143_n0882_phi260  k= 224  true=(0.88,25.95)  n_pred=0.88  n_rmse=0.008  phi_pred=25.97  phi_rmse=0.468
+      HELD   lhs0146_n0888_phi270  k= 224  true=(0.89,26.99)  n_pred=0.89  n_rmse=0.009  phi_pred=27.01  phi_rmse=0.530
+      HELD   lhs0147_n0892_phi267  k= 224  true=(0.89,26.72)  n_pred=0.89  n_rmse=0.010  phi_pred=26.93  phi_rmse=0.523

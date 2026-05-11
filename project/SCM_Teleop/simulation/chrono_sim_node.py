@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import math
+import os
 import sys
 import time as wall_time
 from pathlib import Path
@@ -60,6 +61,7 @@ from g29_controller import ManualDriver
 # Safety filter + obstacles (optional)
 from sensors.obstacles import add_rock_obstacles, get_rock_positions, get_rock_radii
 from safety import CBFSafetyFilter
+from collision_detector import CollisionLogger
 
 # NN tire model for terrain-aware CBF traction limits
 try:
@@ -145,7 +147,8 @@ def extract_tire_forces(vehicle, terrain) -> dict:
 def extract_vehicle_state(vehicle, sim_time: float, terrain=None,
                           noise: dict = None,
                           imu_acc_sensor=None,
-                          imu_gyro_sensor=None) -> VehicleState:
+                          imu_gyro_sensor=None,
+                          obstacles_flat: list = None) -> VehicleState:
     """Read Chrono vehicle and pack into a VehicleState message.
 
     Args:
@@ -277,6 +280,7 @@ def extract_vehicle_state(vehicle, sim_time: float, terrain=None,
         wheel_omega_rr=wheel_omega_rr,
         steering_angle=steer_angle,
         tire_forces=tf,
+        obstacles=obstacles_flat,
     )
 
 
@@ -322,6 +326,7 @@ def run_sim_node(args):
     # Rock obstacles
     # ------------------------------------------------------------------
     rocks = []
+    collision_logger = None
     if args.rocks > 0:
         exclusion_zones = [(0.0, 0.0, 12.0)]  # Vehicle spawn at (0,0)
         rocks = add_rock_obstacles(
@@ -332,16 +337,34 @@ def run_sim_node(args):
         )
         print(f"  Placed {len(rocks)} rock obstacles")
 
+    # --- Collision detector (always active when rocks present) ---
+    _log_dir = os.path.join(os.path.dirname(__file__), '..', 'logs')
+    collision_logger = CollisionLogger(rocks, run_dir=_log_dir) if rocks else None
+
     # ------------------------------------------------------------------
     # CBF safety filter
     # ------------------------------------------------------------------
     safety_filter = None
     if args.safety_filter:
         vehicle_params = get_vehicle_params_for_demo()
-        # NN removed from safety filter — use kinematic/linear fallbacks only
+
+        # Load NN tire model for terrain-aware CBF traction limits.
+        # Uses the same model as the MPC controller for consistency.
+        # Falls back to kinematic/linear if NN unavailable (import failed or model missing).
+        _nn_cbf = None
+        if load_nn_tire_model is not None:
+            try:
+                _preset = terrain_config if terrain_config else get_terrain_preset(args.terrain)
+                _tp = terrain_preset_to_internal(_preset)
+                _model_dir = Path(__file__).resolve().parent.parent / "nn_models" / args.nn_model
+                _nn_cbf = load_nn_tire_model(str(_model_dir), _tp)
+                print(f"  [CBF] NN tire model loaded: {args.nn_model} on {args.terrain}")
+            except Exception as _e:
+                print(f"  [CBF] NN load failed ({_e}), using kinematic fallback")
+
         safety_filter = CBFSafetyFilter(
             vehicle_params=vehicle_params,
-            nn_casadi=None,
+            nn_casadi=_nn_cbf,
             cbf_alpha=args.cbf_alpha,
             obstacle_buffer=args.safety_buffer,
             delay_steps=args.delay_steps,
@@ -394,7 +417,8 @@ def run_sim_node(args):
         try:
             vis = veh.ChWheeledVehicleVisualSystemIrrlicht()
             vis.SetWindowTitle("Chrono Sim Node (decoupled)")
-            vis.SetWindowSize(4320, 720)
+            vis.SetWindowSize(int(args.irrlicht_window_size[0]),
+                              int(args.irrlicht_window_size[1]))
             vis.SetChaseCamera(chrono.ChVector3d(0, 0, 1.5), 6.0, 0.5)
             vis.Initialize()
             vis.AddLightDirectional()
@@ -632,6 +656,7 @@ def run_sim_node(args):
     last_report_time = 0.0
     start_wall = wall_time.time()
     cmd_count = 0
+    cmd_buffer = []
     step_count = 0
 
     noise_cfg = None if args.no_noise else DEFAULT_MEAS_NOISE
@@ -673,11 +698,22 @@ def run_sim_node(args):
             if result is not None:
                 topic, msg = result
                 if isinstance(msg, ControlCommand):
-                    driver.apply(msg)
-                    cmd_count += 1
-                    # Feed command age to safety filter for teleop delay est.
-                    if safety_filter is not None and msg.wall_time > 0:
-                        safety_filter.update_command_age(msg.wall_time)
+                    if args.teleop_delay > 0:
+                        cmd_buffer.append((wall_time.time() + args.teleop_delay, msg))
+                    else:
+                        driver.apply(msg)
+                        cmd_count += 1
+                        # Feed command age to safety filter for teleop delay est.
+                        if safety_filter is not None and msg.wall_time > 0:
+                            safety_filter.update_command_age(msg.wall_time)
+
+            now = wall_time.time()
+            while cmd_buffer and cmd_buffer[0][0] <= now:
+                _, msg = cmd_buffer.pop(0)
+                driver.apply(msg)
+                cmd_count += 1
+                if safety_filter is not None and msg.wall_time > 0:
+                    safety_filter.update_command_age(msg.wall_time)
 
         # --- Synchronize ---
         _tw = wall_time.time()
@@ -785,12 +821,27 @@ def run_sim_node(args):
         # --- Publish vehicle state at decimated rate ---
         if state_pub is not None and time_chrono - last_state_pub_time >= state_pub_interval:
             _tw = wall_time.time()
+            # Nearest N_OBS rocks within 40m → flat list for MPC horizon planning.
+            _obs_flat_msg = []
+            if args.rocks > 0:
+                _rpos = get_rock_positions(rocks)
+                _rrad = get_rock_radii(rocks)
+                _vpos_now = vehicle.GetChassisBody().GetPos()
+                _vx, _vy = _vpos_now.x, _vpos_now.y
+                _dists = np.sqrt((_rpos[:, 0] - _vx)**2 + (_rpos[:, 1] - _vy)**2)
+                _nearby_idx = np.where(_dists < 40.0)[0]
+                _sorted_idx = _nearby_idx[np.argsort(_dists[_nearby_idx])][:3]
+                for _i in _sorted_idx:
+                    _obs_flat_msg += [float(_rpos[_i, 0]), float(_rpos[_i, 1]),
+                                      float(_rrad[_i])]
+
             state_msg = extract_vehicle_state(
                 vehicle, time_chrono,
                 terrain=None if args.no_tire_forces else terrain,
                 noise=noise_cfg,
                 imu_acc_sensor=imu_acc_sensor,
                 imu_gyro_sensor=imu_gyro_sensor,
+                obstacles_flat=_obs_flat_msg if _obs_flat_msg else None,
             )
             state_pub.send(state_msg)
             _t_state_extract += wall_time.time() - _tw
@@ -808,14 +859,24 @@ def run_sim_node(args):
 
         _t_loop_total += wall_time.time() - _t_loop_start
 
+        # --- Collision detection (every physics step when rocks present) ---
+        if collision_logger is not None:
+            _veh_cg = vehicle.GetChassisBody().GetPos()
+            _veh_spd = vehicle.GetVehicle().GetSpeed()
+            collision_logger.check(time_chrono, _veh_cg.x, _veh_cg.y, _veh_spd)
+
         # --- Progress report ---
         if time_chrono - last_report_time >= 2.0:
             last_report_time = time_chrono
             elapsed = wall_time.time() - start_wall
             rt = time_chrono / elapsed if elapsed > 0 else 0
             pos = vehicle.GetChassisBody().GetPos()
+            _col_str = ""
+            if collision_logger is not None:
+                _col_str = (f"  collisions={collision_logger.total_collisions}"
+                            f"  near_misses={collision_logger.total_near_misses}")
             print(f"  t={time_chrono:.1f}s  pos=({pos.x:.1f},{pos.y:.1f})  "
-                  f"RT={rt:.2f}x  cmds_recv={cmd_count}")
+                  f"RT={rt:.2f}x  cmds_recv={cmd_count}{_col_str}")
             # --- Timing breakdown (per 2s window) ---
             n = max(_t_report_steps, 1)
             accounted = (_t_terrain_sync + _t_terrain_adv + _t_veh_sync + _t_veh_adv +
@@ -842,6 +903,9 @@ def run_sim_node(args):
     # ------------------------------------------------------------------
     # Shutdown
     # ------------------------------------------------------------------
+    if collision_logger is not None:
+        collision_logger.close()
+
     if state_pub is not None:
         stop_msg = SimStatus(event="stop", time=time_chrono, wall_time=wall_time.time())
         state_pub.send(stop_msg)
@@ -881,6 +945,9 @@ def main():
     p.add_argument("--vis-mode", default="irrlicht",
                    choices=["irrlicht", "sensor", "both", "none"],
                    help="Visualization mode: irrlicht, sensor (driver POV), both, or none")
+    p.add_argument("--irrlicht-window-size", type=int, nargs=2,
+                   metavar=("WIDTH", "HEIGHT"), default=[4320, 720],
+                   help="Irrlicht window size in pixels")
     p.add_argument("--no-rt",  action="store_true",
                    help="Disable real-time pacing (fast-forward; breaks decoupled MPC)")
     p.add_argument("--no-tire-forces", action="store_true",
@@ -964,8 +1031,8 @@ def main():
     p.add_argument("--dob-bandwidth", type=float, default=10.0)
     p.add_argument("--cbf-flavor", type=str, default="balance",
                    choices=["balance", "steer_priority", "throttle_priority"])
-    p.add_argument("--nn-model", type=str, default="v6",
-                   help="NN model version for CBF traction limits")
+    p.add_argument("--nn-model", type=str, default="paper_v2_mlp_16_4",
+                   help="NN model version directory for CBF traction limits")
     p.add_argument("--teleop-delay", type=float, default=0.0,
                    help="Initial one-way teleop delay estimate in seconds "
                         "(0 = local, auto-measured from cmd timestamps)")

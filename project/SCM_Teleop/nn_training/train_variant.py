@@ -55,6 +55,67 @@ TERRAIN_COLS = ["bekker_Kphi", "bekker_Kc", "bekker_n", "mohr_cohesion", "mohr_f
 OUT_COLS = ["Fx", "Fy"]
 
 
+def _apply_physical_filters(df: pd.DataFrame, mode: OpMode) -> pd.DataFrame:
+    """Drop numerically valid but physically impossible outliers.
+
+    A few corrupted rows can dominate StandardScaler statistics (especially in
+    velocity/rate channels) and effectively zero out those features.
+    """
+    base_mask = (
+        df["slip_ratio"].between(-1.2, 1.2)
+        & df["slip_angle"].between(-0.7, 0.7)
+        & df["velocity"].between(0.25, 20.0)
+        & df["vertical_load"].between(1000.0, 10000.0)
+        & df["steering_rate"].between(-2.0, 2.0)
+        & df["Fx"].between(-5.0e4, 5.0e4)
+        & df["Fy"].between(-5.0e4, 5.0e4)
+    )
+
+    if mode == "rate":
+        for c, lo, hi in (
+            ("d_slip_ratio", -5.0, 5.0),
+            ("d_slip_angle", -2.0, 2.0),
+            ("d_velocity", -10.0, 10.0),
+        ):
+            if c in df.columns:
+                base_mask &= df[c].between(lo, hi)
+
+    dropped = int((~base_mask).sum())
+    if dropped > 0:
+        logger.warning("Dropping %d physically-invalid rows before training", dropped)
+    return df.loc[base_mask].reset_index(drop=True)
+
+
+def _check_rate_feature_independence(df: pd.DataFrame, allow_duplicate: bool) -> None:
+    """Guard against duplicated rate channels caused by data logging bugs."""
+    req = {"steering_rate", "d_slip_angle"}
+    if not req.issubset(df.columns):
+        return
+
+    diff = (df["steering_rate"] - df["d_slip_angle"]).abs().to_numpy(dtype=np.float64)
+    finite = np.isfinite(diff)
+    if not finite.any():
+        return
+
+    dup_frac = float(np.mean(diff[finite] < 1e-8))
+    if dup_frac < 0.995:
+        return
+
+    msg = (
+        "Detected duplicated rate features: steering_rate and d_slip_angle are "
+        f"identical in {dup_frac * 100:.2f}% of rows. "
+        "This indicates a data-collection schema bug and creates train/inference "
+        "feature mismatch for rate-augmented models."
+    )
+    if allow_duplicate:
+        logger.warning("%s Proceeding because --allow-duplicate-rate-features was set.", msg)
+    else:
+        raise ValueError(
+            msg + " Recollect/repair the dataset or pass "
+            "--allow-duplicate-rate-features to bypass this guard."
+        )
+
+
 def build_temporal_windows(df: pd.DataFrame, K: int, dt_nn: float, record_dt: float) -> tuple[np.ndarray, np.ndarray]:
     stride = max(1, int(round(dt_nn / record_dt)))
     X_list: list[np.ndarray] = []
@@ -307,6 +368,11 @@ def main():
     p.add_argument("--K", type=int, default=1, help="Temporal window K (temporal mode only)")
     p.add_argument("--dt-nn", type=float, default=0.1, help="Temporal spacing (s) between window entries")
     p.add_argument("--record-dt", type=float, default=0.005, help="Dataset recording interval (s)")
+    p.add_argument(
+        "--allow-duplicate-rate-features",
+        action="store_true",
+        help="Bypass guard that rejects rate CSVs with duplicated steering_rate and d_slip_angle.",
+    )
 
     # MLP size
     p.add_argument("--hidden", type=int, nargs="+", default=None)
@@ -324,6 +390,9 @@ def main():
 
     arch: Arch = args.arch
     mode: OpMode = args.mode
+
+    # Remove pathological rows before feature construction.
+    df = _apply_physical_filters(df, mode)
 
     if mode == "static":
         # Expect row-wise samples with OP_COLS + TERRAIN_COLS + OUT_COLS
@@ -355,6 +424,9 @@ def main():
             missing = [c for c in required if c not in df.columns]
             if missing:
                 raise ValueError(f"Rate CSV missing columns: {missing}")
+            _check_rate_feature_independence(
+                df, allow_duplicate=bool(args.allow_duplicate_rate_features)
+            )
             logger.info("Using pre-computed rate columns from CSV")
             X = df[OP_COLS + rate_cols + TERRAIN_COLS].values.astype(np.float32)
             y = df[OUT_COLS].values.astype(np.float32)
@@ -417,4 +489,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

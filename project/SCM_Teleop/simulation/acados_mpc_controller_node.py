@@ -17,14 +17,13 @@ Subscribes: VehicleState from simulation node
 Publishes:  ControlCommand to simulation node
 
 Usage:
-    python acados_mpc_controller_node.py --nn-model paper_v1_mlp_16_4 --terrain sand --path sinusoidal
+    python acados_mpc_controller_node.py --nn-model paper_v2_mlp_16_4 --terrain sand --path sinusoidal
     python acados_mpc_controller_node.py --model pacejka --terrain dirt --path lane_change
 """
 
 import argparse
 import collections
 import csv
-import json
 import math
 import os
 import sys
@@ -69,8 +68,9 @@ from acados_mpc_solver import (
 )
 from nn_tire_model import load_nn_tire_model
 from analytical_tire_models import get_tire_forces as analytical_tire_forces
-from online_residual_adapter import OnlineResidualAdapter, ResidualAdapterConfig
 from force_residual_adapter import ForceResidualAdapter, ForceResidualConfig
+from dynamics_gp_adapter import DynamicsGPAdapter, DynamicsGPConfig
+from learned_terrain_estimator import LearnedTerrainEstimator
 
 # Terrain classifier (optional)
 try:
@@ -92,8 +92,10 @@ _DEFAULT_TERRAIN_CLASS = "clay"
 # Subset of terrain_preset_to_internal keys passed into the OCP each stage
 TERRAIN_MPC_PARAM_KEYS = ("Kphi", "Kc", "n", "c", "phi", "k")
 
-# Floor on longitudinal speed in the MPC state (avoids singularities / bad NN features)
-MPC_STATE_MIN_FORWARD_SPEED_MPS = 0.5
+# Minimum forward speed represented in MPC state (physical bound).
+MPC_STATE_MIN_FORWARD_SPEED_MPS = 0.0
+# Speed epsilon used only in slip-angle/rate feature computations.
+SLIP_CALC_MIN_SPEED_MPS = 0.5
 
 from path_utils import make_path_function
 from tire_input_features import (
@@ -105,6 +107,14 @@ from tire_input_features import (
     pack_vehicle_tire_csv_row,
     write_vehicle_tire_csv_header,
 )
+
+
+def _resolve_project_path(path_like: str) -> Path:
+    """Resolve relative runtime artifact paths from the project root."""
+    path = Path(path_like).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return (Path(__file__).resolve().parent.parent / path).resolve()
 
 
 def _config_dict_from_cli(args) -> dict:
@@ -209,6 +219,11 @@ def _terrain_estimate_bundle(
     )
 
 
+def _wrap_to_pi(angle_rad: float) -> float:
+    """Wrap angle to [-pi, pi]."""
+    return (angle_rad + np.pi) % (2.0 * np.pi) - np.pi
+
+
 # =============================================================================
 # Main controller loop
 # =============================================================================
@@ -277,6 +292,8 @@ def run_controller_node(args):
         symbolic_rates=args.symbolic_rates,
         no_temporal_staged=getattr(args, 'no_temporal_staged', False),
         friction_angle_deg=terrain_params.get('phi'),
+        rate_feature_dt=float(args.nn_rate_sample_dt),
+        oracle_terrain=(terrain_name if tire_model == 'pacejka-oracle' else None),
     )
     if tire_model == 'nn':
         model_label = f"ACADOS-NN ({nn_tire.model_type})"
@@ -423,7 +440,12 @@ def run_controller_node(args):
     # ------------------------------------------------------------------
     # Control integrator
     # ------------------------------------------------------------------
-    integrator = ControlIntegrator(mpc, v_target=v_target)
+    integrator = ControlIntegrator(
+        mpc, v_target=v_target,
+        dob_ki=float(getattr(args, "dob_ki", 0.15)),
+        dob_max=float(getattr(args, "dob_max", 0.35)),
+        dob_bleed=float(getattr(args, "dob_bleed", 0.5)),
+    )
 
     # ------------------------------------------------------------------
     # Tracking analytics
@@ -459,6 +481,14 @@ def run_controller_node(args):
     last_state: VehicleState = None
     solve_times = []
     last_sim_time = None
+    # Pending prediction targets: (sim_time_target, predicted 9-state at target).
+    pred_targets = collections.deque(maxlen=max(64, 4 * int(mpc.N)))
+    pred_pos_err_hist = []
+    pred_psi_err_hist = []
+    pred_u_err_hist = []
+    pred_v_err_hist = []
+    pred_omega_err_hist = []
+    pred_age_hist = []
     # Previous applied road-wheel angle used to estimate realized steering-rate
     # at the current state sample.
     prev_applied_delta = float(integrator.steering_angle)
@@ -468,6 +498,13 @@ def run_controller_node(args):
     # Measured-ax state (from IMU, complementary-filtered)
     _measured_ax = 0.0
     _ax_filter_tau = args.ax_filter_tau
+    # Velocity state EMA filter — smooths noisy [u, v, omega] before MPC and GP observations.
+    # The main source of noise corruption: σ_v=0.05 m/s vs signal ~0.1-0.5 m/s (SNR 2-10:1),
+    # and dynamics GP targets are (z_meas - z_pred)/dt which amplifies noise by ~1/dt.
+    _vel_filter_tau = float(getattr(args, 'vel_filter_tau', 0.0))
+    _vel_filt_u: Optional[float] = None
+    _vel_filt_v: Optional[float] = None
+    _vel_filt_omega: Optional[float] = None
     terrain_class_est, n_terrain_est, terrain_params_est, terrain_confidence = (
         _terrain_estimate_bundle(
             args.terrain_classifier,
@@ -477,41 +514,9 @@ def run_controller_node(args):
         )
     )
 
-    # ------------------------------------------------------------------
-    # Optional online residual adapter (l4acados-style)
-    # ------------------------------------------------------------------
-    residual_adapter = None
-    res_prev_state = None
-    res_prev_ctrl = None
-    res_prev_time = None
-    res_prev_sr = 0.0
-    res_prev_tp = None
-    res_prev_n = 1.1
     res_pred_du = 0.0
     res_pred_dv = 0.0
     res_pred_domega = 0.0
-    if args.residual_adapt:
-        ckpt = Path(args.residual_checkpoint).expanduser().resolve()
-        res_cfg = ResidualAdapterConfig(
-            checkpoint=ckpt,
-            correction_gain=float(args.residual_correction_gain),
-            clip_u=float(args.residual_clip_u),
-            clip_v=float(args.residual_clip_v),
-            clip_omega=float(args.residual_clip_omega),
-            online_enabled=not bool(args.residual_no_online),
-            online_lr=float(args.residual_online_lr),
-            online_epochs=int(args.residual_online_epochs),
-            online_batch_size=int(args.residual_online_batch_size),
-            online_update_interval=int(args.residual_update_interval),
-            online_buffer_size=int(args.residual_buffer_size),
-            online_warmup_samples=int(args.residual_warmup_samples),
-        )
-        residual_adapter = OnlineResidualAdapter(mpc, res_cfg)
-        print(
-            "  Residual adaptation: ON  "
-            f"(ckpt={ckpt.name}, online={'ON' if not args.residual_no_online else 'OFF'}, "
-            f"gain={args.residual_correction_gain:g})"
-        )
 
     # ------------------------------------------------------------------
     # Optional force-level residual adapter (corrects Fy across horizon)
@@ -523,7 +528,8 @@ def run_controller_node(args):
             checkpoint=fr_ckpt,
             clip_dFy=float(args.force_residual_clip),
             gain=float(args.force_residual_gain),
-            online_enabled=not bool(args.force_residual_no_online),
+            online_enabled=bool(args.force_residual_online),
+            online_lr=float(args.force_residual_online_lr),
         )
         force_residual = ForceResidualAdapter(fr_cfg)
         print(
@@ -531,6 +537,64 @@ def run_controller_node(args):
             f"online={'ON' if fr_cfg.online_enabled else 'OFF'}, "
             f"clip={fr_cfg.clip_dFy:.0f} N, gain={fr_cfg.gain:.2f})"
         )
+
+    # ------------------------------------------------------------------
+    # Optional dynamics GP adapter (learns bicycle model residuals [Δu̇,Δv̇,Δω̇])
+    # ------------------------------------------------------------------
+    dynamics_gp = None
+    if args.dynamics_gp:
+        dyn_cfg = DynamicsGPConfig(
+            state_path=_resolve_project_path(args.dynamics_gp_state),
+            max_inducing=int(args.gp_max_inducing),
+            clip_dxdot=float(args.dynamics_gp_clip),
+            gain=float(args.dynamics_gp_gain),
+            noise_variance=float(args.gp_noise_var),
+        )
+        dynamics_gp = DynamicsGPAdapter(dyn_cfg)
+        print(
+            f"  Dynamics GP: ON  (state={dyn_cfg.state_path}, "
+            f"inducing={dynamics_gp.gp.n_inducing}/{dyn_cfg.max_inducing}, "
+            f"clip={dyn_cfg.clip_dxdot:.2f}, gain={dyn_cfg.gain:.2f})"
+        )
+
+    # ------------------------------------------------------------------
+    # Online terrain parameter estimator (speed-capability voting)
+    # ------------------------------------------------------------------
+    terrain_estimator = None
+    _te_omega_prev = None
+    _te_time_prev = None
+    if args.terrain_estimator and args.model == "nn":
+        # Start estimator from a NEUTRAL default — midpoint of the n range.
+        # Use dirt preset as base (n=0.7, middle of [0.3, 1.3]).
+        # This follows Dallas et al. who initialize with a "wrong" but not
+        # extreme initial guess.
+        _te_default = terrain_preset_to_internal(get_terrain_preset("dirt"))
+        learned_dir = (Path(args.learned_terrain_model_dir).resolve()
+                       if args.learned_terrain_model_dir else
+                       Path(__file__).parent.parent / "nn_models" /
+                       "terrain_window_mlp_v3_cl")
+        terrain_estimator = LearnedTerrainEstimator(
+            model_dir=str(learned_dir),
+            initial_terrain=_te_default,
+            update_interval=args.te_update_interval,
+            verbose=bool(getattr(args, "te_verbose", False)),
+            window_size=args.te_window,
+            min_excitation=args.te_min_excitation,
+            lr=args.te_lr,
+            n_steps=args.te_steps,
+        )
+        # Override MPC terrain params to the conservative default too,
+        # so the MPC starts blind and adapts as the estimator learns.
+        terrain_params_est = dict(_te_default)
+        n_terrain_est = _te_default['n']
+        terrain_class_est = "estimating"
+        terrain_confidence = 0.0
+        print(
+            f"  Terrain estimator: ON  (sliding-window MLP, init=dirt/n=0.7, "
+            f"window={args.te_window}, update_every={args.te_update_interval})"
+        )
+    elif args.terrain_estimator and args.model != "nn":
+        print("  WARNING: --terrain-estimator requires --model nn (disabled)")
 
     # ------------------------------------------------------------------
     # Simple online Fy bias estimator
@@ -570,9 +634,11 @@ def run_controller_node(args):
             "steering", "throttle", "braking", "steering_angle", "acceleration",
             "tau_one_way_ms", "tau_solve_ms", "tau_comp_ms", "solve_time_ms",
             "crosstrack_err", "heading_err_deg", "speed_err",
+            "pred1_age_s", "pred1_pos_err_m", "pred1_psi_err_deg",
+            "pred1_u_err_mps", "pred1_v_err_mps", "pred1_omega_err_radps",
             "actual_Fy_front", "actual_Fy_rear", "pred_Fy_front", "pred_Fy_rear",
             "alpha_f", "alpha_r", "Fz_f_mean", "Fz_r_mean",
-            "kappa_diag", "sr_diag", "u_safe_diag", "speed_fade_diag",
+            "kappa_diag", "kappa_meas_diag", "sr_diag", "u_safe_diag", "speed_fade_diag",
             "force_resid_dFy_f", "force_resid_dFy_r",
             "force_resid_updates", "force_resid_bias_f", "force_resid_bias_r",
         ]
@@ -661,14 +727,18 @@ def run_controller_node(args):
                 analytics.v_target = v_target
                 analytics.path_type = path_type
                 integrator.v_target = v_target
-                terrain_class_est, n_terrain_est, terrain_params_est, terrain_confidence = (
-                    _terrain_estimate_bundle(
-                        args.terrain_classifier,
-                        args.use_prediction,
-                        terrain_name,
-                        terrain_params,
+                if not args.terrain_estimator:
+                    # Only use ground-truth terrain when estimator is OFF.
+                    # When estimator is ON, keep the conservative init (clay)
+                    # and let the estimator discover the terrain online.
+                    terrain_class_est, n_terrain_est, terrain_params_est, terrain_confidence = (
+                        _terrain_estimate_bundle(
+                            args.terrain_classifier,
+                            args.use_prediction,
+                            terrain_name,
+                            terrain_params,
+                        )
                     )
-                )
                 print("  Applied sim config from stream (received after ACADOS init).")
             continue
 
@@ -740,12 +810,30 @@ def run_controller_node(args):
             last_Jx_cmd,
         ])
 
+        # Velocity state EMA filter: smooth u, v, omega before MPC and GP observations.
+        # Reduces noise corruption in both MPC initial condition and dynamics GP targets.
+        if _vel_filter_tau > 0 and dt_ctrl > 1e-6:
+            _alpha_vel = min(dt_ctrl / (_vel_filter_tau + dt_ctrl), 1.0)
+            if _vel_filt_u is None:
+                # First measurement: initialise to raw values
+                _vel_filt_u = float(z0_measured[3])
+                _vel_filt_v = float(z0_measured[4])
+                _vel_filt_omega = float(z0_measured[5])
+            else:
+                _vel_filt_u = (1.0 - _alpha_vel) * _vel_filt_u + _alpha_vel * float(z0_measured[3])
+                _vel_filt_v = (1.0 - _alpha_vel) * _vel_filt_v + _alpha_vel * float(z0_measured[4])
+                _vel_filt_omega = (1.0 - _alpha_vel) * _vel_filt_omega + _alpha_vel * float(z0_measured[5])
+            z0_measured[3] = _vel_filt_u
+            z0_measured[4] = _vel_filt_v
+            z0_measured[5] = _vel_filt_omega
+
         # Append α_f_prev, α_r_prev, δ_sr_prev for symbolic rate mode (nx=12)
+        # Use z0_measured[3,4,5] (post-filter) for consistency with the filtered MPC state.
         if mpc._symbolic_rate_mode:
-            u_s = max(msg.u, MPC_STATE_MIN_FORWARD_SPEED_MPS)
+            u_s = max(float(z0_measured[3]), SLIP_CALC_MIN_SPEED_MPS)
             Lr = mpc.Lr
-            af = integrator.steering_angle - np.arctan2(msg.v + Lf * msg.omega, u_s)
-            ar = -np.arctan2(msg.v - Lr * msg.omega, u_s)
+            af = integrator.steering_angle - np.arctan2(float(z0_measured[4]) + Lf * float(z0_measured[5]), u_s)
+            ar = -np.arctan2(float(z0_measured[4]) - Lr * float(z0_measured[5]), u_s)
             delta_sr0 = integrator.steering_angle  # sr starts at 0
             z0_measured = np.append(z0_measured, [af, ar, delta_sr0])
         elif mpc._symbolic_sr:
@@ -761,18 +849,35 @@ def run_controller_node(args):
                                     np.concatenate([tire_hist.front / sc,
                                                     tire_hist.rear / sc]))
 
-        # Learn from previous closed-loop transition (k -> k+1).
-        if residual_adapter is not None and res_prev_state is not None and res_prev_ctrl is not None and res_prev_time is not None:
-            dt_res = float(msg.time - res_prev_time)
-            residual_adapter.observe_transition(
-                z_prev=res_prev_state,
-                u_prev=res_prev_ctrl,
-                z_curr=z0_measured,
-                dt=dt_res,
-                terrain_params=res_prev_tp if res_prev_tp is not None else terrain_params_est,
-                n_terrain=float(res_prev_n),
-                sr_prev=float(res_prev_sr),
-            )
+        # Evaluate matured 1-step prediction targets from previous solves.
+        pred_age = float("nan")
+        pred_pos_err = float("nan")
+        pred_psi_err_deg = float("nan")
+        pred_u_err = float("nan")
+        pred_v_err = float("nan")
+        pred_omega_err = float("nan")
+        while pred_targets and float(msg.time) >= float(pred_targets[0][0]):
+            t_pred, z_pred = pred_targets.popleft()
+            z_pred = np.asarray(z_pred, dtype=float).reshape(-1)
+            if z_pred.size < 6:
+                continue
+            pred_age = float(msg.time - t_pred)
+            pred_pos_err = float(np.hypot(
+                float(z0_measured[0]) - float(z_pred[0]),
+                float(z0_measured[1]) - float(z_pred[1]),
+            ))
+            psi_err = _wrap_to_pi(float(z0_measured[2]) - float(z_pred[2]))
+            pred_psi_err_deg = float(np.degrees(psi_err))
+            pred_u_err = float(z0_measured[3] - z_pred[3])
+            pred_v_err = float(z0_measured[4] - z_pred[4])
+            pred_omega_err = float(z0_measured[5] - z_pred[5])
+
+            pred_age_hist.append(pred_age)
+            pred_pos_err_hist.append(pred_pos_err)
+            pred_psi_err_hist.append(abs(psi_err))
+            pred_u_err_hist.append(abs(pred_u_err))
+            pred_v_err_hist.append(abs(pred_v_err))
+            pred_omega_err_hist.append(abs(pred_omega_err))
 
         # --- Delay compensation ---
         # StatePredictor: 8-state [x,y,ψ,u,v,ω, δ, ax]; carry Jx_prev through.
@@ -784,17 +889,24 @@ def run_controller_node(args):
                 z0_measured[7],  # δ
                 z0_measured[6],  # ax
             ])
-            z8_pred = state_predictor.propagate(z8, control_buffer, tau)
+            z8_pred, _, jx_prev_pred = state_predictor.propagate(
+                z8,
+                control_buffer,
+                tau,
+                sim_time_s=float(msg.time),
+                command_lag_s=float(delay_est.one_way_delay),
+                return_last_cmd=True,
+            )
             z0 = np.array([
                 z8_pred[0], z8_pred[1], z8_pred[2],
                 z8_pred[3], z8_pred[4], z8_pred[5],
                 z8_pred[7],  # ax
                 z8_pred[6],  # δ_prev
-                z0_measured[8],  # Jx_prev
+                jx_prev_pred,  # Jx_prev at compensated time
             ])
             if mpc._symbolic_rate_mode:
                 # Recompute α from predicted state for consistency
-                u_s_pred = max(z8_pred[3], MPC_STATE_MIN_FORWARD_SPEED_MPS)
+                u_s_pred = max(z8_pred[3], SLIP_CALC_MIN_SPEED_MPS)
                 af_pred = z8_pred[6] - np.arctan2(z8_pred[4] + Lf * z8_pred[5], u_s_pred)
                 ar_pred = -np.arctan2(z8_pred[4] - mpc.Lr * z8_pred[5], u_s_pred)
                 delta_sr0_pred = z8_pred[6]  # predicted δ → sr starts at 0
@@ -813,24 +925,29 @@ def run_controller_node(args):
             z0 = z0_measured
             tau = 0.0
 
-        # Optional residual correction on velocity-state channels.
-        if residual_adapter is not None:
-            z0, res_pred = residual_adapter.corrected_state(
-                z0,
-                np.array([float(integrator.steering_angle), float(last_Jx_cmd)], dtype=float),
-            )
-            res_pred_du = float(res_pred[0])
-            res_pred_dv = float(res_pred[1])
-            res_pred_domega = float(res_pred[2])
-        else:
-            res_pred_du = 0.0
-            res_pred_dv = 0.0
-            res_pred_domega = 0.0
+        res_pred_du = 0.0
+        res_pred_dv = 0.0
+        res_pred_domega = 0.0
+
+        # --- Parse obstacle positions early (needed for reference modification) ---
+        _obs_raw_early = getattr(msg, 'obstacles', None)
+        _obs_list_mpc = []
+        if _obs_raw_early and len(_obs_raw_early) >= 3:
+            for _oi in range(0, len(_obs_raw_early) - 2, 3):
+                _ox = float(_obs_raw_early[_oi])
+                _oy = float(_obs_raw_early[_oi + 1])
+                _or = float(_obs_raw_early[_oi + 2]) + 3.5  # 3.5 m margin (vehicle half-width + clearance + speed buffer)
+                _obs_list_mpc.append((_ox, _oy, _or))
 
         # --- Generate reference trajectory ---
         x_ref, y_ref, psi_ref, v_ref, x_goal, y_goal, psi_goal = path_func(
             msg.time, z0, mpc.N, mpc.dt
         )
+
+        _path_done = ref_path.is_complete(threshold=2.0)
+        if _path_done:
+            v_ref[:] = 0.0
+
 
         # --- Compute per-tire operating conditions (shared tire_input_features.py) ---
         delta_meas_now = float(integrator.steering_angle)
@@ -841,12 +958,17 @@ def run_controller_node(args):
             msg.wheel_omega_rl, msg.wheel_omega_rr,
             msg.u,
         )
+        # Use filtered velocities for operating point so GP/force-residual features
+        # are computed from the same noise-smoothed state that MPC receives.
+        _u_obs = float(z0_measured[3])   # filtered (or raw if filter disabled)
+        _v_obs = float(z0_measured[4])
+        _omega_obs = float(z0_measured[5])
         kappa_h, alpha_f_h, alpha_r_h, u_safe_h, Fz_f_h, Fz_r_h = (
             compute_bicycle_operating_point(
                 delta_meas_now,
-                msg.u,
-                msg.v,
-                msg.omega,
+                _u_obs,
+                _v_obs,
+                _omega_obs,
                 _measured_ax,
                 geom=tire_geom,
                 kappa_mode=args.kappa,
@@ -896,8 +1018,57 @@ def run_controller_node(args):
                 _fr_terrain_vec,
                 Lf=mpc.Lf, Lr=mpc.Lr, M=mpc.M,
                 N=mpc.N,
+                # h_cg=0.5 matches v7 checkpoint training convention.
+                # Update to mpc.h_cg (0.65) after retraining with correct value.
+                h_cg=0.5,
             )
             solve_kwargs['force_residuals'] = fr_corrections
+
+        # Dynamics GP: compute per-stage [Δu̇, Δv̇, Δω̇] from persistent GP
+        dyn_gp_corrections = None
+        if dynamics_gp is not None and mpc._prev_Z is not None:
+            _tp = terrain_params_est
+            _phi_rad = np.radians(float(_tp['phi']))
+            _dyn_terrain_vec = np.array([
+                _tp['Kphi'], _tp['Kc'], float(n_terrain_est),
+                _tp['c'], _phi_rad, _tp['k'],
+            ], dtype=np.float64)
+            dyn_gp_corrections, _dyn_gp_var = dynamics_gp.predict_horizon_with_uncertainty(
+                mpc._prev_Z, mpc._prev_U,
+                _dyn_terrain_vec, N=mpc.N,
+            )
+
+            # Terrain gate: suppress corrections on well-modeled terrains to
+            # prevent noise overfitting (e.g. dirt degrades 2.4x without gate).
+            # Use classifier estimate when running, ground-truth name otherwise
+            # (classifier default is "clay" even on dirt, so never use default).
+            _terrain_for_gate = (
+                terrain_class_est if args.terrain_classifier else terrain_name
+            )
+            _gp_terrain_active = (
+                not args.gp_terrain_gate
+                or _terrain_for_gate in args.gp_terrain_gate
+            )
+            if _gp_terrain_active:
+                solve_kwargs['dynamics_residuals'] = dyn_gp_corrections
+            # else: dyn_gp_corrections stays None → no correction injected
+
+            # Uncertainty-aware speed modulation: scale v_ref down when GP
+            # variance is high (untrained), recover full speed as GP learns.
+            if args.gp_uncertainty_speed:
+                _uncertainty_frac = min(
+                    float(np.mean(_dyn_gp_var)) / (dynamics_gp.gp.sig_var + 1e-8),
+                    1.0,
+                )
+                _gp_speed_scale = (
+                    args.gp_speed_scale_min
+                    + (1.0 - args.gp_speed_scale_min) * (1.0 - _uncertainty_frac)
+                )
+                v_ref = v_ref * _gp_speed_scale
+
+        # Obstacle avoidance: pass parsed obstacle list to OCP solver.
+        if _obs_list_mpc:
+            solve_kwargs['obstacles'] = _obs_list_mpc
 
         # Online signed Fy bias correction — currently disabled.
         # The MPC self-corrects better without external bias injection.
@@ -920,8 +1091,17 @@ def run_controller_node(args):
         delay_est.update_solve(t_solve)
 
         if Z_opt is None:
-            delta_cmd = integrator.steering_angle
-            Jx = 0.0
+            # Solver fallback path: solver may return a hold command.
+            if not np.isfinite(delta_cmd):
+                delta_cmd = float(z0[7])
+            if not np.isfinite(Jx):
+                Jx = float(z0[8])
+        elif Z_opt.shape[1] > 1:
+            # Queue one-step-ahead state prediction for measurement residuals.
+            pred_targets.append((
+                float(msg.time + mpc.dt),
+                np.array(Z_opt[:9, 1], dtype=float, copy=True),
+            ))
 
         if not np.isfinite(delta_cmd):
             delta_cmd = integrator.steering_angle
@@ -931,6 +1111,20 @@ def run_controller_node(args):
         # Suppress steering during lead-in acceleration phase
         if lead_in > 0 and z0[0] < lead_in and msg.u < args.lead_in_speed_fraction * v_target:
             delta_cmd = 0.0
+
+        # ---- End-of-path override: brake cleanly to a stop ----
+        # The speed profile in ReferencePath already ramps v_ref → 0 over
+        # the last 5 m, so the MPC should naturally command braking.  However,
+        # integrator windup and latency can leave residual forward thrust after
+        # the path ends.  When the path is exhausted, force the integrator
+        # acceleration to maximum deceleration so the vehicle stops within the
+        # physical braking distance rather than coasting past.
+        if _path_done:
+            if seq % 50 == 0 and msg.u > 0.1:
+                print(f"  [PATH DONE] t={msg.time:.1f}s  u={msg.u:.2f} m/s"
+                      f"  — braking to stop")
+            if msg.u < 0.1:
+                delta_cmd = 0.0
 
         # Post-MPC rate limiter: enforce max steer rate in real control dt
         # (MPC internal dt=0.1s >> control dt~0.012s, so the MPC's polytopic
@@ -945,15 +1139,6 @@ def run_controller_node(args):
         delta_dot = (delta_cmd - integrator.steering_angle) / max(dt_ctrl, 1e-4)
         last_delta_dot_cmd = float(delta_dot)
         last_Jx_cmd = float(Jx)
-
-        # Store tuple for residual-label update on next controller sample.
-        if residual_adapter is not None:
-            res_prev_state = np.array(z0_measured, dtype=float, copy=True)
-            res_prev_ctrl = np.array([float(delta_cmd), float(Jx)], dtype=float)
-            res_prev_time = float(msg.time)
-            res_prev_sr = float(delta_dot)
-            res_prev_tp = dict(terrain_params_est)
-            res_prev_n = float(n_terrain_est)
 
         if tire_csv_writer is not None and msg.tire_forces:
             tfw = msg.tire_forces
@@ -1007,11 +1192,22 @@ def run_controller_node(args):
         # compensates via the speed cost.  The integrator accumulates ax
         # normally (acceleration += Jx*dt), providing integral action for
         # throttle.
+        v_ref_now = float(v_ref[0]) if len(v_ref) else float(v_target)
 
         _, throttle, braking = integrator.update(
             0.0, Jx, dt_ctrl, msg.u,
-            v_ref_now=float(v_ref[0]),
+            v_ref_now=v_ref_now,
         )
+
+        # Force stopping if path is done
+        if _path_done:
+            integrator.acceleration = 0.0
+            throttle = 0.0
+            if msg.u > 0.1:
+                braking = 1.0
+            else:
+                braking = 1.0
+
         integrator.steering_angle = _saved_delta
         steering = float(np.clip(
             integrator.steering_angle * integrator.steering_gain, -1.0, 1.0))
@@ -1030,9 +1226,15 @@ def run_controller_node(args):
             true_x_fa = true_x + Lf * np.cos(true_psi)
             true_y_fa = tf['true_y_cg'] + Lf * np.sin(true_psi)
             true_u = tf['true_u']
-            analytics.record(msg.time, true_x_fa, true_y_fa, true_psi, true_u)
+            analytics.record(
+                msg.time, true_x_fa, true_y_fa, true_psi, true_u,
+                v_ref_now=v_ref_now,
+            )
         else:
-            analytics.record(msg.time, z0_measured[0], z0_measured[1], psi, msg.u)
+            analytics.record(
+                msg.time, z0_measured[0], z0_measured[1], psi, msg.u,
+                v_ref_now=v_ref_now,
+            )
         analytics.record_control(
             msg.time, steering, throttle, braking,
             integrator.steering_angle, integrator.acceleration,
@@ -1049,12 +1251,23 @@ def run_controller_node(args):
                 ax_state=float(z0[6]),
                 mpc_cost=getattr(mpc, 'last_cost', 0.0),
                 crosstrack_err=ct_now,
+                obstacles=_obs_list_mpc if _obs_list_mpc else None,
+                gp_force_corr=fr_corrections[0] if fr_corrections is not None else None,
+                dyn_gp_corr=dyn_gp_corrections[0] if dyn_gp_corrections is not None else None,
             )
 
         # --- Record Fy: Chrono actual vs model predicted ---
-        # Use the same (current/pre-command) operating point as the state sample
-        # so diagnostics compare like-for-like against msg.tire_forces.
-        kappa_diag = kappa_h
+        # Use the same (current/pre-command) operating point as the state sample.
+        # For kappa, log both measured slip and OCP-consistent slip so the
+        # force comparison is interpreted against the model actually optimized.
+        kappa_meas_diag = float(_meas_kappa)
+        if mpc.kappa_mode == 'approx':
+            mu_diag = max(_terrain_mu, 1e-3)
+            kappa_diag = float(np.clip(_measured_ax / (mu_diag * 9.81), -0.8, 0.8))
+        elif mpc.kappa_mode == 'zero':
+            kappa_diag = 0.0
+        else:
+            kappa_diag = kappa_meas_diag
         alpha_f, alpha_r = alpha_f_h, alpha_r_h
         u_safe = u_safe_h
         Fz_f_mean, Fz_r_mean = Fz_f_h, Fz_r_h
@@ -1065,8 +1278,8 @@ def run_controller_node(args):
         alpha_f = float(max(-_alpha_max, min(_alpha_max, alpha_f)))
         alpha_r = float(max(-_alpha_max, min(_alpha_max, alpha_r)))
 
-        # Speed-dependent force fade matching MPC (0 at |u|≤1, 1 at |u|≥2).
-        _speed_fade = float(min(1.0, max(0.0, abs(msg.u) - 1.0)))
+        # No low-speed force fade: diagnostics should reflect direct model output.
+        _speed_fade = 1.0
 
         if msg.tire_forces is not None:
             tf = msg.tire_forces
@@ -1099,8 +1312,8 @@ def run_controller_node(args):
                         alpha_r, Fz_ri, u_safe,
                         kappa=kappa_diag, n_terrain=n_terrain_est, steering_rate=0.0,
                         terrain_params=terrain_params_est, hist=hist_r, rates=rates_r)
-                    pred_Fy_f = -(Fy_fo + Fy_fi) * _speed_fade
-                    pred_Fy_r = -(Fy_ro + Fy_ri) * _speed_fade
+                    pred_Fy_f = -(Fy_fo + Fy_fi)
+                    pred_Fy_r = -(Fy_ro + Fy_ri)
                 else:
                     _, Fy_fw = nn_tire.predict_numeric(
                         alpha_f, Fz_f_mean, u_safe,
@@ -1110,13 +1323,16 @@ def run_controller_node(args):
                         alpha_r, Fz_r_mean, u_safe,
                         kappa=kappa_diag, n_terrain=n_terrain_est, steering_rate=0.0,
                         terrain_params=terrain_params_est, hist=hist_r, rates=rates_r)
-                    pred_Fy_f = -2.0 * Fy_fw * _speed_fade
-                    pred_Fy_r = -2.0 * Fy_rw * _speed_fade
+                    pred_Fy_f = -2.0 * Fy_fw
+                    pred_Fy_r = -2.0 * Fy_rw
             else:
-                # Analytical tire model (pacejka, tmeasy, linear)
+                # Analytical tire model (pacejka, pacejka-oracle, tmeasy)
+                _anal_model = 'pacejka' if tire_model == 'pacejka-oracle' else tire_model
+                _anal_kwargs = mpc._oracle_pacejka_params if tire_model == 'pacejka-oracle' else {}
                 Fyf, Fyr, _ = analytical_tire_forces(
-                    tire_model, alpha_f, alpha_r,
+                    _anal_model, alpha_f, alpha_r,
                     2.0 * Fz_f_mean, 2.0 * Fz_r_mean, kappa_diag,
+                    **_anal_kwargs,
                 )
                 pred_Fy_f = float(Fyf)
                 pred_Fy_r = float(Fyr)
@@ -1134,6 +1350,65 @@ def run_controller_node(args):
                 _fy_bias_signed_f = float(np.clip(_fy_bias_signed_f, -_FY_BIAS_CLIP, _FY_BIAS_CLIP))
                 _fy_bias_signed_r = float(np.clip(_fy_bias_signed_r, -_FY_BIAS_CLIP, _FY_BIAS_CLIP))
 
+            # --- Online terrain parameter estimator (sensor-realistic) ---
+            if terrain_estimator is not None:
+              try:
+                # Estimate omega_dot from filtered omega history
+                _te_omega_dot = terrain_estimator.estimate_omega_dot(msg.omega, msg.time)
+                if _te_omega_dot is not None:
+                    # Use raw target speed (NOT terrain-adapted v_ref) so the
+                    # estimator sees terrain-limited speed capability directly.
+                    terrain_estimator.observe(
+                        kappa=kappa_diag,
+                        alpha_f=float(alpha_f),
+                        alpha_r=float(alpha_r),
+                        u=float(u_safe),
+                        Fz_f=float(Fz_f_mean),
+                        Fz_r=float(Fz_r_mean),
+                        sr=float(sr_diag),
+                        ay_imu=float(msg.ay),
+                        omega_dot=_te_omega_dot,
+                        omega=float(msg.omega),
+                        pred_Fy_f=float(pred_Fy_f),
+                        pred_Fy_r=float(pred_Fy_r),
+                        v_ref=float(v_target),
+                        v_lateral=float(msg.v),
+                        x_pos=float(msg.x_cg),
+                        y_pos=float(msg.y_cg),
+                        psi=float(np.arctan2(
+                            2*(msg.quat_e0*msg.quat_e3 + msg.quat_e1*msg.quat_e2),
+                            1 - 2*(msg.quat_e2**2 + msg.quat_e3**2))),
+                        ax_cmd=float(z0_measured[6]),
+                        sim_time=float(msg.time),
+                        # Used by the learned/hybrid backends; the UKF
+                        # signature accepts and ignores them.
+                        wheel_omegas=(
+                            float(msg.wheel_omega_fl),
+                            float(msg.wheel_omega_fr),
+                            float(msg.wheel_omega_rl),
+                            float(msg.wheel_omega_rr),
+                        ),
+                        ax_imu=float(msg.ax),
+                        throttle_cmd=float(throttle),
+                    )
+                    # Run estimation if enough observations
+                    if terrain_estimator.should_update():
+                        _te_params, _te_conf = terrain_estimator.estimate()
+                        if _te_conf >= args.te_min_confidence:
+                            # Update MPC terrain params
+                            _te_mpc = terrain_estimator.get_terrain_mpc_params()
+                            terrain_params_est = _te_mpc
+                            n_terrain_est = _te_mpc['n']
+                            terrain_confidence = _te_conf
+                            terrain_update_applied = 1
+                            terrain_class_est = getattr(
+                                terrain_estimator, '_terrain_name', 'estimated'
+                            )
+              except Exception as _te_exc:
+                import traceback
+                print(f"[TERRAIN-EST] Error: {_te_exc}", flush=True)
+                traceback.print_exc()
+
             # Online force residual observation
             if force_residual is not None:
                 _tp = terrain_params_est
@@ -1148,6 +1423,27 @@ def run_controller_node(args):
                     float(actual_Fy_f), float(actual_Fy_r),
                     float(pred_Fy_f), float(pred_Fy_r),
                     v=float(msg.v), omega=float(msg.omega),
+                )
+
+            # Dynamics GP observation (from matured 1-step prediction errors)
+            if dynamics_gp is not None and np.isfinite(pred_u_err):
+                _tp3 = terrain_params_est
+                _phi_rad3 = np.radians(float(_tp3['phi']))
+                _dyn_tvec = np.array([
+                    _tp3['Kphi'], _tp3['Kc'], float(n_terrain_est),
+                    _tp3['c'], _phi_rad3, _tp3['k'],
+                ], dtype=np.float64)
+                dynamics_gp.observe(
+                    u=float(z0_measured[3]),
+                    v=float(z0_measured[4]),
+                    omega=float(z0_measured[5]),
+                    ax=float(z0_measured[6]),
+                    delta=float(integrator.steering_angle),
+                    terrain_vec=_dyn_tvec,
+                    du_err=float(pred_u_err),
+                    dv_err=float(pred_v_err),
+                    domega_err=float(pred_omega_err),
+                    dt=float(mpc.dt),
                 )
 
         # --- Publish command ---
@@ -1193,14 +1489,9 @@ def run_controller_node(args):
             mpc_cost = getattr(mpc, 'last_cost', float('nan'))
             solver_status = getattr(mpc, 'last_solver_status', '')
             solver_iters = getattr(mpc, 'last_iter_count', -1)
-            if residual_adapter is not None:
-                res_updates = int(residual_adapter.update_count)
-                res_last_loss = float(residual_adapter.last_update_loss)
-                res_last_update_ms = float(1000.0 * residual_adapter.last_update_time_s)
-            else:
-                res_updates = 0
-                res_last_loss = float("nan")
-                res_last_update_ms = 0.0
+            res_updates = 0
+            res_last_loss = float("nan")
+            res_last_update_ms = 0.0
 
             csv_writer.writerow([
                 f"{msg.time:.4f}", f"{recv_time:.6f}", seq,
@@ -1216,7 +1507,7 @@ def run_controller_node(args):
                 f"{delta_dot:.6f}", f"{Jx:.6f}",
                 f"{mpc_cost:.4f}", solver_status, solver_iters,
                 terrain_class_est, f"{terrain_confidence:.4f}", f"{n_terrain_est:.6f}", terrain_update_applied,
-                int(residual_adapter is not None),
+                0,
                 f"{res_pred_du:.6f}", f"{res_pred_dv:.6f}", f"{res_pred_domega:.6f}",
                 res_updates, f"{res_last_loss:.6f}", f"{res_last_update_ms:.2f}",
                 f"{steering:.6f}", f"{throttle:.4f}", f"{braking:.4f}",
@@ -1226,10 +1517,12 @@ def run_controller_node(args):
                 f"{delay_est.compensation_delay*1000:.2f}",
                 f"{t_solve*1000:.2f}",
                 f"{ct_err:.6f}", f"{hd_err:.4f}", f"{sp_err:.4f}",
+                f"{pred_age:.6f}", f"{pred_pos_err:.6f}", f"{pred_psi_err_deg:.4f}",
+                f"{pred_u_err:.6f}", f"{pred_v_err:.6f}", f"{pred_omega_err:.6f}",
                 fy_af, fy_ar, fy_nf, fy_nr,
                 f"{alpha_f:.6f}", f"{alpha_r:.6f}",
                 f"{Fz_f_mean:.1f}", f"{Fz_r_mean:.1f}",
-                f"{kappa_diag:.6f}", f"{sr_diag:.6f}",
+                f"{kappa_diag:.6f}", f"{kappa_meas_diag:.6f}", f"{sr_diag:.6f}",
                 f"{u_safe:.4f}", f"{_speed_fade:.4f}",
                 f"{fr_corrections[0, 0]:.1f}" if fr_corrections is not None else "",
                 f"{fr_corrections[0, 1]:.1f}" if fr_corrections is not None else "",
@@ -1246,9 +1539,13 @@ def run_controller_node(args):
             tau_ms = delay_est.compensation_delay * 1000
             trk = analytics.periodic_summary()
             tc_str = f"  terrain={terrain_class_est}({terrain_confidence:.0%})" if terrain_sub else ""
+            te_str = ""
+            if terrain_estimator is not None:
+                te_str = (f"  TE={terrain_class_est}({terrain_confidence:.0%})"
+                          f"[μ={terrain_estimator.mu_estimate:.3f}]")
             print(f"  t={msg.time:.1f}s  solve={mean_ms:.1f}ms  "
                   f"τ_comp={tau_ms:.1f}ms  {trk}  "
-                  f"u={msg.u:.2f}m/s{tc_str}")
+                  f"u={msg.u:.2f}m/s{tc_str}{te_str}")
 
     # ------------------------------------------------------------------
     # Summary
@@ -1264,23 +1561,24 @@ def run_controller_node(args):
         print(f"    Effective rate: {1.0/np.mean(st):.1f} Hz")
         print(f"    Avg |CTE|:      {avg_cte:.4f} m")
         print(f"    Final τ_comp:   {delay_est.compensation_delay*1000:.1f} ms")
+        if pred_pos_err_hist:
+            print("    1-step prediction residuals:")
+            print(f"      Mean pos:     {np.mean(pred_pos_err_hist):.4f} m")
+            print(f"      RMS pos:      {np.sqrt(np.mean(np.square(pred_pos_err_hist))):.4f} m")
+            print(f"      Mean |ψ|:      {np.degrees(np.mean(pred_psi_err_hist)):.2f}°")
+            print(f"      Mean |u|:      {np.mean(pred_u_err_hist):.3f} m/s")
+            print(f"      Mean |v|:      {np.mean(pred_v_err_hist):.3f} m/s")
+            print(f"      Mean |ω|:      {np.mean(pred_omega_err_hist):.4f} rad/s")
 
     print(analytics.final_summary())
 
-    if residual_adapter is not None:
-        rs = residual_adapter.summary()
-        print("  Residual adapter summary:")
-        print(f"    Samples seen:     {rs['sample_count']}")
-        print(f"    Online updates:   {rs['update_count']}")
-        print(f"    Last update loss: {rs['last_update_loss']:.6f}")
-        print(f"    Last update time: {rs['last_update_time_ms']:.2f} ms")
-        out_json = (
-            Path(args.residual_log_json).expanduser().resolve()
-            if args.residual_log_json
-            else (run_dir / "residual_online_summary.json")
-        )
-        out_json.write_text(json.dumps(rs, indent=2))
-        print(f"    JSON:             {out_json}")
+    # Dynamics GP: flush observations and save persistent state
+    if dynamics_gp is not None:
+        print("  Dynamics GP shutdown — flushing observations...")
+        dynamics_gp.shutdown()
+        print(f"    DynGP inducing points: {dynamics_gp.gp.n_inducing}")
+        print(f"    DynGP observations this run: {dynamics_gp.sample_count}")
+        print(f"    DynGP total updates: {dynamics_gp.update_count}")
 
     # Close CSV
     if csv_file is not None:
@@ -1317,9 +1615,11 @@ def main():
 
     # Model (NN or analytical tire model)
     p.add_argument("--model", default="nn",
-                   choices=["nn", "pacejka", "tmeasy", "linear"],
-                   help="Tire model: nn (neural network), pacejka, tmeasy, or linear")
-    p.add_argument("--nn-model", default="v6_mlp_16_4",
+                   choices=["nn", "pacejka", "pacejka-oracle", "tmeasy"],
+                   help="Tire model: nn (neural network), pacejka (rigid-terrain "
+                        "defaults), pacejka-oracle (terrain-fitted mu/B, fair "
+                        "comparison upper bound), or tmeasy")
+    p.add_argument("--nn-model", default="paper_v2_mlp_16_4",
                    help="NN model version directory (only used when --model nn)")
     p.add_argument("--kappa", default="measured", choices=["zero", "approx", "measured"])
     p.add_argument("--no-lat-transfer", action="store_true",
@@ -1340,10 +1640,12 @@ def main():
     )
     p.add_argument(
         "--symbolic-rates",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Compute rate features (dκ, dα, du, sr) symbolically inside the "
-             "MPC dynamics instead of freezing them as parameters. Adds 2 extra "
-             "states (α_f_prev, α_r_prev) for slip-angle finite differences.",
+             "MPC dynamics instead of freezing them as parameters (default: on). "
+             "Adds 3 extra states (α_f_prev, α_r_prev, δ_sr_prev) for finite-"
+             "difference/rate channels. Use --no-symbolic-rates to disable.",
     )
     p.add_argument(
         "--no-temporal-staged",
@@ -1351,7 +1653,6 @@ def main():
         help="Disable stage-varying temporal history (freeze measured history "
              "across all horizon stages). Diagnostic flag.",
     )
-
     # Path
     p.add_argument("--path", default="lane_change",
                    choices=["lane_change", "double_lane_change", "right_left", "sinusoidal"])
@@ -1434,6 +1735,26 @@ def main():
         help="During lead-in, zero steering while u below this fraction of v_target",
     )
 
+    # Throttle disturbance observer (asymmetric velocity-error DOB)
+    p.add_argument(
+        "--dob-ki",
+        type=float,
+        default=0.15,
+        help="Throttle DOB integrator gain [throttle/(m/s)/s]; 0 disables the DOB",
+    )
+    p.add_argument(
+        "--dob-max",
+        type=float,
+        default=0.35,
+        help="Asymmetric upper clip on the DOB throttle bias (0 = no compensation)",
+    )
+    p.add_argument(
+        "--dob-bleed",
+        type=float,
+        default=0.5,
+        help="Exponential bleed rate of the DOB during MPC braking [1/s]",
+    )
+
     # Analytics
     p.add_argument("--rms-time-start", type=float, default=2.0,
                    help="Start time for RMS calculation, skips startup (s)")
@@ -1462,42 +1783,15 @@ def main():
     p.add_argument("--plot-dir", default="plots",
                    help="Directory for output plots (default: plots/)")
     p.add_argument(
-        "--residual-adapt",
-        action="store_true",
-        help="Enable l4acados-style residual state correction in the live controller loop",
-    )
-    p.add_argument(
-        "--residual-checkpoint",
-        default=None,
-        metavar="PATH",
-        help="Path to residual_model.pt checkpoint used by --residual-adapt",
-    )
-    p.add_argument(
-        "--residual-no-online",
-        action="store_true",
-        help="Disable online fine-tuning (inference-only residual correction)",
-    )
-    p.add_argument("--residual-correction-gain", type=float, default=1.0)
-    p.add_argument("--residual-clip-u", type=float, default=0.25)
-    p.add_argument("--residual-clip-v", type=float, default=0.25)
-    p.add_argument("--residual-clip-omega", type=float, default=0.08)
-    p.add_argument("--residual-online-lr", type=float, default=2e-4)
-    p.add_argument("--residual-online-epochs", type=int, default=4)
-    p.add_argument("--residual-online-batch-size", type=int, default=256)
-    p.add_argument("--residual-update-interval", type=int, default=5)
-    p.add_argument("--residual-buffer-size", type=int, default=4096)
-    p.add_argument("--residual-warmup-samples", type=int, default=128)
-    p.add_argument(
-        "--residual-log-json",
-        default=None,
-        metavar="PATH",
-        help="Optional output JSON path for residual online-update summary (default: run_dir/residual_online_summary.json)",
-    )
-
-    p.add_argument(
         "--ax-filter-tau", type=float, default=0.5,
         help="Complementary filter time constant (s) for fusing IMU ax with "
              "model prediction.  Suppresses terrain-induced noise.  0 = no filter.",
+    )
+    p.add_argument(
+        "--vel-filter-tau", type=float, default=0.05,
+        help="EMA time constant (s) for smoothing noisy [u, v, omega] before MPC and GP observations. "
+             "Addresses σ_v=0.05 m/s noise (SNR 2-10:1 for v); reduces GP target noise by ~1/sqrt(alpha). "
+             "0 = no filter (backward compat). Default 0.05s → α≈0.67 at 10 Hz.",
     )
 
     # Force-level residual (corrects Fy at every horizon stage)
@@ -1512,12 +1806,37 @@ def main():
         metavar="PATH",
         help="Path to force_residual_model.pt checkpoint",
     )
-    p.add_argument("--force-residual-no-online", action="store_true",
-                   help="Disable online bias adaptation for force residual")
+    p.add_argument("--force-residual-online", action="store_true",
+                   help="Enable online EMA bias adaptation for force residual (disabled by default)")
     p.add_argument("--force-residual-clip", type=float, default=500.0,
                    help="Symmetric clip on ΔFy corrections (N)")
     p.add_argument("--force-residual-gain", type=float, default=1.0,
                    help="Output scaling for force residual (<1 = conservative)")
+    p.add_argument("--force-residual-online-lr", type=float, default=0.03,
+                   help="EMA alpha for force residual online bias (0.01–0.15)")
+
+    p.add_argument("--gp-max-inducing", type=int, default=200,
+                   help="Maximum number of inducing points in sparse GP")
+    p.add_argument("--gp-noise-var", type=float, default=0.1,
+                   help="GP observation noise variance")
+
+    # Dynamics GP (persistent cross-run bicycle model residual learning)
+    p.add_argument("--dynamics-gp", action="store_true",
+                   help="Enable GP-based persistent dynamics residual learning [Δu̇,Δv̇,Δω̇]")
+    p.add_argument("--dynamics-gp-state", default="data/gp_residual/dynamics_gp_state.npz",
+                   help="Path to dynamics GP state file. Relative paths are resolved from the project root.")
+    p.add_argument("--dynamics-gp-clip", type=float, default=2.0,
+                   help="Symmetric clip on dynamics residuals (m/s² or rad/s²)")
+    p.add_argument("--dynamics-gp-gain", type=float, default=0.5,
+                   help="Output scaling for dynamics GP (<1 = conservative, default: 0.5)")
+    p.add_argument("--gp-uncertainty-speed", action="store_true",
+                   help="Scale v_ref down proportionally to GP variance; recovers full speed as GP learns")
+    p.add_argument("--gp-speed-scale-min", type=float, default=0.7,
+                   help="Minimum speed scale when GP is fully uncertain (default: 0.7)")
+    p.add_argument("--gp-terrain-gate", nargs="*", default=[],
+                   help="Only apply GP dynamics corrections when estimated terrain is in this list "
+                        "(e.g. --gp-terrain-gate clay). Empty = always apply. "
+                        "Use to prevent noise overfitting on well-modeled terrains.")
 
     # Network
     p.add_argument("--sim-host", default="localhost", help="Sim node host")
@@ -1539,9 +1858,33 @@ def main():
     p.add_argument("--tc-port", type=int, default=5557,
                    help="Terrain classifier publish port to subscribe to")
 
+    # Terrain parameter estimator (speed-capability voting, replaces classifier)
+    p.add_argument("--terrain-estimator", action="store_true",
+                   help="Enable online terrain parameter estimation from speed capability "
+                        "and inertial cues (no oracle data). Replaces classifier for "
+                        "terrain param updates.")
+    p.add_argument("--te-window", type=int, default=50,
+                   help="Terrain estimator sliding window size in 10 Hz-equivalent samples "
+                        "(default 50 -> 5 s)")
+    p.add_argument("--te-update-interval", type=int, default=10,
+                   help="Run terrain estimation every N accepted 10 Hz-equivalent samples "
+                        "(default 10 -> 1 s)")
+    p.add_argument("--te-lr", type=float, default=0.01,
+                   help="Legacy no-op (kept for CLI compatibility)")
+    p.add_argument("--te-steps", type=int, default=20,
+                   help="Gradient descent steps per terrain estimation update")
+    p.add_argument("--te-min-excitation", type=float, default=0.3,
+                   help="Minimum |ay| (m/s²) to accept observation (excitation gate)")
+    p.add_argument("--te-min-confidence", type=float, default=0.3,
+                   help="Minimum confidence to apply estimated terrain params to MPC")
+    p.add_argument("--learned-terrain-model-dir", default=None,
+                   help="Path to the trained terrain_window_mlp/ directory. "
+                        "Defaults to nn_models/terrain_window_mlp_v3_cl.")
+    p.add_argument("--te-verbose", action="store_true",
+                   help="Print verbose terrain-estimator predictions (every "
+                        "10 observations) for offline parsing/validation.")
+
     args = p.parse_args()
-    if args.residual_adapt and not args.residual_checkpoint:
-        p.error("--residual-adapt requires --residual-checkpoint")
     if args.force_residual and not args.force_residual_checkpoint:
         p.error("--force-residual requires --force-residual-checkpoint")
     # --use-prediction implies --terrain-classifier

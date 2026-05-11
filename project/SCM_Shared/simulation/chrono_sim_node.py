@@ -1,0 +1,1043 @@
+#!/usr/bin/env python3
+"""
+Chrono Simulation Node (Decoupled)
+===================================
+
+Runs the PyChrono HMMWV + SCM terrain simulation and communicates with an
+external MPC controller via ZMQ.
+
+Published: VehicleState at configurable rate (default: 100 Hz decimated from 333 Hz physics)
+Subscribed: ControlCommand from MPC controller
+
+The simulation applies the latest received ControlCommand each physics step.
+If no command has arrived yet, it holds zero throttle / zero steering (safe default).
+
+Usage:
+    python chrono_sim_node.py --terrain sand --time 30 --path sinusoidal
+"""
+
+import argparse
+import math
+import os
+import sys
+import time as wall_time
+from pathlib import Path
+
+import numpy as np
+
+# Chrono imports (must be available in environment)
+import pychrono as chrono
+import pychrono.vehicle as veh
+
+# Sensor imports (optional — only needed for sensor visualization mode)
+try:
+    import pychrono.sensor as sens
+    HAS_SENSOR = True
+except ImportError:
+    HAS_SENSOR = False
+
+# Local imports
+sys.path.insert(0, str(Path(__file__).parent))
+from hil_messages import (
+    VehicleState, ControlCommand, SimStatus,
+    ZMQPublisher, ZMQSubscriber,
+    sim_pub_endpoint, ctrl_sub_endpoint,
+)
+
+from param_consistency import (
+    TERRAIN_PRESETS, get_vehicle_params_for_demo,
+    get_terrain_preset, terrain_preset_to_internal,
+)
+
+# Re-use terrain/vehicle setup helpers (extracted modules)
+from chrono_setup import (
+    setup_chrono_vehicle,
+    setup_scm_terrain,
+    add_trajectory_markers,
+    load_terrain_config,
+)
+from g29_controller import ManualDriver
+
+# Safety filter + obstacles (optional)
+from sensors.obstacles import add_rock_obstacles, get_rock_positions, get_rock_radii
+from safety import CBFSafetyFilter
+from collision_detector import CollisionLogger
+
+# NN tire model for terrain-aware CBF traction limits
+try:
+    from nn_tire_model import load_nn_tire_model
+except ImportError:
+    load_nn_tire_model = None
+
+
+# =============================================================================
+# Simple driver that applies external commands
+# =============================================================================
+
+class ExternalDriver(veh.ChDriver):
+    """Minimal Chrono driver that applies commands received over the network."""
+
+    def __init__(self, vehicle):
+        super().__init__(vehicle.GetVehicle())
+        self.m_steering = 0.0
+        self.m_throttle = 0.0
+        self.m_braking = 0.0
+
+    def apply(self, cmd: ControlCommand):
+        self.m_steering = np.clip(cmd.steering, -1.0, 1.0)
+        self.m_throttle = np.clip(cmd.throttle, 0.0, 1.0)
+        self.m_braking = np.clip(cmd.braking, 0.0, 1.0)
+
+    def Synchronize(self, time):
+        pass  # Nothing to do — commands are applied externally
+
+    def Advance(self, step):
+        pass
+
+    def GetSteering(self):
+        return self.m_steering
+
+    def GetThrottle(self):
+        return self.m_throttle
+
+    def GetBraking(self):
+        return self.m_braking
+
+
+# =============================================================================
+# Vehicle state extraction
+# =============================================================================
+
+# Default measurement noise standard deviations (sensor-fusion realistic)
+DEFAULT_MEAS_NOISE = {
+    'x':     0.05,    # Differential GPS position (m)
+    'y':     0.05,    # Differential GPS position (m)
+    'psi':   0.005,   # ~0.3° heading (rad)
+    'u':     0.05,    # Speed (m/s)
+    'v':     0.05,    # Lateral speed (m/s)
+    'omega': 0.005,   # Yaw rate (rad/s)
+}
+
+
+def extract_tire_forces(vehicle, terrain) -> dict:
+    """Extract per-wheel tire forces and slips from Chrono.
+
+    Forces are rotated from the global frame into the vehicle body frame
+    so that Fx/Fy/Fz align with the bicycle-model convention used by MPC.
+    """
+    tf = {}
+    veh_obj = vehicle.GetVehicle()
+    chassis = vehicle.GetChassisBody()
+    rot = chassis.GetRot()
+    for axle_idx, axle_name in enumerate(['front', 'rear']):
+        for side_idx, side_name in [(veh.LEFT, 'left'), (veh.RIGHT, 'right')]:
+            tire = veh_obj.GetTire(axle_idx, side_idx)
+            force_global = tire.ReportTireForce(terrain)
+            # Rotate global-frame force into body frame
+            f_body = rot.RotateBack(force_global.force)
+            key = f'{axle_name}_{side_name}'
+            tf[f'{key}_Fx'] = f_body.x
+            tf[f'{key}_Fy'] = f_body.y
+            tf[f'{key}_Fz'] = f_body.z
+            tf[f'{key}_slip_angle'] = tire.GetSlipAngle()
+            tf[f'{key}_long_slip'] = tire.GetLongitudinalSlip()
+    return tf
+
+
+def extract_vehicle_state(vehicle, sim_time: float, terrain=None,
+                          noise: dict = None,
+                          imu_acc_sensor=None,
+                          imu_gyro_sensor=None,
+                          obstacles_flat: list = None) -> VehicleState:
+    """Read Chrono vehicle and pack into a VehicleState message.
+
+    Args:
+        terrain: If provided, tire forces are included.
+        noise: If provided, dict of std-devs to add Gaussian noise to sensors.
+        imu_acc_sensor: ChAccelerometerSensor (if available, replaces GetPosDt2).
+        imu_gyro_sensor: ChGyroscopeSensor (if available, replaces GetAngVelLocal).
+    """
+    chassis = vehicle.GetChassisBody()
+    pos = chassis.GetPos()
+    rot = chassis.GetRot()
+    vel = chassis.GetPosDt()
+
+    # Velocity in body frame
+    vel_loc = rot.RotateBack(vel)
+
+    x_cg = pos.x
+    y_cg = pos.y
+    u = vel_loc.x
+    v = vel_loc.y
+
+    # --- IMU accelerometer (body-frame acceleration from sensor module) ---
+    # Chrono's ChAccelerometerSensor outputs: a_global - gravity_global (in global frame).
+    # Rotating to body frame gives the same result as rot.RotateBack(GetPosDt2()).
+    _imu_acc_ok = False
+    if imu_acc_sensor is not None:
+        buf = imu_acc_sensor.GetMostRecentAccelBuffer()
+        if buf.HasData():
+            data = buf.GetAccelData()  # numpy (3,): global-frame, gravity subtracted
+            acc_global = chrono.ChVector3d(float(data[0]), float(data[1]), float(data[2]))
+            acc_body = rot.RotateBack(acc_global)
+            ax = acc_body.x
+            ay = acc_body.y
+            _imu_acc_ok = True
+    if not _imu_acc_ok:
+        # Fallback: analytical rigid-body acceleration (ground truth)
+        acc = chassis.GetPosDt2()
+        acc_loc = rot.RotateBack(acc)
+        ax = acc_loc.x
+        ay = acc_loc.y
+
+    # --- IMU gyroscope (body-frame, includes noise from sensor module) ---
+    _imu_gyro_ok = False
+    if imu_gyro_sensor is not None:
+        buf = imu_gyro_sensor.GetMostRecentGyroBuffer()
+        if buf.HasData():
+            data = buf.GetGyroData()  # numpy (3,): [Roll, Pitch, Yaw]
+            omega = float(data[2])    # Z-axis angular velocity
+            _imu_gyro_ok = True
+    if not _imu_gyro_ok:
+        omega_vec = chassis.GetAngVelLocal()
+        omega = omega_vec.z
+
+    # Wheel angular velocities (wheel-encoder equivalent)
+    veh_obj = vehicle.GetVehicle()
+    wheel_omega_fl = veh_obj.GetSpindleOmega(0, veh.LEFT)
+    wheel_omega_fr = veh_obj.GetSpindleOmega(0, veh.RIGHT)
+    wheel_omega_rl = veh_obj.GetSpindleOmega(1, veh.LEFT)
+    wheel_omega_rr = veh_obj.GetSpindleOmega(1, veh.RIGHT)
+
+    # Road-wheel steering angle (steering-angle sensor equivalent, avg L/R)
+    steer_angle = 0.5 * (veh_obj.GetSteeringAngle(0, veh.LEFT)
+                         + veh_obj.GetSteeringAngle(0, veh.RIGHT))
+
+    # Compute yaw from quaternion for noise injection
+    psi = math.atan2(2 * (rot.e0 * rot.e3 + rot.e1 * rot.e2),
+                     1 - 2 * (rot.e2 * rot.e2 + rot.e3 * rot.e3))
+
+    # Sensor noise injection
+    # NOTE: ax, ay, omega are already noisy when using Chrono sensor-module IMU.
+    # Manual noise is only added to non-IMU channels (GPS, speed, etc.).
+    if noise:
+        x_cg  += np.random.normal(0, noise['x'])
+        y_cg  += np.random.normal(0, noise['y'])
+        psi   += np.random.normal(0, noise['psi'])
+        u     += np.random.normal(0, noise['u'])
+        v     += np.random.normal(0, noise['v'])
+        # Only add manual noise to IMU channels if sensor module not active
+        if not _imu_gyro_ok:
+            omega += np.random.normal(0, noise['omega'])
+        if not _imu_acc_ok:
+            ax    += np.random.normal(0, noise.get('ax', 0.05))
+            ay    += np.random.normal(0, noise.get('ay', 0.05))
+        # Reconstruct quaternion from noisy yaw (keep pitch/roll from Chrono)
+        half = psi / 2.0
+        qe0, qe1, qe2, qe3 = math.cos(half), 0.0, 0.0, math.sin(half)
+    else:
+        qe0, qe1, qe2, qe3 = rot.e0, rot.e1, rot.e2, rot.e3
+
+    # Tire forces (optional)
+    tf = extract_tire_forces(vehicle, terrain) if terrain is not None else None
+
+    # Embed ground truth for analytics (when noise is applied, plots need true path)
+    if noise and tf is not None:
+        tf['true_x_cg'] = pos.x
+        tf['true_y_cg'] = pos.y
+        tf['true_psi'] = math.atan2(
+            2 * (rot.e0 * rot.e3 + rot.e1 * rot.e2),
+            1 - 2 * (rot.e2 * rot.e2 + rot.e3 * rot.e3))
+        tf['true_u'] = vel_loc.x
+    elif noise and tf is None:
+        tf = {
+            'true_x_cg': pos.x,
+            'true_y_cg': pos.y,
+            'true_psi': math.atan2(
+                2 * (rot.e0 * rot.e3 + rot.e1 * rot.e2),
+                1 - 2 * (rot.e2 * rot.e2 + rot.e3 * rot.e3)),
+            'true_u': vel_loc.x,
+        }
+
+    return VehicleState(
+        time=sim_time,
+        wall_time=wall_time.time(),
+        x_cg=x_cg,
+        y_cg=y_cg,
+        z_cg=pos.z,
+        quat_e0=qe0,
+        quat_e1=qe1,
+        quat_e2=qe2,
+        quat_e3=qe3,
+        u=u,
+        v=v,
+        omega=omega,
+        ax=ax,
+        ay=ay,
+        wheel_omega_fl=wheel_omega_fl,
+        wheel_omega_fr=wheel_omega_fr,
+        wheel_omega_rl=wheel_omega_rl,
+        wheel_omega_rr=wheel_omega_rr,
+        steering_angle=steer_angle,
+        tire_forces=tf,
+        obstacles=obstacles_flat,
+    )
+
+
+# =============================================================================
+# Main simulation loop
+# =============================================================================
+
+def run_sim_node(args):
+    print("=" * 60)
+    print("Chrono Simulation Node (Decoupled)")
+    print("=" * 60)
+
+    # Determine visualization flags
+    use_irrlicht = args.vis_mode in ('irrlicht', 'both')
+    use_sensor = args.vis_mode in ('sensor', 'both')
+    any_vis = use_irrlicht or use_sensor
+
+    if use_sensor and not HAS_SENSOR:
+        print("WARNING: pychrono.sensor not available, falling back to irrlicht")
+        use_sensor = False
+        use_irrlicht = True
+        any_vis = True
+
+    # ------------------------------------------------------------------
+    # Setup vehicle
+    # ------------------------------------------------------------------
+    system, vehicle = setup_chrono_vehicle(any_vis)
+
+    # ------------------------------------------------------------------
+    # Setup terrain
+    # ------------------------------------------------------------------
+    terrain_config = None
+    if args.terrain_config:
+        terrain_config = load_terrain_config(args.terrain_config)
+
+    terrain, terrain_params = setup_scm_terrain(
+        system, vehicle=vehicle, visualize=any_vis,
+        terrain_preset=args.terrain, terrain_config=terrain_config,
+        bumpiness=args.bumpiness,
+    )
+
+    # ------------------------------------------------------------------
+    # Rock obstacles
+    # ------------------------------------------------------------------
+    rocks = []
+    collision_logger = None
+    if args.rocks > 0:
+        exclusion_zones = [(0.0, 0.0, 12.0)]  # Vehicle spawn at (0,0)
+        rocks = add_rock_obstacles(
+            system, num_rocks=args.rocks,
+            zone_x=tuple(args.rock_zone_x), zone_y=tuple(args.rock_zone_y),
+            size_range=tuple(args.rock_size), seed=args.rock_seed,
+            exclusion_zones=exclusion_zones,
+        )
+        print(f"  Placed {len(rocks)} rock obstacles")
+
+    # --- Collision detector (always active when rocks present) ---
+    _log_dir = os.path.join(os.path.dirname(__file__), '..', 'logs')
+    collision_logger = CollisionLogger(rocks, run_dir=_log_dir) if rocks else None
+
+    # ------------------------------------------------------------------
+    # CBF safety filter
+    # ------------------------------------------------------------------
+    safety_filter = None
+    if args.safety_filter:
+        vehicle_params = get_vehicle_params_for_demo()
+
+        # Load NN tire model for terrain-aware CBF traction limits.
+        # Uses the same model as the MPC controller for consistency.
+        # Falls back to kinematic/linear if NN unavailable (import failed or model missing).
+        _nn_cbf = None
+        if load_nn_tire_model is not None:
+            try:
+                _preset = terrain_config if terrain_config else get_terrain_preset(args.terrain)
+                _tp = terrain_preset_to_internal(_preset)
+                _model_dir = Path(__file__).resolve().parent.parent / "nn_models" / args.nn_model
+                _nn_cbf = load_nn_tire_model(str(_model_dir), _tp)
+                print(f"  [CBF] NN tire model loaded: {args.nn_model} on {args.terrain}")
+            except Exception as _e:
+                print(f"  [CBF] NN load failed ({_e}), using kinematic fallback")
+
+        safety_filter = CBFSafetyFilter(
+            vehicle_params=vehicle_params,
+            nn_casadi=_nn_cbf,
+            cbf_alpha=args.cbf_alpha,
+            obstacle_buffer=args.safety_buffer,
+            delay_steps=args.delay_steps,
+            control_dt=0.1,  # Match MPC rate (10 Hz)
+            w_long=args.cbf_w_long,
+            w_lat=args.cbf_w_lat,
+            forward_bias=args.cbf_forward_bias,
+            dob_bandwidth=args.dob_bandwidth,
+            cbf_flavor=args.cbf_flavor,
+            teleop_delay=args.teleop_delay,
+            stale_cmd_timeout=args.stale_cmd_timeout,
+        )
+        delay_msg = f", teleop_delay={args.teleop_delay*1000:.0f}ms" if args.teleop_delay > 0 else ""
+        print(f"  [SAFETY] DOB-CBF filter enabled: alpha={args.cbf_alpha}, "
+              f"buffer={args.safety_buffer}m, flavor={args.cbf_flavor}{delay_msg}")
+
+    # ------------------------------------------------------------------
+    # Trajectory markers (visual only)
+    # ------------------------------------------------------------------
+    if any_vis:
+        marker_z = 0.5 if args.bumpiness > 0 else 0.15
+        add_trajectory_markers(
+            system, args.path,
+            marker_z=marker_z,
+            lead_in=args.lead_in,
+        )
+
+    # ------------------------------------------------------------------
+    # Driver (external commands or manual G29)
+    # ------------------------------------------------------------------
+    if args.wasd:
+        print("  Manual mode: using WASD keyboard (via Irrlicht window)")
+        driver = veh.ChInteractiveDriver(vehicle.GetVehicle())
+        driver.SetSteeringDelta(1.0 / 50)
+        driver.SetThrottleDelta(1.0 / 50)
+        driver.SetBrakingDelta(1.0 / 50)
+        driver.SetGains(4.0, 4.0, 4.0, 4.0)
+        driver.Initialize()
+    elif args.manual:
+        print("  Manual mode: using G29 steering wheel")
+        driver = ManualDriver(vehicle)
+    else:
+        driver = ExternalDriver(vehicle)
+
+    # ------------------------------------------------------------------
+    # Visualization — Irrlicht
+    # ------------------------------------------------------------------
+    vis = None
+    if use_irrlicht:
+        try:
+            vis = veh.ChWheeledVehicleVisualSystemIrrlicht()
+            vis.SetWindowTitle("Chrono Sim Node (decoupled)")
+            vis.SetWindowSize(4320, 720)
+            vis.SetChaseCamera(chrono.ChVector3d(0, 0, 1.5), 6.0, 0.5)
+            vis.Initialize()
+            vis.AddLightDirectional()
+            vis.AddSkyBox()
+            vis.AttachVehicle(vehicle.GetVehicle())
+            if args.wasd:
+                vis.AttachDriver(driver)
+        except Exception as e:
+            print(f"Warning: Irrlicht visualization failed: {e}")
+            vis = None
+
+    # ------------------------------------------------------------------
+    # Visualization — Chrono Sensor (driver POV camera)
+    # ------------------------------------------------------------------
+    sensor_manager = None
+    driver_cam = None
+    if use_sensor:
+        try:
+            sensor_manager = sens.ChSensorManager(system)
+            # Scene lighting and environment
+            sensor_manager.scene.AddPointLight(
+                chrono.ChVector3f(0, 0, 100),
+                chrono.ChColor(1.5, 1.5, 1.5),
+                500.0,
+            )
+            sensor_manager.scene.SetAmbientLight(chrono.ChVector3f(0.1, 0.1, 0.1))
+            sensor_manager.scene.SetSceneEpsilon(1e-3)
+            sensor_manager.scene.EnableDynamicOrigin(True)
+            sensor_manager.scene.SetOriginOffsetThreshold(500.0)
+
+            # Driver POV camera attached to chassis
+            # Eye-point matches HMMWV left-hand-drive seat position
+            cam_offset = chrono.ChFramed(
+                chrono.ChVector3d(0.4, 0.7, 1.0),
+                chrono.ChQuaterniond(1, 0, 0, 0),
+            )
+            driver_cam = sens.ChCameraSensor(
+                vehicle.GetChassisBody(),  # attached body
+                30,                        # update rate (Hz) — matches C++ SCM teleop
+                cam_offset,                # offset pose
+                4320,                      # image width
+                1080,                      # image height
+                1.92,                      # horizontal FOV (~110° ultrawide)
+            )
+            driver_cam.SetName("DriverPOV")
+            driver_cam.SetLag(0.0)
+            driver_cam.PushFilter(sens.ChFilterVisualize(
+                4320, 1080, "Driver POV", False
+            ))
+            sensor_manager.AddSensor(driver_cam)
+            print("  Chrono Sensor: driver POV camera active")
+        except Exception as e:
+            print(f"Warning: Sensor visualization failed: {e}")
+            sensor_manager = None
+            driver_cam = None
+
+    # ------------------------------------------------------------------
+    # IMU Sensors (Chrono Sensor module — accelerometer + gyroscope)
+    # ------------------------------------------------------------------
+    imu_acc_sensor = None
+    imu_gyro_sensor = None
+    if HAS_SENSOR and not args.no_imu:
+        try:
+            # Create a sensor manager if camera mode didn't already
+            if sensor_manager is None:
+                sensor_manager = sens.ChSensorManager(system)
+
+            imu_rate = args.imu_rate  # Hz
+            imu_offset = chrono.ChFramed(
+                chrono.ChVector3d(0, 0, 0),
+                chrono.ChQuaterniond(1, 0, 0, 0),
+            )
+
+            # --- Noise models ---
+            if args.no_noise:
+                acc_noise = sens.ChNoiseNone()
+                gyro_noise = sens.ChNoiseNone()
+            else:
+                # ChNoiseNormalDrift: Gaussian + slow-varying bias drift
+                #   (updateRate, mean, stdev, bias_drift, tau_drift)
+                # Typical automotive-grade MEMS accelerometer:
+                #   noise density ~150 µg/√Hz → stdev ≈ 0.015 m/s² at 100 Hz
+                #   bias stability ~10 µg → drift ~ 1e-4 m/s²
+                acc_noise = sens.ChNoiseNormalDrift(
+                    float(imu_rate),
+                    chrono.ChVector3d(0, 0, 0),                                      # mean
+                    chrono.ChVector3d(args.imu_acc_stdev, args.imu_acc_stdev, args.imu_acc_stdev),  # stdev
+                    args.imu_acc_bias_drift,                                          # bias drift rate
+                    args.imu_acc_tau_drift,                                           # tau drift (s)
+                )
+                # Typical automotive-grade MEMS gyroscope:
+                #   noise density ~0.005 °/s/√Hz → stdev ≈ 0.001 rad/s at 100 Hz
+                #   bias stability ~1 °/hr → drift ~ 5e-6 rad/s
+                gyro_noise = sens.ChNoiseNormalDrift(
+                    float(imu_rate),
+                    chrono.ChVector3d(0, 0, 0),                                          # mean
+                    chrono.ChVector3d(args.imu_gyro_stdev, args.imu_gyro_stdev, args.imu_gyro_stdev),  # stdev
+                    args.imu_gyro_bias_drift,                                            # bias drift rate
+                    args.imu_gyro_tau_drift,                                             # tau drift (s)
+                )
+
+            # --- Accelerometer ---
+            imu_acc_sensor = sens.ChAccelerometerSensor(
+                vehicle.GetChassisBody(),
+                float(imu_rate),
+                imu_offset,
+                acc_noise,
+            )
+            imu_acc_sensor.SetName("IMU_Accelerometer")
+            imu_acc_sensor.SetLag(args.imu_lag)
+            imu_acc_sensor.SetCollectionWindow(0.0)
+            imu_acc_sensor.PushFilter(sens.ChFilterAccelAccess())
+            sensor_manager.AddSensor(imu_acc_sensor)
+
+            # --- Gyroscope ---
+            imu_gyro_sensor = sens.ChGyroscopeSensor(
+                vehicle.GetChassisBody(),
+                float(imu_rate),
+                imu_offset,
+                gyro_noise,
+            )
+            imu_gyro_sensor.SetName("IMU_Gyroscope")
+            imu_gyro_sensor.SetLag(args.imu_lag)
+            imu_gyro_sensor.SetCollectionWindow(0.0)
+            imu_gyro_sensor.PushFilter(sens.ChFilterGyroAccess())
+            sensor_manager.AddSensor(imu_gyro_sensor)
+
+            noise_label = "OFF" if args.no_noise else (
+                f"acc_σ={args.imu_acc_stdev}, gyro_σ={args.imu_gyro_stdev}"
+            )
+            print(f"  IMU sensors: {imu_rate} Hz, lag={args.imu_lag}s, noise={noise_label}")
+        except Exception as e:
+            print(f"Warning: IMU sensor setup failed: {e}")
+            imu_acc_sensor = None
+            imu_gyro_sensor = None
+    elif not HAS_SENSOR and not args.no_imu:
+        print("  WARNING: pychrono.sensor not available — using analytical accel/gyro (ground truth)")
+
+    # ------------------------------------------------------------------
+    # ZMQ transport (skipped in manual mode)
+    # ------------------------------------------------------------------
+    _manual_mode = args.manual or args.wasd
+    state_pub = None
+    ctrl_sub = None
+    if not _manual_mode or args.wasd:
+        # Always publish state (terrain classifier needs it); skip ctrl_sub in WASD
+        state_pub = ZMQPublisher(sim_pub_endpoint(args.sim_port))
+        print(f"  Publishing state on port {args.sim_port}")
+        if not _manual_mode:
+            ctrl_sub = ZMQSubscriber(ctrl_sub_endpoint(args.ctrl_host, args.ctrl_port))
+            print(f"  Subscribing to controls from {args.ctrl_host}:{args.ctrl_port}")
+
+        # Give ZMQ sockets time to connect
+        wall_time.sleep(0.3)
+
+        # Publish initial config so controller knows terrain / vehicle params
+        vehicle_params = get_vehicle_params_for_demo()
+        internal_terrain = terrain_preset_to_internal(
+            terrain_config if terrain_config else get_terrain_preset(args.terrain)
+        )
+        # Named preset string is for logging/telemetry; YAML soil overrides physics.
+        terrain_label = args.terrain
+        if terrain_config is not None:
+            terrain_label = "custom"
+
+        config_msg = SimStatus(
+            event="config",
+            time=0.0,
+            wall_time=wall_time.time(),
+            config={
+                "vehicle_params": vehicle_params,
+                "terrain_params": internal_terrain,
+                "terrain_preset": terrain_label,
+                "path_type": args.path,
+                "v_target": args.speed,
+                "sim_time": args.time,
+                "step_size": args.step_size,
+                "sine_amplitude": args.sine_amplitude,
+                "sine_wavelength": args.sine_wavelength,
+                "lead_in": args.lead_in,
+            },
+        )
+        state_pub.send(config_msg)
+
+        # --------------------------------------------------------------
+        # Gate: wait for controller ready (neutral ControlCommand) after
+        # ACADOS build + warmup.  acados_mpc_controller_node sends these
+        # pings before/with VehicleState so we do not deadlock.  Prevents
+        # codegen time from consuming --time once the loop runs.
+        # --------------------------------------------------------------
+        wait_s = 0.0 if args.no_wait_for_controller else float(args.wait_for_controller)
+        if ctrl_sub is not None and wait_s > 0:
+            print(f"  Waiting for controller ready signal (timeout {wait_s:.0f}s)...")
+            t0_wait = wall_time.time()
+            last_cfg_send = t0_wait
+            got_ready = False
+            while wall_time.time() - t0_wait < wait_s:
+                # Re-publish config while waiting so late-starting controllers
+                # (e.g. during ACADOS codegen/compile) can still receive it.
+                now_wait = wall_time.time()
+                if now_wait - last_cfg_send >= 0.5:
+                    config_msg.wall_time = now_wait
+                    state_pub.send(config_msg)
+                    last_cfg_send = now_wait
+                result = ctrl_sub.recv(timeout_ms=100)
+                if result is None:
+                    continue
+                _, msg = result
+                if isinstance(msg, ControlCommand):
+                    driver.apply(msg)
+                    print("  Controller ready — starting simulation.")
+                    got_ready = True
+                    break
+            if not got_ready:
+                print("  WARNING: No controller handshake before timeout — "
+                      "starting simulation anyway. Chrono time may run ahead of MPC.")
+
+    # ------------------------------------------------------------------
+    # Simulation loop
+    # ------------------------------------------------------------------
+    step_size = args.step_size
+    state_pub_interval = 1.0 / args.state_rate  # Decimated publishing rate
+    last_state_pub_time = -state_pub_interval
+    last_config_resend = 0.0  # Re-publish config during first 2s so controller catches it
+
+    render_interval = 1.0 / 35.0
+    last_render_time = -render_interval
+    # Gate sensor manager updates:
+    # - When IMU sensors are active, Update() must be called EVERY physics step
+    #   (the sensor internally handles its own update rate scheduling).
+    # - When only camera is active, gate to camera FPS to avoid overhead.
+    _imu_active = (imu_acc_sensor is not None or imu_gyro_sensor is not None)
+    sensor_interval = 0.0 if _imu_active else (1.0 / 30.0)
+    last_sensor_time = -1.0
+    last_report_time = 0.0
+    start_wall = wall_time.time()
+    cmd_count = 0
+    cmd_buffer = []
+    step_count = 0
+
+    noise_cfg = None if args.no_noise else DEFAULT_MEAS_NOISE
+    print(f"  Sensor noise: {'OFF' if noise_cfg is None else 'ON'}")
+    print(f"  Physics step: {step_size * 1000:.0f}ms, state rate: {args.state_rate} Hz")
+    if _manual_mode:
+        print(f"  Manual mode: close window to exit")
+    else:
+        print(f"  Running {args.time}s simulation...")
+
+    # --- Timing accumulators (debug) ---
+    _t_irr = 0.0; _t_sensor = 0.0; _t_terrain_sync = 0.0; _t_terrain_adv = 0.0
+    _t_veh_sync = 0.0; _t_veh_adv = 0.0; _t_driver = 0.0; _t_safety = 0.0
+    _t_zmq = 0.0; _t_vis_sync = 0.0; _t_vis_adv = 0.0
+    _t_loop_total = 0.0; _t_state_extract = 0.0; _t_rt_sleep = 0.0
+    _t_report_steps = 0; _sensor_calls = 0
+
+    while True:
+        _t_loop_start = wall_time.time()
+        time_chrono = vehicle.GetSystem().GetChTime()
+
+        if not _manual_mode and time_chrono >= args.time:
+            break
+        if vis is not None and not vis.Run():
+            break
+
+        # --- Render Irrlicht (frame-skipped) ---
+        if vis is not None and (time_chrono - last_render_time >= render_interval):
+            _tw = wall_time.time()
+            vis.BeginScene()
+            vis.Render()
+            vis.EndScene()
+            _t_irr += wall_time.time() - _tw
+            last_render_time = time_chrono
+
+        # --- Receive latest control command (non-blocking) ---
+        if ctrl_sub is not None:
+            result = ctrl_sub.recv(timeout_ms=0)
+            if result is not None:
+                topic, msg = result
+                if isinstance(msg, ControlCommand):
+                    if args.teleop_delay > 0:
+                        cmd_buffer.append((wall_time.time() + args.teleop_delay, msg))
+                    else:
+                        driver.apply(msg)
+                        cmd_count += 1
+                        # Feed command age to safety filter for teleop delay est.
+                        if safety_filter is not None and msg.wall_time > 0:
+                            safety_filter.update_command_age(msg.wall_time)
+
+            now = wall_time.time()
+            while cmd_buffer and cmd_buffer[0][0] <= now:
+                _, msg = cmd_buffer.pop(0)
+                driver.apply(msg)
+                cmd_count += 1
+                if safety_filter is not None and msg.wall_time > 0:
+                    safety_filter.update_command_age(msg.wall_time)
+
+        # --- Synchronize ---
+        _tw = wall_time.time()
+        driver.Synchronize(time_chrono)
+
+        driver_inputs = veh.DriverInputs()
+        driver_inputs.m_steering = driver.GetSteering()
+        driver_inputs.m_throttle = driver.GetThrottle()
+        driver_inputs.m_braking = driver.GetBraking()
+        _t_driver += wall_time.time() - _tw
+
+        # --- Safety Filter ---
+        # Safety filter at ~10Hz
+        sf_interval = max(1, int(1.0 / (10.0 * step_size)))  # 10 Hz, matching MPC rate
+        if safety_filter is not None and step_count % sf_interval == 0:
+            chassis_body = vehicle.GetChassisBody()
+            veh_pos = chassis_body.GetPos()
+            veh_rot = chassis_body.GetRot()
+            veh_psi = np.arctan2(
+                2 * (veh_rot.e0 * veh_rot.e3 + veh_rot.e1 * veh_rot.e2),
+                1 - 2 * (veh_rot.e2**2 + veh_rot.e3**2))
+            vel_world = chassis_body.GetPosDt()
+            vel_loc = veh_rot.RotateBack(vel_world)
+
+            all_obstacles = []
+            if args.rocks > 0:
+                rock_pos = get_rock_positions(rocks)
+                rock_rad = get_rock_radii(rocks)
+                for i in range(len(rock_pos)):
+                    dist = np.sqrt((rock_pos[i, 0] - veh_pos.x)**2 +
+                                   (rock_pos[i, 1] - veh_pos.y)**2)
+                    if dist < 30.0:
+                        all_obstacles.append((rock_pos[i, 0], rock_pos[i, 1], rock_rad[i]))
+
+            veh_state = {
+                'x': veh_pos.x, 'y': veh_pos.y, 'psi': veh_psi,
+                'u': vehicle.GetVehicle().GetSpeed(),
+                'v': vel_loc.y, 'omega': chassis_body.GetAngVelLocal().z,
+                'delta': driver_inputs.m_steering * 0.49,
+            }
+            sf_result = safety_filter.filter(
+                desired_steering=driver_inputs.m_steering,
+                desired_throttle=driver_inputs.m_throttle,
+                desired_brake=driver_inputs.m_braking,
+                vehicle_state=veh_state,
+                obstacles=all_obstacles,
+            )
+            driver_inputs.m_steering = sf_result.steering
+            driver_inputs.m_throttle = sf_result.throttle
+            driver_inputs.m_braking = sf_result.braking
+        elif safety_filter is not None and safety_filter._last_result is not None:
+            cached = safety_filter._last_result
+            if cached.was_modified:
+                driver_inputs.m_steering = cached.steering
+                driver_inputs.m_throttle = cached.throttle
+                driver_inputs.m_braking = cached.braking
+
+        _tw = wall_time.time()
+        terrain.Synchronize(time_chrono)
+        _t_terrain_sync += wall_time.time() - _tw
+
+        _tw = wall_time.time()
+        vehicle.Synchronize(time_chrono, driver_inputs, terrain)
+        _t_veh_sync += wall_time.time() - _tw
+
+        if vis is not None:
+            _tw = wall_time.time()
+            vis.Synchronize(time_chrono, driver_inputs)
+            _t_vis_sync += wall_time.time() - _tw
+
+        # --- Advance ---
+        driver.Advance(step_size)
+
+        _tw = wall_time.time()
+        terrain.Advance(step_size)
+        _t_terrain_adv += wall_time.time() - _tw
+
+        _tw = wall_time.time()
+        vehicle.Advance(step_size)
+        _t_veh_adv += wall_time.time() - _tw
+
+        if vis is not None:
+            _tw = wall_time.time()
+            vis.Advance(step_size)
+            _t_vis_adv += wall_time.time() - _tw
+
+        # --- Update Chrono Sensor manager (gated to camera FPS) ---
+        if sensor_manager is not None and (time_chrono - last_sensor_time >= sensor_interval):
+            _tw = wall_time.time()
+            sensor_manager.Update()
+            _dt_s = wall_time.time() - _tw
+            _t_sensor += _dt_s
+            _sensor_calls += 1
+            last_sensor_time = time_chrono
+
+        step_count += 1
+        _t_report_steps += 1
+
+        # --- Re-publish config during first 2s (CONFLATE can drop it) ---
+        if state_pub is not None and time_chrono < 2.0 and time_chrono - last_config_resend >= 0.2:
+            config_msg.wall_time = wall_time.time()
+            state_pub.send(config_msg)
+            last_config_resend = time_chrono
+
+        # --- Publish vehicle state at decimated rate ---
+        if state_pub is not None and time_chrono - last_state_pub_time >= state_pub_interval:
+            _tw = wall_time.time()
+            # Nearest N_OBS rocks within 40m → flat list for MPC horizon planning.
+            _obs_flat_msg = []
+            if args.rocks > 0:
+                _rpos = get_rock_positions(rocks)
+                _rrad = get_rock_radii(rocks)
+                _vpos_now = vehicle.GetChassisBody().GetPos()
+                _vx, _vy = _vpos_now.x, _vpos_now.y
+                _dists = np.sqrt((_rpos[:, 0] - _vx)**2 + (_rpos[:, 1] - _vy)**2)
+                _nearby_idx = np.where(_dists < 40.0)[0]
+                _sorted_idx = _nearby_idx[np.argsort(_dists[_nearby_idx])][:3]
+                for _i in _sorted_idx:
+                    _obs_flat_msg += [float(_rpos[_i, 0]), float(_rpos[_i, 1]),
+                                      float(_rrad[_i])]
+
+            state_msg = extract_vehicle_state(
+                vehicle, time_chrono,
+                terrain=None if args.no_tire_forces else terrain,
+                noise=noise_cfg,
+                imu_acc_sensor=imu_acc_sensor,
+                imu_gyro_sensor=imu_gyro_sensor,
+                obstacles_flat=_obs_flat_msg if _obs_flat_msg else None,
+            )
+            state_pub.send(state_msg)
+            _t_state_extract += wall_time.time() - _tw
+            last_state_pub_time = time_chrono
+
+        # --- Real-time pacing (always on unless --no-rt) ---
+        # Without this, the headless sim runs 4-5x real-time and the
+        # decoupled MPC controller can only process ~10% of state messages.
+        if not args.no_rt:
+            target_wall = start_wall + time_chrono
+            remaining = target_wall - wall_time.time()
+            if remaining > 0:
+                _t_rt_sleep += remaining
+                wall_time.sleep(remaining)
+
+        _t_loop_total += wall_time.time() - _t_loop_start
+
+        # --- Collision detection (every physics step when rocks present) ---
+        if collision_logger is not None:
+            _veh_cg = vehicle.GetChassisBody().GetPos()
+            _veh_spd = vehicle.GetVehicle().GetSpeed()
+            collision_logger.check(time_chrono, _veh_cg.x, _veh_cg.y, _veh_spd)
+
+        # --- Progress report ---
+        if time_chrono - last_report_time >= 2.0:
+            last_report_time = time_chrono
+            elapsed = wall_time.time() - start_wall
+            rt = time_chrono / elapsed if elapsed > 0 else 0
+            pos = vehicle.GetChassisBody().GetPos()
+            _col_str = ""
+            if collision_logger is not None:
+                _col_str = (f"  collisions={collision_logger.total_collisions}"
+                            f"  near_misses={collision_logger.total_near_misses}")
+            print(f"  t={time_chrono:.1f}s  pos=({pos.x:.1f},{pos.y:.1f})  "
+                  f"RT={rt:.2f}x  cmds_recv={cmd_count}{_col_str}")
+            # --- Timing breakdown (per 2s window) ---
+            n = max(_t_report_steps, 1)
+            accounted = (_t_terrain_sync + _t_terrain_adv + _t_veh_sync + _t_veh_adv +
+                         _t_irr + _t_sensor + _t_driver + _t_safety +
+                         _t_vis_sync + _t_vis_adv + _t_state_extract + _t_rt_sleep)
+            unaccounted = _t_loop_total - accounted
+            sensor_avg_ms = (_t_sensor / max(_sensor_calls, 1)) * 1000
+            print(f"    [TIMING] steps={n}  loop_total={_t_loop_total:.3f}s  "
+                  f"rt_sleep={_t_rt_sleep:.3f}s  unaccounted={unaccounted:.3f}s")
+            print(f"    [TIMING] terrain_sync={_t_terrain_sync:.3f}s  "
+                  f"terrain_adv={_t_terrain_adv:.3f}s  veh_sync={_t_veh_sync:.3f}s  "
+                  f"veh_adv={_t_veh_adv:.3f}s")
+            print(f"    [TIMING] irrlicht={_t_irr:.3f}s  sensor={_t_sensor:.3f}s "
+                  f"({_sensor_calls} calls, avg={sensor_avg_ms:.1f}ms)  "
+                  f"state_extract={_t_state_extract:.3f}s")
+            print(f"    [TIMING] driver={_t_driver:.3f}s  safety={_t_safety:.3f}s  "
+                  f"vis_sync={_t_vis_sync:.3f}s  vis_adv={_t_vis_adv:.3f}s")
+            _t_irr = 0.0; _t_sensor = 0.0; _t_terrain_sync = 0.0; _t_terrain_adv = 0.0
+            _t_veh_sync = 0.0; _t_veh_adv = 0.0; _t_driver = 0.0; _t_safety = 0.0
+            _t_zmq = 0.0; _t_vis_sync = 0.0; _t_vis_adv = 0.0
+            _t_loop_total = 0.0; _t_state_extract = 0.0; _t_rt_sleep = 0.0
+            _t_report_steps = 0; _sensor_calls = 0
+
+    # ------------------------------------------------------------------
+    # Shutdown
+    # ------------------------------------------------------------------
+    if collision_logger is not None:
+        collision_logger.close()
+
+    if state_pub is not None:
+        stop_msg = SimStatus(event="stop", time=time_chrono, wall_time=wall_time.time())
+        state_pub.send(stop_msg)
+
+    elapsed = wall_time.time() - start_wall
+    print(f"\n  Simulation complete: {time_chrono:.1f}s in {elapsed:.1f}s "
+          f"(RT factor {time_chrono / elapsed:.2f}x)")
+    if not _manual_mode:
+        print(f"  Total control commands received: {cmd_count}")
+
+    # Safety filter summary
+    if safety_filter is not None:
+        diag = safety_filter.get_diagnostics()
+        print(f"  [SAFETY] Calls: {diag['filter_calls']}, "
+              f"Interventions: {diag['interventions']} ({diag['intervention_rate']*100:.1f}%)")
+
+    if state_pub is not None:
+        state_pub.close()
+    if ctrl_sub is not None:
+        ctrl_sub.close()
+    if vis is not None:
+        vis.GetDevice().closeDevice()
+    if sensor_manager is not None:
+        del sensor_manager
+
+
+# =============================================================================
+# Entry point
+# =============================================================================
+
+def main():
+    p = argparse.ArgumentParser(description="Chrono Simulation Node (decoupled)")
+
+    # Simulation
+    p.add_argument("--time", type=float, default=15.0, help="Simulation duration (s)")
+    p.add_argument("--step-size", type=float, default=3e-3, help="Physics step (s)")
+    p.add_argument("--vis-mode", default="irrlicht",
+                   choices=["irrlicht", "sensor", "both", "none"],
+                   help="Visualization mode: irrlicht, sensor (driver POV), both, or none")
+    p.add_argument("--no-rt",  action="store_true",
+                   help="Disable real-time pacing (fast-forward; breaks decoupled MPC)")
+    p.add_argument("--no-tire-forces", action="store_true",
+                   help="Disable per-wheel tire force extraction in state messages")
+    p.add_argument("--speed", type=float, default=5.0, help="Target speed for markers (m/s)")
+
+    # Terrain
+    p.add_argument("--terrain", default="sand", choices=["sand", "clay", "dirt"])
+    p.add_argument("--terrain-config", type=str, default=None, help="YAML terrain config")
+    p.add_argument("--bumpiness", type=int, default=0, choices=range(0, 11),
+                    help="Terrain bumpiness level 0 (flat) to 10 (extreme)")
+
+    # Path (for visual markers only; the controller handles actual path generation)
+    p.add_argument("--path", default="lane_change",
+                   choices=["lane_change", "double_lane_change", "right_left", "sinusoidal"])
+    p.add_argument("--sine-amplitude", type=float, default=2.0)
+    p.add_argument("--sine-wavelength", type=float, default=30.0)
+    p.add_argument("--lead-in", type=float, default=0.0,
+                   help="Straight lead-in distance (m) before path starts")
+
+    # Network
+    p.add_argument("--sim-port", type=int, default=5555, help="Port to publish state")
+    p.add_argument("--ctrl-host", default="localhost", help="Controller host")
+    p.add_argument("--ctrl-port", type=int, default=5556, help="Controller command port")
+    p.add_argument("--state-rate", type=int, default=100,
+                   help="Vehicle state publish rate (Hz)")
+    p.add_argument("--no-noise", action="store_true",
+                   help="Disable sensor noise (noise ON by default)")
+
+    # IMU sensor (Chrono sensor module)
+    p.add_argument("--no-imu", action="store_true",
+                   help="Disable Chrono sensor-module IMU (use analytical ground-truth accel/gyro)")
+    p.add_argument("--imu-rate", type=int, default=100,
+                   help="IMU update rate in Hz (default 100)")
+    p.add_argument("--imu-lag", type=float, default=0.0,
+                   help="IMU sensor lag in seconds (default 0)")
+    p.add_argument("--imu-acc-stdev", type=float, default=0.015,
+                   help="Accelerometer noise stdev in m/s² (default 0.015, ~150µg/√Hz MEMS)")
+    p.add_argument("--imu-acc-bias-drift", type=float, default=1e-4,
+                   help="Accelerometer bias drift rate (default 1e-4)")
+    p.add_argument("--imu-acc-tau-drift", type=float, default=100.0,
+                   help="Accelerometer drift time constant in s (default 100)")
+    p.add_argument("--imu-gyro-stdev", type=float, default=0.001,
+                   help="Gyroscope noise stdev in rad/s (default 0.001, ~0.005°/s/√Hz MEMS)")
+    p.add_argument("--imu-gyro-bias-drift", type=float, default=5e-6,
+                   help="Gyroscope bias drift rate (default 5e-6)")
+    p.add_argument("--imu-gyro-tau-drift", type=float, default=500.0,
+                   help="Gyroscope drift time constant in s (default 500)")
+
+    p.add_argument("--wait-for-controller", type=float, default=300.0,
+                   help="Wait up to this many seconds for the controller's first control message (ready ping after "
+                        "ACADOS init) before advancing Chrono. Default 300. Start the sim first, then the "
+                        "controller, or use launch_decoupled.py.")
+    p.add_argument("--no-wait-for-controller", action="store_true",
+                   help="Enter the sim loop immediately (no MPC handshake). Use for sim-only / debugging without a "
+                        "controller node.")
+
+    # Manual control
+    p.add_argument("--manual", action="store_true",
+                   help="Manual control with G29 steering wheel (no MPC controller)")
+    p.add_argument("--wasd", action="store_true",
+                   help="Manual control with WASD keyboard (no MPC controller)")
+
+    # Rock obstacles
+    p.add_argument("--rocks", type=int, default=0,
+                   help="Number of rock obstacles (0 = none)")
+    p.add_argument("--rock-zone-x", type=float, nargs=2, default=[-15.0, 50.0])
+    p.add_argument("--rock-zone-y", type=float, nargs=2, default=[-10.0, 10.0])
+    p.add_argument("--rock-size", type=float, nargs=2, default=[0.5, 3.0])
+    p.add_argument("--rock-seed", type=int, default=42)
+
+    # Safety filter
+    p.add_argument("--safety-filter", action="store_true",
+                   help="Enable DOB-CBF safety filter")
+    p.add_argument("--cbf-alpha", type=float, default=5.0)
+    p.add_argument("--safety-buffer", type=float, default=0.25)
+    p.add_argument("--delay-steps", type=int, default=5)
+    p.add_argument("--cbf-w-long", type=float, default=0.06)
+    p.add_argument("--cbf-w-lat", type=float, default=0.50)
+    p.add_argument("--cbf-forward-bias", type=float, default=3.0)
+    p.add_argument("--dob-bandwidth", type=float, default=10.0)
+    p.add_argument("--cbf-flavor", type=str, default="balance",
+                   choices=["balance", "steer_priority", "throttle_priority"])
+    p.add_argument("--nn-model", type=str, default="paper_v2_mlp_16_4",
+                   help="NN model version directory for CBF traction limits")
+    p.add_argument("--teleop-delay", type=float, default=0.0,
+                   help="Initial one-way teleop delay estimate in seconds "
+                        "(0 = local, auto-measured from cmd timestamps)")
+    p.add_argument("--stale-cmd-timeout", type=float, default=2.0,
+                   help="Auto-brake if no command received for this many seconds")
+
+    args = p.parse_args()
+    run_sim_node(args)
+
+
+if __name__ == "__main__":
+    main()
