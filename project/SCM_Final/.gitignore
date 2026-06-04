@@ -1,0 +1,25 @@
+# --- Large data / results / paper / generated artifacts: NOT committed ---
+archive/
+data/
+benchmarking/results/
+experiment_results/
+my_paper/
+presentation_package/
+deliverables/runs*/
+deliverables/figures/
+deliverables/*.csv
+logs/
+
+# caches / generated
+__pycache__/
+*.pyc
+*.log
+
+# reference-paper PDFs (external, not code) and large classifier model blobs
+docs/*.pdf
+simulation/terrain_classifier/models/
+*.npz
+
+# all PDFs anywhere (reference papers), and generated LHS terrain configs
+*.pdf
+config/terrain_yamls/

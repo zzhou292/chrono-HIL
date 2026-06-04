@@ -1,0 +1,39 @@
+{
+  "n_features": 26,
+  "output_names": [
+    "n"
+  ],
+  "feature_names": [
+    "u_mean",
+    "u_std",
+    "u_max",
+    "v_std",
+    "omega_mean",
+    "omega_std",
+    "omega_p95",
+    "ay_std",
+    "ay_p95",
+    "ax_mean",
+    "ax_std",
+    "abs_steer_mean",
+    "abs_steer_p95",
+    "wheel_slip_mean",
+    "wheel_slip_std",
+    "wheel_slip_p95",
+    "lat_grip",
+    "yaw_gain",
+    "long_drag",
+    "long_slip_mean",
+    "throttle_mean",
+    "az_std",
+    "az_p95",
+    "pitch_rate_std",
+    "pitch_rate_p95",
+    "roll_rate_std"
+  ],
+  "hidden": 64,
+  "win_seconds": 4.0,
+  "stride_seconds": 0.3,
+  "warmup_seconds": 1.5,
+  "best_val_mse": 0.04065489396452904
+}

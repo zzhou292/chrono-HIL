@@ -1,0 +1,14 @@
+{
+  "hidden": [
+    128,
+    64
+  ],
+  "input_dim": 10,
+  "output_dim": 2,
+  "test_scenarios": 30,
+  "train_scenarios": 270,
+  "test_r2_Fy": 0.8973675916643139,
+  "test_rmse_Fy": 1155.8736106768959,
+  "test_r2_M": 0.8785632946057129,
+  "test_rmse_M": 773.187332178775
+}
