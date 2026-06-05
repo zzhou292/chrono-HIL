@@ -180,6 +180,6 @@ Per-run outputs (sim_diag.csv, run.log, reference path) are under `runs/`.
   (Fig 2, orange trajectory — MPPI climbs to y≈10 m and creeps along
   at 1.5 m/s; safe but very conservative). The paper's MPPI seed
   ablation (`mppi_seed_ablation.py`) shows removing those seeds
-  multiplies collisions by ~40× — the seeds are exactly what makes
+  multiplies collisions by ≈31× — the seeds are exactly what makes
   MPPI robust to round-trip latency where no local Gaussian
   perturbation of an obsolete command happens to be safe.

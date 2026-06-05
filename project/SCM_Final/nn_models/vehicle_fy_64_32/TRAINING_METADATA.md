@@ -134,7 +134,7 @@ Figure: `my_paper/paper_figures/lhs100_cl.png`; CSV:
     python nn_training/train_vehicle_fy_surrogate.py \
         --lhs-dir data/dallas_scm/lhs_train300 \
         --hidden 128 64 --epochs 400 --decim 2 --test-frac 0.10
-    python deliverables/bench_terrain_estimators_lhs.py --n 100 \
+    python benchmarking/bench_terrain_estimators_lhs.py --n 100 \
         --workers 8 --n-min 0.40 --n-max 1.30 --steer-amp-rad 0.6 \
         --open-loop-throttle -1 --target-speed 5.0 \
         --log-suffix _cl --out-name lhs100_cl

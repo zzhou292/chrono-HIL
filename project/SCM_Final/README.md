@@ -94,6 +94,12 @@ python benchmarking/run.py --tier smoke
 # 5. Publish figures into my_paper/paper_figures/ (the orchestrator
 #    above invokes this automatically at the end of each run)
 python benchmarking/publish_paper_figures.py
+
+# 6. (figures only) Regenerate EVERY figure in paper.tex into
+#    my_paper/paper_figures/ with the exact filenames, from the latest
+#    results -- one command, no Chrono re-run. Prints [ok]/SKIP/FAIL per
+#    figure. (Run the sweeps/benches in steps 1-4 first.)
+python benchmarking/make_paper_figures.py
 ```
 
 ### Terrain-estimator comparison (paper §VI)
@@ -130,18 +136,18 @@ python nn_training/train_vehicle_fy_surrogate.py \
 ```bash
 # Open-loop (constant throttle 0.75) — the paper-headline Fig. 8.
 # This is the MLP's native training excitation. ~30 min incl. SCM.
-python deliverables/bench_terrain_estimators_lhs.py --n 100 --workers 8 \
+python benchmarking/bench_terrain_estimators_lhs.py --n 100 --workers 8 \
     --n-min 0.40 --n-max 1.30 --steer-amp-rad 0.6 \
     --open-loop-throttle 0.75 --out-name lhs100_fair
 
 # Closed-loop (PI cruise to 5 m/s) — separate SCM-log dir via suffix
-python deliverables/bench_terrain_estimators_lhs.py --n 100 --workers 8 \
+python benchmarking/bench_terrain_estimators_lhs.py --n 100 --workers 8 \
     --n-min 0.40 --n-max 1.30 --steer-amp-rad 0.6 \
     --open-loop-throttle -1 --target-speed 5.0 \
     --log-suffix _cl --out-name lhs100_cl
 
 # CL-vs-OL robustness panel (Fig. 9) from the two CSVs above
-python deliverables/plot_cl_vs_ol.py
+python benchmarking/plot_cl_vs_ol.py
 ```
 
 Writes `lhs100_fair.{png,csv}`, `lhs100_cl.{png,csv}`,
@@ -161,7 +167,7 @@ for t in clay dirt sand; do
       --output data/dallas_scm/${out}.npz
 done
 # run all three estimators → terrain_estimator_comparison.{png,csv}
-python deliverables/eval_terrain_estimators.py
+python benchmarking/eval_terrain_estimators.py
 ```
 
 **Step D (optional) — paper118-faithful Bekker-vs-NN UKF only**

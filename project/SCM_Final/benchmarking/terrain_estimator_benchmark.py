@@ -70,7 +70,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--paths", nargs="+", default=["sinusoidal"], choices=list(PATHS),
                    help="Sinusoidal is the default paper setting because the estimator needs excitation.")
     p.add_argument("--speeds", nargs="+", type=float, default=[5.0, 7.0])
-    p.add_argument("--bumpiness", nargs="+", type=int, default=list(BUMPS))
+    # The learned window-MLP estimator is trained on bumpiness {0,4}; bumpiness 8
+    # is out-of-distribution for its vertical-dynamics features (see paper §IV),
+    # so the benchmark stays within that training envelope by default.
+    p.add_argument("--bumpiness", nargs="+", type=int, default=[0, 4])
     p.add_argument("--seeds", type=int, default=5)
     p.add_argument("--base-seed", type=int, default=710)
     p.add_argument("--ood-terrains", type=int, default=6)
@@ -85,10 +88,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sine-wavelength", type=float, default=30.0)
     p.add_argument("--estimator-mode", choices=["n"], default="n",
                    help="Live estimator mode. The retained paper path is n-only.")
-    p.add_argument("--estimator-backend", choices=["learned", "ukf", "pil"], default="learned",
-                   help="Estimator backend to benchmark. 'ukf' is a Dallas-style "
-                        "augmented-state filter over vehicle states and Bekker n; "
-                        "'pil' inverts a wide-LHS rate tire surrogate from force residuals.")
+    p.add_argument("--estimator-backend", choices=["learned"], default="learned",
+                   help="Runtime terrain-estimator backend. Only the deployed "
+                        "sliding-window MLP ('learned') is wired into the live "
+                        "stack; the Dallas-style UKF is offline-only "
+                        "(deliverables/ukf_paper_validation.py) and PIL is archived.")
     p.add_argument("--learned-terrain-model-dir", default=None,
                    help="Optional terrain estimator checkpoint directory to "
                         "forward to the controller. Useful for evaluating "
@@ -479,23 +483,8 @@ def main() -> None:
         args.ood_terrains = 1
         args.time = min(args.time, 8.0)
 
-    if args.estimator_backend == "ukf":
-        result_prefix = "terrain_estimator_ukf_benchmark"
-        description = (
-            "Dallas-style UKF terrain-estimator benchmark with sensor noise enabled. "
-            "The UKF estimates Bekker n online from vehicle motion using the "
-            "repository NN tire surrogate as its reduced-order force model."
-        )
-    elif args.estimator_backend == "pil":
-        result_prefix = "terrain_estimator_pil_benchmark"
-        description = (
-            "Physics-informed online terrain identification benchmark. The PIL "
-            "backend inverts the frozen wide-LHS rate surrogate from closed-loop "
-            "lateral-force residuals."
-        )
-    else:
-        result_prefix = "terrain_estimator_benchmark"
-        description = "Learned n-only terrain estimator ID/OOD benchmark with sensor noise enabled."
+    result_prefix = "terrain_estimator_benchmark"
+    description = "Learned n-only terrain estimator ID/OOD benchmark with sensor noise enabled."
     out_dir = timestamped_result_dir(result_prefix)
     write_manifest(out_dir, args, description)
     print(f"Output: {out_dir}")

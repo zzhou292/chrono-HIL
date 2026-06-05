@@ -1,5 +1,11 @@
 # Surrogate retrain + LHS-vehicle + terrain estimator refresh
 
+> **Historical record (frozen).** Some paths, dataset names, and
+> commands here are superseded — e.g. `ACADOS_UNIQUE_BUILD_DIR=1` is now
+> inert (acados uses a shared `(model,fingerprint)` cache + build lock,
+> not PID-keyed dirs) and the figure scripts moved to `benchmarking/`.
+> For the current workflow see `AGENTS.md` and `README.md`.
+
 This is the controlled, no-shortcut follow-up to
 [RIG_VS_VEHICLE_FINDINGS.md](RIG_VS_VEHICLE_FINDINGS.md). The earlier
 comparison left two confounds open: rig models had smaller MLPs than

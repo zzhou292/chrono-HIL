@@ -1,4 +1,14 @@
-# C++ SCM Data Collection
+# SCM Data Collection
+
+> **Note:** the tool/build-target list and LHS ranges below are partly
+> out of date. The collectors actually present in this folder are:
+> `collect_static_data.cpp` and `collect_rate_data.cpp` (Chrono SCM
+> single-tire rig sweeps), `collect_closed_loop_data.py` (closed-loop
+> NMPC tuples), `collect_broad_terrain.py` (window-estimator traces),
+> and `run_dallas_scm.py` / `collect_lhs_training_scms.py` (Dallas-UKF
+> SCM logs). See `AGENTS.md` §"Tire-rig vs. closed-loop training" and
+> §"Dallas-style UKF reproduction" for the current generators and the
+> canonical LHS boxes.
 
 C++ tools for collecting tire force data from SCM deformable terrain using Chrono's ChTireTestRig. Data is used to train neural network tire models.
 

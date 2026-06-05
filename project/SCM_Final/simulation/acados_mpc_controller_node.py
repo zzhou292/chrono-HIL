@@ -595,8 +595,6 @@ def run_controller_node(args):
             verbose=bool(getattr(args, "te_verbose", False)),
             window_size=args.te_window,
             min_excitation=args.te_min_excitation,
-            lr=args.te_lr,
-            n_steps=args.te_steps,
         )
         # Override MPC terrain params to the conservative default too,
         # so the MPC starts blind and adapts as the estimator learns.
@@ -1969,10 +1967,6 @@ def main():
     p.add_argument("--te-update-interval", type=int, default=10,
                    help="Run terrain estimation every N accepted 10 Hz-equivalent samples "
                         "(default 10 -> 1 s)")
-    p.add_argument("--te-lr", type=float, default=1e-3,
-                   help="Terrain-estimator gradient scale (reserved).")
-    p.add_argument("--te-steps", type=int, default=20,
-                   help="Gradient descent steps per terrain estimation update")
     p.add_argument("--te-min-excitation", type=float, default=0.3,
                    help="Minimum |ay| (m/s²) to accept observation (excitation gate)")
     p.add_argument("--te-min-confidence", type=float, default=0.3,

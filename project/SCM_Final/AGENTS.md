@@ -389,7 +389,7 @@ Section VI's estimator-comparison figure:
   using the body-frame $a_y$ as a direct measurement of
   $\Sigma F_y / m$. Writes
   `my_paper/paper_figures/ukf_dallas_validation_scm.png`.
-* `deliverables/eval_terrain_estimators.py` — single-trace head-to-
+* `benchmarking/eval_terrain_estimators.py` — single-trace head-to-
   head between Bekker-UKF, NN-UKF (whole-vehicle Fy surrogate), and
   the deployed sliding-window MLP on the three canonical Chrono SCM
   presets (clay/sandy-loam/sand). Reads
@@ -398,7 +398,7 @@ Section VI's estimator-comparison figure:
   (paper Fig. 10). Regenerate the three preset logs first with
   `run_dallas_scm.py --terrain {clay,dirt,sand} --steer-amp-rad 0.6
   --open-loop-throttle -1 --target-speed 5.0` (dirt → sandy_loam).
-* `deliverables/bench_terrain_estimators_lhs.py` — **broad 100-LHS
+* `benchmarking/bench_terrain_estimators_lhs.py` — **broad 100-LHS
   benchmark** driving the three estimators across 100 uniform-LHS
   Bekker–Mohr terrains. Parallelised SCM collection + parallelised
   estimator pass per CLAUDE.md §Parallelism. Flags: `--n-min/--n-max`
@@ -409,7 +409,7 @@ Section VI's estimator-comparison figure:
   `lhs100_fair.png` (`--open-loop-throttle 0.75 --out-name lhs100_fair`);
   CL → `lhs100_cl.png` (`--open-loop-throttle -1 --target-speed 5.0
   --log-suffix _cl --out-name lhs100_cl`).
-* `deliverables/plot_cl_vs_ol.py` — combines `lhs100_cl.csv` and
+* `benchmarking/plot_cl_vs_ol.py` — combines `lhs100_cl.csv` and
   `lhs100_fair.csv` into the CL-vs-OL robustness panel
   `lhs100_cl_vs_ol.png` (paper Fig. 9). Re-run after both benches.
 * `data_collection/collect_lhs_training_scms.py` — generates 300 SCM
@@ -464,7 +464,7 @@ publishing `ControlCommand`.
   trajectories** (passthrough, full brake, coast, evade-left,
   evade-right, brake-while-turn) injected unconditionally. The ablation
   in paper §VI-C shows removing the seeds multiplies the collision
-  rate by ~40×.
+  rate by ≈31×.
 * The shield receives terrain updates from the controller over the
   same ZMQ socket as `ControlCommand` (terrain fields are piggy-backed
   on `ControlCommand` because `ZMQ_CONFLATE` drops any separate

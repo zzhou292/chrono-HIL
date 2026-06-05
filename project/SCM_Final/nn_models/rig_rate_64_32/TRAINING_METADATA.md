@@ -29,5 +29,5 @@
 
 ## Known limitations
 
-- **Saturation gap**: the rig protocol cannot represent post-peak Fy roll-off because there is no contact-patch dynamics on a single-wheel rig. Closed-loop predictions at slip > ~0.20 rad systematically over-predict by ~1 kN. See paper §III-D and `deliverables/make_fig1_4way.py`.
+- **Saturation gap**: the rig protocol cannot represent post-peak Fy roll-off because there is no contact-patch dynamics on a single-wheel rig. Closed-loop predictions at slip > ~0.20 rad systematically over-predict by ~1 kN. See paper §III-D and `benchmarking/make_fig1_4way.py`.
 - The model is retained as a **controlled baseline** for rig-vs-vehicle ablations, not as a deployment candidate.

@@ -35,4 +35,4 @@
 ## Strengths and known limitations
 
 - **Strength**: training distribution matches the operating point the deployed MPC actually visits — best R² on LHS-jittered terrains, no canonical-preset overfit.
-- **Limitation (under-prediction at transients)**: because the bootstrap controller plans conservatively, the training data contains few extreme-slip examples. The deployed model therefore under-predicts peak lateral force during sharp transients on firm soil (dirt at ≥ 7 m/s in particular). See `deliverables/make_fig1_4way.py` for per-scenario front-axle RMSE numbers; rig surrogates can match or beat this one in regions where the bootstrap bias bites.
+- **Limitation (under-prediction at transients)**: because the bootstrap controller plans conservatively, the training data contains few extreme-slip examples. The deployed model therefore under-predicts peak lateral force during sharp transients on firm soil (dirt at ≥ 7 m/s in particular). See `benchmarking/make_fig1_4way.py` for per-scenario front-axle RMSE numbers; rig surrogates can match or beat this one in regions where the bootstrap bias bites.
