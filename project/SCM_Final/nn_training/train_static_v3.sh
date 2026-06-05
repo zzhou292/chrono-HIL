@@ -6,7 +6,7 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DATA="${DATA:-${ROOT}/data/universal/scm_static_100k_v4.csv}"
+DATA="${DATA:-${ROOT}/data/tire_rig/scm_static_100k_v4.csv}"
 MODELS="${MODELS:-${ROOT}/nn_models}"
 TRAINER="${TRAINER:-${ROOT}/nn_training/train_variant.py}"
 

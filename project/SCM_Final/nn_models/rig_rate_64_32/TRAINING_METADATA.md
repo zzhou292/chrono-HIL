@@ -12,7 +12,7 @@
 
 - **Source**: Chrono SCM single-tire rig sweeps.
 - **Generators**: [`data_collection/collect_rate_data.cpp`](../../data_collection/collect_rate_data.cpp) — sweeps `(κ, α, F_z, θ_soil)` on a fixed test rig while applying a steering-rate excitation that exposes the model to rate-of-change features.
-- **Raw CSV** (not shipped with the snapshot): `data/tire_rig/rate_v2_100k.csv` (~100 k rows). Re-collect via the Chrono rig binary if you need to retrain.
+- **Raw CSV**: [`data/tire_rig/rate_v2_100k.csv`](../../data/tire_rig/rate_v2_100k.csv) (~100 k rows, shipped, ≈19 MB). Re-collect via the Chrono rig binary (`collect_rate_data.cpp`) if you need to regenerate it from scratch.
 - **Coverage**: open-loop pure-slip, slip angles up to ±0.55 rad, slip ratios up to ±0.30, F_z in [3 kN, 10 kN], terrain parameters LHS-jittered around the canonical clay/dirt/sand presets.
 
 ## Trainer

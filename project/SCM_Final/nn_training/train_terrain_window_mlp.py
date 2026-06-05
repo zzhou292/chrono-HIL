@@ -590,8 +590,9 @@ def train(args):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--trace-dir", nargs="+", default=[str(
-        Path(__file__).parent.parent / "data" / "terrain_estimator" / "traces_closedloop_sine_lhs_fair_v2")],
-        help="One or more directories of CSV traces to load")
+        Path(__file__).parent.parent / "data" / "terrain_estimator" / "traces_broad_v7")],
+        help="One or more directories of CSV traces to load (default: the "
+             "deployed terrain_window_mlp training set, traces_broad_v7)")
     p.add_argument("--rich-csv", nargs="*", default=[],
                    help="Rich closed-loop LHS CSVs with paired front/rear "
                         "axle rows, e.g. data/whole_vehicle/lhs/"
