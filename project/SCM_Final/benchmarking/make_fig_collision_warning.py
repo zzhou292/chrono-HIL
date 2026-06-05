@@ -20,7 +20,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = sorted((ROOT / "benchmarking" / "results").glob(
     "collision_warning_*"))[-1]
-OUT_DIR = Path(__file__).parent / "figures"
+OUT_DIR = ROOT / "my_paper" / "paper_figures"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 TERRAINS = ("clay", "dirt", "sand")
@@ -83,7 +83,7 @@ def render_timeline():
                  "background shading = severity GREEN→YELLOW→ORANGE→RED",
                  fontsize=11)
     fig.tight_layout()
-    out = OUT_DIR / "fig_cw_timeline.png"
+    out = OUT_DIR / "cw_timeline.png"
     fig.savefig(out, dpi=200, bbox_inches="tight")
     print(f"Wrote {out}")
 
@@ -119,7 +119,7 @@ def render_lead_vs_terrain():
     ax.grid(axis="y", alpha=0.3)
     ax.legend(loc="upper right", fontsize=10, framealpha=0.95)
     fig.tight_layout()
-    out = OUT_DIR / "fig_cw_lead_vs_terrain.png"
+    out = OUT_DIR / "cw_lead_vs_terrain.png"
     fig.savefig(out, dpi=200, bbox_inches="tight")
     print(f"Wrote {out}")
 

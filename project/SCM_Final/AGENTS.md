@@ -262,6 +262,26 @@ merges any new result folders against the per-prefix history (deduped
 on the run key) and overwrites `my_paper/paper_figures/` with the
 regenerated figures and CSVs.
 
+### Regenerate ALL paper figures (one command)
+```bash
+python benchmarking/make_paper_figures.py
+```
+This regenerates **every** `\includegraphics` in `paper.tex` straight
+into `my_paper/paper_figures/` with the exact filenames the paper uses,
+reporting `[ok]/[SKIP/FAIL]` per figure. It does **not** re-run the
+Chrono sweeps — it re-plots from the newest `benchmarking/results/*`
+folders (and, for the §VI UKF figures, re-runs the lightweight estimator
+pass / a fast `--replot-only` from the existing `lhs100_*.csv`; no
+Chrono). So the workflow is: run the sweeps + benches (`run.py --tier
+paper`, `brake_test.py`, `collision_warning_test.py`,
+`open_loop_terrain_estimator_benchmark.py`, `rig_vs_vehicle_tire_sweep.py`,
+and the two `bench_terrain_estimators_lhs.py` OL/CL benches) once, then
+`make_paper_figures.py` to (re)draw everything. **All figure generators
+now live in `benchmarking/`** — the legacy `deliverables/make_fig_*`
+scripts were moved here and repointed to the fresh result folders; the
+broken `make_fig_terrain_est` aggregator was replaced by
+`make_estimator_diag_figs.py` (Fig 6/7 from the benchmark CSVs).
+
 ### Human-in-the-loop rounds (paper §VI-A)
 ```bash
 # Default G29 protocol (symmetric link, camera delay = command delay)

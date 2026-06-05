@@ -291,6 +291,11 @@ def main() -> int:
                    help="Optional suffix appended to the SCM log directory "
                         "(``data/dallas_scm/lhs<N><suffix>``). Useful to "
                         "keep CL and OL benchmarks side-by-side.")
+    p.add_argument("--replot-only", action="store_true",
+                   help="Skip all SCM collection AND the estimator pass; just "
+                        "re-draw the figure from the existing <out-name>.csv. "
+                        "Used by make_paper_figures.py to regenerate the figure "
+                        "fast without re-running the benchmark.")
     args = p.parse_args()
 
     name = args.out_name or f"terrain_estimator_bench_{args.n}"
@@ -298,6 +303,13 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     fig_path = out_dir / f"{name}.png"
     csv_path = out_dir / f"{name}.csv"
+
+    if args.replot_only:
+        if not csv_path.exists():
+            raise FileNotFoundError(
+                f"{csv_path} not found -- run the benchmark once first")
+        _plot(pd.read_csv(csv_path), args.n, fig_path)
+        return 0
     log_dir = (ROOT / "data" / "dallas_scm"
                / f"lhs{args.n}{args.log_suffix}")
     log_dir.mkdir(parents=True, exist_ok=True)

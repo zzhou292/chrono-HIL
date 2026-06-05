@@ -10,6 +10,8 @@ Two-panel figure:
 Built from the per-test data in `deliverables/brake_test_vs_predicted.csv`.
 """
 from __future__ import annotations
+import glob
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -19,15 +21,57 @@ import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT_DIR = Path(__file__).parent / "figures"
+OUT_DIR = ROOT / "my_paper" / "paper_figures"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 TERRAIN_N = {"clay": 0.50, "dirt": 0.70, "sand": 1.10}
 TERRAIN_COLOR = {"clay": "#1f77b4", "dirt": "#8c564b", "sand": "#d4a017"}
 
 
+def _build_df() -> pd.DataFrame:
+    """Predicted-vs-actual stopping data from the newest brake_test sweep.
+
+    Measured deceleration / stopping distance come from the latest
+    ``brake_test_*`` Chrono runs; the predicted columns query the same
+    analytical brake-decel table the collision-warning module builds from
+    the rig surrogate (and the hand-tuned linear fallback), so the figure
+    is regenerated end-to-end with no hand-authored intermediate CSV.
+    """
+    sys.path.insert(0, str(ROOT / "simulation"))
+    sys.path.insert(0, str(ROOT / "simulation" / "safety"))
+    from collision_warning import make_collision_warning_system
+    from learned_terrain_estimator import (TERRAIN_PRESETS,
+                                            terrain_preset_to_internal)
+    nmap = {t: terrain_preset_to_internal(TERRAIN_PRESETS[t])["n"]
+            for t in ("clay", "dirt", "sand")}
+    ws = make_collision_warning_system(
+        flavor="ttc", tire_model_dir=str(ROOT / "nn_models" / "rig_rate_64_32"),
+        verbose=False)
+    wsf = make_collision_warning_system(flavor="ttc", verbose=False)
+    wsf._brake_table = []  # force the hand-tuned linear fallback
+    a_an = {t: ws._brake_decel_for_terrain(nmap[t]) for t in nmap}
+    a_fb = {t: wsf._brake_decel_for_terrain(nmap[t]) for t in nmap}
+    bt_csv = sorted(glob.glob(str(ROOT / "benchmarking" / "results"
+                                  / "brake_test_*" / "results.csv")),
+                    key=lambda p: Path(p).stat().st_mtime)
+    if not bt_csv:
+        raise FileNotFoundError("no brake_test_* results -- run "
+                                "benchmarking/brake_test.py first")
+    bt = pd.read_csv(bt_csv[-1])
+    bt = bt[bt["ok"]] if "ok" in bt else bt
+    rows = []
+    for _, r in bt.iterrows():
+        t, u = r["terrain"], r["u_initial"]
+        rows.append(dict(terrain=t, u_initial=u,
+                         a_actual_mean=r["a_mean"], d_actual=r["d_stop"],
+                         a_pred_analytical=a_an[t], a_pred_fallback=a_fb[t],
+                         d_pred_analytical=u * u / (2 * a_an[t]),
+                         d_pred_fallback=u * u / (2 * a_fb[t])))
+    return pd.DataFrame(rows)
+
+
 def main():
-    df = pd.read_csv(ROOT / "deliverables" / "brake_test_vs_predicted.csv")
+    df = _build_df()
 
     fig, (ax_decel, ax_dist) = plt.subplots(1, 2, figsize=(11.5, 4.6))
 
@@ -102,7 +146,7 @@ def main():
     ax_dist.legend(loc="upper left", fontsize=8, framealpha=0.95)
 
     fig.tight_layout()
-    out = OUT_DIR / "fig_cw_brake_validation.png"
+    out = OUT_DIR / "cw_brake_validation.png"
     fig.savefig(out, dpi=200, bbox_inches="tight")
     print(f"Wrote {out}")
 

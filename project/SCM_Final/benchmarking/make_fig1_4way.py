@@ -28,7 +28,7 @@ from param_consistency import (                # noqa: E402
     TERRAIN_PRESETS, terrain_preset_to_internal,
 )
 
-OUT_DIR = Path(__file__).parent / "figures"
+OUT_DIR = REPO / "my_paper" / "paper_figures"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 ARCHIVE_NN = (REPO / "archive" /
