@@ -219,9 +219,9 @@ with ProcessPoolExecutor(max_workers=workers) as ex:
 
 | Path | What lives there |
 | --- | --- |
-| `simulation/` | Runtime: sim node, NMPC controller, ZMQ messaging, reference paths, tire surrogates (loaders + CasADi export), terrain estimator (`learned_terrain_estimator.py` — runtime only; trainer lives in `nn_training/`) |
+| `simulation/` | Runtime: sim node, NMPC controller, ZMQ messaging, reference paths, tire surrogates (loaders + CasADi export), terrain estimator (`learned_terrain_estimator.py` — runtime only; trainer lives in `nn_training/`), and the spatially-varying soil callback `spatial_terrain.py` (one preset blends into another along +x via `SCMTerrain.RegisterSoilParametersCallback`) |
 | `simulation/safety/` | Predictive safety shields (`predictive_shield.py` MPPI + NMPC, DOB-CBF in `safety/__init__.py`) AND the modular forward collision-warning module `collision_warning.py` (terrain-aware + latency-aware TTC warning; factory `make_collision_warning_system`) |
-| `benchmarking/` | The single benchmarking folder. `run.py` is the orchestrator (flagged by `--tier` and `--only`); each sub-script tests one paper claim and writes a timestamped folder under `benchmarking/results/`. `collision_warning_test.py` is the standalone sweep that exercises the warning module under terrain × latency without a controller. |
+| `benchmarking/` | The single benchmarking folder. `run.py` is the orchestrator (flagged by `--tier` and `--only`); each sub-script tests one paper claim and writes a timestamped folder under `benchmarking/results/`. `collision_warning_test.py` is the standalone sweep that exercises the warning module under terrain × latency without a controller. `terrain_transition_benchmark.py` is the spatial soil-transition experiment (online estimator tracking a mid-run soil change). |
 | `nn_training/` | Canonical trainers: `train_static_v3.sh` (rig static), `train_rate_v2.sh` (rig rate), `train_vehicle_lhs.sh` (whole-vehicle variants), `train_terrain_window_mlp.py` (window terrain estimator, deployed), `train_terrain_window_lstm.py` (LSTM smoke variant, not deployed), and `train_vehicle_fy_surrogate.py` (whole-vehicle Fy surrogate for the Dallas UKF, §VI). `train_variant.py` is the shared tire-NN trainer |
 | `data_collection/` | Chrono SCM tire-rig binaries (`collect_static_data.cpp`, `collect_rate_data.cpp`), closed-loop tire-surrogate collector (`collect_closed_loop_data.py`), the broad multi-axis terrain-estimator collector (`collect_broad_terrain.py`), and the Dallas-UKF SCM collectors (`run_dallas_scm.py` single scripted run, `collect_lhs_training_scms.py` parallel LHS sweep) |
 | `utilities/` | Closed-loop trace collection (`collect_diverse_terrains.py`, `collect_rich_excitation.py`, etc.) and offline diagnostics |
@@ -436,6 +436,54 @@ Patches applied while reviving the reproducer:
   cover Chrono HMMWV's outer-wheel excursions). Build with
   `cmake --build build --target collect_rate_data` after a fresh
   `cmake .` to pick up the new target.
+
+### Spatial soil-transition experiment (online estimator tracking)
+
+Takes advantage of Chrono SCM's ability to vary soil parameters *per
+contact location*: the plant soil is one preset for small x, blends
+linearly over a short zone, then becomes a second preset for large x,
+so the vehicle physically drives across a soil boundary. The
+experiment measures how fast and how accurately the deployed
+sliding-window terrain estimator tracks the new `n`, and how NMPC
+tracking holds while the estimate catches up.
+
+* `simulation/spatial_terrain.py` — `SpatialTransitionSpec` + the pure
+  field functions `local_soil_at(x, spec)` / `local_n_at(x, spec)` +
+  `TransitionSoilCallback` (a `veh.SoilParametersCallback` subclass
+  using the `doublep_value`/`doublep_assign` SWIG idiom). The callback
+  and the benchmark share the same blend function, so the benchmark
+  reconstructs the *exact* ground-truth `n(x)` the simulator applied —
+  no separate oracle log to keep in sync.
+* Enabled at launch with `--terrain-transition --terrain-start <preset>
+  --terrain-end <preset> --transition-x <m> --transition-width <m>`
+  (width 0 = hard step). `launch_decoupled.py` forwards these to
+  `chrono_sim_node.py`, which builds the spec and passes it to
+  `setup_scm_terrain(..., spatial_spec=...)`. Keep a Python reference to
+  the callback alive (it is stored on `terrain._soil_param_callback`).
+* `benchmarking/terrain_transition_benchmark.py` — parallel sweep over
+  the ordered preset pairs. Per run it logs pre/post tracking error,
+  the n-vs-n_true RMSE, and the **settling distance** (metres past the
+  boundary until the estimate covers 63 % of the n step), plus a
+  downsampled `n̂(x)` trace stored in `results.csv` so the overlay
+  figure (`terrain_transition_traces.png`) and the response-summary
+  figure (`terrain_transition_response.png`) regenerate from the CSV
+  alone. Wired into `run.py` (`--only terrain_transition`), the smoke
+  tier (`--quick`), and `publish_paper_figures.py`.
+* The deployed window-MLP smooths n with a long time constant
+  (`smoothing_alpha=0.02`), so expect a real settling lag (tens of
+  metres) after the boundary — that lag *is* the headline result, not
+  a bug. Bumpiness is held at 0 in the swept matrix so the response is
+  the soil step and not bump-induced vertical-dynamics aliasing.
+* `--excitation open_loop` runs the same transition without a
+  controller: the script publishes a scripted sinusoidal steer + sine
+  throttle and runs the estimator in-process on the streamed state
+  (mirrors `open_loop_terrain_estimator_benchmark.py`). It writes to a
+  separate `terrain_transition_ol_benchmark_*` result prefix and the
+  `terrain_transition_ol_*` paper figures. The closed-loop-vs-open-loop
+  comparison isolates estimator behaviour from controller reaction:
+  notably, into-sand transitions track in closed loop (speed regulated)
+  but fail in open loop (fixed-mean throttle lets speed run up on firm
+  soil, which the estimator aliases as soft soil).
 
 ---
 

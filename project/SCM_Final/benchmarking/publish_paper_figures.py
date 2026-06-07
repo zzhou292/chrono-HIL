@@ -162,6 +162,30 @@ SPECS: list[PublishSpec] = [
         plotter_module="terrain_estimator_benchmark",
     ),
     PublishSpec(
+        prefix="terrain_transition_benchmark",
+        figures={
+            "terrain_transition_traces.png": "terrain_transition_traces.png",
+            "terrain_transition_response.png": "terrain_transition_response.png",
+        },
+        extra_files={
+            "results.csv": "terrain_transition_results.csv",
+            "summary_by_transition.csv": "terrain_transition_summary.csv",
+        },
+        plotter_module="terrain_transition_benchmark",
+    ),
+    PublishSpec(
+        prefix="terrain_transition_ol_benchmark",
+        figures={
+            "terrain_transition_traces.png": "terrain_transition_ol_traces.png",
+            "terrain_transition_response.png": "terrain_transition_ol_response.png",
+        },
+        extra_files={
+            "results.csv": "terrain_transition_ol_results.csv",
+            "summary_by_transition.csv": "terrain_transition_ol_summary.csv",
+        },
+        plotter_module="terrain_transition_benchmark",
+    ),
+    PublishSpec(
         prefix="latency_profile_figure",
         figures={
             "latency_profile_timeseries.png": "latency_profile_timeseries.png",

@@ -48,8 +48,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--only", nargs="+", default=[],
                    help="Subset names: tire_models, safety, safety_planner_aware, "
                         "dob_cbf_ablation, mppi_seed_ablation, throttle_dob_ablation, "
-                        "autonomous_obstacle_tire, terrain_estimator, latency_profile, "
-                        "latency_compensation, tire_model_with_estimator_ablation.")
+                        "autonomous_obstacle_tire, terrain_estimator, terrain_transition, "
+                        "latency_profile, latency_compensation, "
+                        "tire_model_with_estimator_ablation.")
     p.add_argument("--dry-run", action="store_true", help="Print commands without running them.")
     p.add_argument("--continue-on-error", action="store_true")
     p.add_argument("--workers", type=int, default=None,
@@ -149,7 +150,7 @@ def build_commands(args: argparse.Namespace) -> list[SuiteCommand]:
         "tire_models", "safety", "dob_cbf_ablation",
         "autonomous_obstacle_tire", "terrain_estimator", "latency_compensation",
         "throttle_dob_ablation", "mppi_seed_ablation", "safety_planner_aware",
-        "tire_model_with_estimator_ablation",
+        "tire_model_with_estimator_ablation", "terrain_transition",
     ])}
     if max(ports.values()) + args.port_stride - 1 > 65535:
         raise SystemExit(
@@ -171,6 +172,7 @@ def build_commands(args: argparse.Namespace) -> list[SuiteCommand]:
             ("dob_cbf_ablation", "dob_cbf_nn_ablation.py"),
             ("autonomous_obstacle_tire", "autonomous_obstacle_tire_model_sweep.py"),
             ("terrain_estimator", "terrain_estimator_benchmark.py"),
+            ("terrain_transition", "terrain_transition_benchmark.py"),
             ("throttle_dob_ablation", "throttle_dob_ablation.py"),
             ("mppi_seed_ablation", "mppi_seed_ablation.py"),
         ]
@@ -259,6 +261,22 @@ def build_commands(args: argparse.Namespace) -> list[SuiteCommand]:
         count(terrain_cases, terrain_paths, terrain_speeds, terrain_bumps, seeds),
         "Terrain estimator under excited sinusoidal maneuvers (bumpiness within "
         "the learned estimator's {0,4} training envelope).",
+    ))
+
+    # Spatial soil transition: the plant soil changes type partway across the
+    # patch (per-location SCM callback); measures how fast the online estimator
+    # tracks the new n and how tracking holds while it catches up. Flat soil
+    # only (bumpiness 0) so the response is the soil step, not bump aliasing.
+    transition_pairs = ["clay_to_sand", "sand_to_clay", "clay_to_dirt",
+                        "dirt_to_clay", "dirt_to_sand", "sand_to_dirt"]
+    commands.append(SuiteCommand(
+        "terrain_transition",
+        python_cmd("terrain_transition_benchmark.py", "--transitions", *transition_pairs,
+                   "--paths", *terrain_paths, "--speeds", "5", "--bumpiness", "0",
+                   "--seeds", str(seeds), "--time", "24", "--transition-x", "45",
+                   "--metric-start", "8", "--base-port", str(ports["terrain_transition"])),
+        count(transition_pairs, terrain_paths, ["5"], ["0"], seeds),
+        "Online terrain estimator tracking a mid-run spatial soil transition.",
     ))
 
     commands.append(SuiteCommand(

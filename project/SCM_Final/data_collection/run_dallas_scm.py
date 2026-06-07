@@ -111,6 +111,18 @@ def main():
     p.add_argument("--output", type=Path, required=True,
                    help="NPZ to write.")
     p.add_argument("--seed", type=int, default=42)
+    # Spatial soil transition (per-location SCM callback): soil changes type
+    # along +x, so a UKF / MLP replay can be evaluated across a regime shift.
+    p.add_argument("--terrain-transition", action="store_true",
+                   help="Enable a spatial soil transition along +x.")
+    p.add_argument("--terrain-start", choices=["clay", "dirt", "sand"], default=None,
+                   help="Soil before the transition (defaults to --terrain).")
+    p.add_argument("--terrain-end", choices=["clay", "dirt", "sand"], default=None,
+                   help="Soil after the transition.")
+    p.add_argument("--transition-x", type=float, default=45.0,
+                   help="Center of the soil transition in terrain x (m).")
+    p.add_argument("--transition-width", type=float, default=2.0,
+                   help="Full width of the linear soil blend (m); 0 = hard step.")
     args = p.parse_args()
 
     np.random.seed(args.seed)
@@ -123,10 +135,26 @@ def main():
     terrain_config = None
     if args.terrain_config is not None:
         terrain_config = load_terrain_config(str(args.terrain_config))
+
+    spatial_spec = None
+    base_preset = args.terrain
+    if args.terrain_transition:
+        from spatial_terrain import SpatialTransitionSpec
+        start_preset = args.terrain_start or args.terrain
+        if args.terrain_end is None:
+            raise SystemExit("--terrain-transition requires --terrain-end")
+        spatial_spec = SpatialTransitionSpec(
+            start_preset=start_preset, end_preset=args.terrain_end,
+            transition_x=args.transition_x, transition_width=args.transition_width,
+        )
+        base_preset = start_preset
+        print(f"Transition: {start_preset} -> {args.terrain_end} at "
+              f"x={args.transition_x:.1f}m (blend {args.transition_width:.1f}m)")
+
     terrain, terrain_params = setup_scm_terrain(
         system, vehicle=vehicle, visualize=False,
-        terrain_preset=args.terrain, terrain_config=terrain_config,
-        mesh_resolution=0.10,
+        terrain_preset=base_preset, terrain_config=terrain_config,
+        mesh_resolution=0.10, spatial_spec=spatial_spec,
     )
     driver = _ScriptedDriver(vehicle)
 
@@ -278,6 +306,12 @@ def main():
     out["soil_phi_rad"] = np.array([math.radians(terrain_params["phi"])])
     out["soil_k"]    = np.array([terrain_params["k"]])
     out["lead_in"]   = np.array([args.lead_in])
+    if spatial_spec is not None:
+        out["transition"] = np.array([1])
+        out["transition_start"] = np.array([spatial_spec.start_preset])
+        out["transition_end"] = np.array([spatial_spec.end_preset])
+        out["transition_x"] = np.array([spatial_spec.transition_x])
+        out["transition_width"] = np.array([spatial_spec.transition_width])
     np.savez(args.output, **out)
     print(f"  Wrote {args.output}")
 

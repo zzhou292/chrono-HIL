@@ -424,10 +424,28 @@ def run_sim_node(args):
     if args.terrain_config:
         terrain_config = load_terrain_config(args.terrain_config)
 
+    # Optional spatial soil transition (one preset blends into another along +x).
+    spatial_spec = None
+    base_preset = args.terrain
+    if args.terrain_transition:
+        from spatial_terrain import SpatialTransitionSpec
+        start_preset = args.terrain_start or args.terrain
+        if args.terrain_end is None:
+            raise ValueError("--terrain-transition requires --terrain-end")
+        spatial_spec = SpatialTransitionSpec(
+            start_preset=start_preset,
+            end_preset=args.terrain_end,
+            transition_x=args.transition_x,
+            transition_width=args.transition_width,
+        )
+        # Base soil must match the start of the patch so the fallback agrees
+        # with the callback before the transition.
+        base_preset = start_preset
+
     terrain, terrain_params = setup_scm_terrain(
         system, vehicle=vehicle, visualize=any_vis,
-        terrain_preset=args.terrain, terrain_config=terrain_config,
-        bumpiness=args.bumpiness,
+        terrain_preset=base_preset, terrain_config=terrain_config,
+        bumpiness=args.bumpiness, spatial_spec=spatial_spec,
     )
 
     if any_vis:
@@ -1394,6 +1412,20 @@ def main():
     p.add_argument("--terrain-config", type=str, default=None, help="YAML terrain config")
     p.add_argument("--bumpiness", type=int, default=0, choices=range(0, 11),
                     help="Terrain bumpiness level 0 (flat) to 10 (extreme)")
+
+    # Spatial soil transition: soil changes type partway across the patch via a
+    # per-location SCM callback (vehicle drives +x through the boundary).
+    p.add_argument("--terrain-transition", action="store_true",
+                   help="Enable a spatial soil transition along +x "
+                        "(--terrain-start blends into --terrain-end).")
+    p.add_argument("--terrain-start", default=None, choices=["sand", "clay", "dirt"],
+                   help="Soil preset before the transition (defaults to --terrain).")
+    p.add_argument("--terrain-end", default=None, choices=["sand", "clay", "dirt"],
+                   help="Soil preset after the transition.")
+    p.add_argument("--transition-x", type=float, default=60.0,
+                   help="Center of the soil transition, in terrain x (m).")
+    p.add_argument("--transition-width", type=float, default=2.0,
+                   help="Full width of the linear soil blend (m); 0 = hard step.")
 
     # Path (for visual markers only; the controller handles actual path generation)
     p.add_argument("--path", default="lane_change",

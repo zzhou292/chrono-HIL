@@ -134,14 +134,15 @@ def load_terrain_config(config_path):
 
 def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand',
                       terrain_config=None, mesh_resolution=None,
-                      bumpiness=0, bump_seed=12345, texture=True):
+                      bumpiness=0, bump_seed=12345, texture=True,
+                      spatial_spec=None):
     """Setup SCM deformable terrain
-    
+
     Args:
         system: Chrono system
         vehicle: Chrono vehicle (for moving patch optimization)
         visualize: Enable visualization
-        terrain_preset: Preset name ('sand', 'clay', 'dirt') 
+        terrain_preset: Preset name ('sand', 'clay', 'dirt')
                        Ignored if terrain_config provided.
         terrain_config: Dict with terrain params from config file (overrides preset)
         mesh_resolution: Override mesh spacing (m). Default: 0.08 for headless, 0.05 for vis.
@@ -149,6 +150,12 @@ def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand
                    Maps to TOPOLOGY_LEVELS in param_consistency.
         bump_seed: Random seed for reproducibility
         texture: Apply dirt texture to terrain mesh
+        spatial_spec: Optional SpatialTransitionSpec. When provided, the soil
+                   varies with x (one preset, a short blend, then another) via
+                   a per-location SCM callback. The uniform SetSoilParameters
+                   call still runs as a fallback; pass
+                   terrain_preset=spatial_spec.start_preset so the base soil
+                   and the callback agree on the start of the patch.
     """
     import tempfile
     
@@ -199,7 +206,20 @@ def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand
     terrain.SetSoilParameters(
         Kphi, Kc, n, c, phi, k, elastic_stiffness, damping
     )
-    
+
+    # Spatially-varying soil: register a per-location callback that blends from
+    # one preset to another along +x. SetSoilParameters above is the fallback.
+    if spatial_spec is not None:
+        from spatial_terrain import TransitionSoilCallback
+        soil_cb = TransitionSoilCallback(spatial_spec)
+        terrain.RegisterSoilParametersCallback(soil_cb)
+        # Keep a Python reference alive: the SWIG director is owned by Python,
+        # so without this the callback would be garbage-collected mid-run.
+        terrain._soil_param_callback = soil_cb
+        print(f"  Spatial soil transition: {spatial_spec.start_preset} -> "
+              f"{spatial_spec.end_preset} at x={spatial_spec.transition_x:.1f}m "
+              f"(blend {spatial_spec.transition_width:.1f}m)")
+
     # Mesh resolution: coarser = faster, all modes use 0.12m for real-time performance
     if mesh_resolution is not None:
         print(f"  Mesh: custom resolution {mesh_resolution}m")

@@ -78,6 +78,50 @@ SOIL_SAND = SoilParams(kc=0.9e3,  kphi=1523.4e3, n=0.8,
                        kx=0.025, ky=0.025)
 
 
+_MANIFOLD_PRESETS = None
+
+
+def manifold_soil_from_n(n_val: float) -> "SoilParams":
+    """Interpolate the *full* Bekker-Mohr soil vector along the canonical
+    clay->dirt->sand preset manifold as a function of n.
+
+    Without this the UKF freezes five of six soil parameters at the start
+    preset and only estimates n, so when the true soil moves off that preset
+    (e.g. across a clay->sand transition, or simply soft vs firm) the Fy
+    surrogate is queried with an inconsistent soil vector and the n estimate
+    is biased. Mapping all six parameters from n along the preset manifold
+    matches how the deployed window-MLP reconstructs soil from its n output
+    (``learned_terrain_estimator._terrain_params_for_n``).
+    """
+    global _MANIFOLD_PRESETS
+    if _MANIFOLD_PRESETS is None:
+        import sys
+        sim_dir = Path(__file__).resolve().parents[1] / "simulation"
+        if str(sim_dir) not in sys.path:
+            sys.path.insert(0, str(sim_dir))
+        from param_consistency import TERRAIN_PRESETS
+        _MANIFOLD_PRESETS = sorted(
+            ((float(p["n"]), p) for p in TERRAIN_PRESETS.values()),
+            key=lambda kv: kv[0])
+    pts = _MANIFOLD_PRESETS
+    nv = min(max(float(n_val), pts[0][0]), pts[-1][0])
+    for i in range(len(pts) - 1):
+        n0, p0 = pts[i]
+        n1, p1 = pts[i + 1]
+        if nv <= n1:
+            w = 0.0 if n1 == n0 else (nv - n0) / (n1 - n0)
+            lerp = lambda key: (1.0 - w) * float(p0[key]) + w * float(p1[key])
+            return SoilParams(
+                kc=lerp("Kc"), kphi=lerp("Kphi"), n=float(n_val),
+                c=lerp("cohesion"), phi=math.radians(lerp("friction_angle")),
+                kx=lerp("janosi_shear"), ky=lerp("janosi_shear"))
+    p = pts[-1][1]
+    return SoilParams(kc=float(p["Kc"]), kphi=float(p["Kphi"]), n=float(n_val),
+                      c=float(p["cohesion"]),
+                      phi=math.radians(float(p["friction_angle"])),
+                      kx=float(p["janosi_shear"]), ky=float(p["janosi_shear"]))
+
+
 @dataclass(frozen=True)
 class WheelGeom:
     r: float = 0.35   # rolling radius, m
@@ -1211,6 +1255,7 @@ def _bicycle_step_vehicle_fy(z_aug: np.ndarray, delta: float, ax_in: float,
                               dt: float, soil_template: SoilParams,
                               veh: Vehicle = Vehicle(),
                               ay_in: float = None,  # noqa - API-compat
+                              soil_from_n=None,
                               ) -> np.ndarray:
     """Bicycle prediction step using the whole-vehicle Fy surrogate.
 
@@ -1223,9 +1268,15 @@ def _bicycle_step_vehicle_fy(z_aug: np.ndarray, delta: float, ax_in: float,
     """
     x, y, psi, u, v, omega, n_val = z_aug
     n_val = float(np.clip(n_val, 0.2, 1.4))
-    soil = SoilParams(kc=soil_template.kc, kphi=soil_template.kphi,
-                      n=n_val, c=soil_template.c, phi=soil_template.phi,
-                      kx=soil_template.kx, ky=soil_template.ky)
+    if soil_from_n is not None:
+        # Manifold mode: reconstruct the full soil vector from n so the
+        # surrogate sees a self-consistent soil (clay->dirt->sand), not five
+        # params frozen at the start preset.
+        soil = soil_from_n(n_val)
+    else:
+        soil = SoilParams(kc=soil_template.kc, kphi=soil_template.kphi,
+                          n=n_val, c=soil_template.c, phi=soil_template.phi,
+                          kx=soil_template.kx, ky=soil_template.ky)
     Fy_total, M_yaw = _vehicle_fy_total(z_aug, delta, soil)
     cospsi, sinpsi = math.cos(psi), math.sin(psi)
     xdot = u * cospsi - v * sinpsi
@@ -1428,7 +1479,10 @@ def _bicycle_step_ax(z_aug: np.ndarray, delta: float, ax_in: float,
 def run_dallas_from_log(log_path: Path, sc: DallasScenario,
                         *, backend: str = "bekker",
                         alpha: float = 0.35, kappa: float = 0.0,
-                        seed: int = 0
+                        seed: int = 0,
+                        soil_from_n=None,
+                        q_n: float = None,
+                        tire_model_dir: str = "nn_models/rig_rate_paper118_v2_64_32",
                         ) -> Tuple[np.ndarray, np.ndarray, float]:
     """Replay the Dallas UKF against a Chrono SCM ground-truth log.
 
@@ -1489,8 +1543,9 @@ def run_dallas_from_log(log_path: Path, sc: DallasScenario,
                    u_log[0], v_log[0], om_log[0], sc.n_init])
     P0 = np.diag([0.5**2, 0.5**2, 0.01**2, 0.3**2, 0.3**2,
                    0.01**2, 0.12**2])
+    _qn = (0.005) if q_n is None else float(q_n)
     Q = np.diag([0.04**2, 0.04**2, 0.002**2, 0.04**2, 0.04**2,
-                  0.004**2, (0.005)**2])
+                  0.004**2, _qn**2])
     R = np.diag(np.array([0.05, 0.05, 0.005,
                            0.05, 0.05, 0.005,
                            0.3]) ** 2)
@@ -1553,11 +1608,12 @@ def run_dallas_from_log(log_path: Path, sc: DallasScenario,
             elif backend == "vehicle_fy":
                 return _bicycle_step_vehicle_fy(
                     z, delta, ax_in, dt_step, soil_template, veh,
-                    ay_in=ay_in)
+                    ay_in=ay_in, soil_from_n=soil_from_n)
             else:
                 return _bicycle_step_4wheel(
                     z, delta, ax_in, dt_step, soil_template, veh,
-                    backend=backend, ay_in=ay_in)
+                    backend=backend, ay_in=ay_in,
+                    tire_model_dir=tire_model_dir)
 
         def _h(z):
             if use_alpha_state:

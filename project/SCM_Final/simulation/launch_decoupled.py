@@ -66,6 +66,19 @@ Examples:
                         "static terrain prior differ from --terrain (the plant). "
                         "Used by the wrong-prior estimator ablation.")
     p.add_argument("--terrain-config", type=str, default=None)
+    # Spatial soil transition (forwarded to the sim node): the plant soil
+    # changes type partway along +x via a per-location SCM callback.
+    p.add_argument("--terrain-transition", action="store_true",
+                   help="Enable a spatial soil transition along +x "
+                        "(--terrain-start blends into --terrain-end).")
+    p.add_argument("--terrain-start", default=None, choices=["sand", "clay", "dirt"],
+                   help="Soil preset before the transition (defaults to --terrain).")
+    p.add_argument("--terrain-end", default=None, choices=["sand", "clay", "dirt"],
+                   help="Soil preset after the transition.")
+    p.add_argument("--transition-x", type=float, default=60.0,
+                   help="Center of the soil transition, in terrain x (m).")
+    p.add_argument("--transition-width", type=float, default=2.0,
+                   help="Full width of the linear soil blend (m); 0 = hard step.")
     p.add_argument("--path", default="lane_change",
                    choices=["lane_change", "double_lane_change", "right_left", "sinusoidal"])
     p.add_argument("--sine-amplitude", type=float, default=2.0)
@@ -353,6 +366,14 @@ Examples:
         "--irrlicht-window-size", str(args.irrlicht_window_size[0]),
         str(args.irrlicht_window_size[1]),
     ]
+    if args.terrain_transition:
+        sim_cmd.append("--terrain-transition")
+        if args.terrain_start:
+            sim_cmd.extend(["--terrain-start", args.terrain_start])
+        if args.terrain_end:
+            sim_cmd.extend(["--terrain-end", args.terrain_end])
+        sim_cmd.extend(["--transition-x", str(args.transition_x)])
+        sim_cmd.extend(["--transition-width", str(args.transition_width)])
     if args.no_rt:
         sim_cmd.append("--no-rt")
     if args.no_noise:

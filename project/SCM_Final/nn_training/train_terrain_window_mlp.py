@@ -57,8 +57,25 @@ FEATURE_NAMES = [
     "roll_rate_std",
 ]
 
+# Feature version "v2": identical channels, but the five vertical-dynamics
+# magnitudes are divided by mean speed so they encode a per-speed (roughly
+# speed-invariant) soil roughness/sinkage response instead of raw vibration
+# energy, which scales with speed. This targets the firm-soil-at-speed
+# aliasing seen in the spatial-transition open-loop sweep (into-sand reads
+# soft because the vehicle is fast). u_mean/u_std/u_max remain explicit
+# features, so absolute speed is still available to the network.
+_VDYN_KEYS = ("az_std", "az_p95", "pitch_rate_std", "pitch_rate_p95", "roll_rate_std")
+FEATURE_NAMES_V2 = [
+    (f + "_pv") if f in _VDYN_KEYS else f for f in FEATURE_NAMES
+]
 
-def compute_window_features(window: np.ndarray, throttle_window: np.ndarray) -> np.ndarray:
+
+def feature_names_for(version: str) -> list:
+    return list(FEATURE_NAMES_V2) if version == "v2" else list(FEATURE_NAMES)
+
+
+def compute_window_features(window: np.ndarray, throttle_window: np.ndarray,
+                            version: str = "v1") -> np.ndarray:
     """Extract feature vector from a window of vehicle dynamics samples.
 
     ``window`` columns (in order):
@@ -139,6 +156,17 @@ def compute_window_features(window: np.ndarray, throttle_window: np.ndarray) -> 
     pitch_std = float(np.std(omega_y))
     pitch_p95 = float(np.percentile(abs_om_y, 95))
     roll_std  = float(np.std(omega_x))
+
+    if version == "v2":
+        # Per-speed normalization: vibration/pitch/roll energy scales with
+        # speed, so divide by mean speed to recover a (roughly) speed-invariant
+        # soil signature. u_mean stays a feature for any residual correction.
+        u_norm = max(u_mean, 1.0)
+        az_std /= u_norm
+        az_p95 /= u_norm
+        pitch_std /= u_norm
+        pitch_p95 /= u_norm
+        roll_std /= u_norm
 
     return np.array([
         u_mean, u_std, u_max,
@@ -319,6 +347,7 @@ def build_windows(traces: List[Tuple[np.ndarray, np.ndarray, np.ndarray, float, 
                   *, win_seconds: float = 4.0,
                   stride_seconds: float = 0.4,
                   warmup_seconds: float = 1.5,
+                  feature_version: str = "v1",
                   ) -> Tuple[np.ndarray, np.ndarray, List[str], List[str]]:
     """Build (X, y, terrain_per_sample, source_csv_per_sample)."""
     X: List[np.ndarray] = []
@@ -343,7 +372,7 @@ def build_windows(traces: List[Tuple[np.ndarray, np.ndarray, np.ndarray, float, 
             if not np.all(np.isfinite(window)):
                 end += stride_n
                 continue
-            feat = compute_window_features(window, thr_w)
+            feat = compute_window_features(window, thr_w, version=feature_version)
             X.append(feat)
             y.append(n_true)
             terr.append(terrain)
@@ -438,8 +467,10 @@ def train(args):
         traces, win_seconds=args.win_seconds,
         stride_seconds=args.stride_seconds,
         warmup_seconds=args.warmup_seconds,
+        feature_version=args.feature_version,
     )
-    print(f"[train] {X.shape[0]} windows total, feature_dim={X.shape[1]}")
+    print(f"[train] {X.shape[0]} windows total, feature_dim={X.shape[1]} "
+          f"(feature_version={args.feature_version})")
 
     rng = np.random.default_rng(args.seed)
     perm = rng.permutation(X.shape[0])
@@ -542,9 +573,11 @@ def train(args):
 
     weights_path = out_dir / "weights.pt"
     torch.save(model.state_dict(), weights_path)
+    _feat_names = feature_names_for(args.feature_version)
     with open(out_dir / "scaler.pkl", "wb") as f:
         pickle.dump({"x_mean": x_mean, "x_std": x_std,
-                     "feature_names": FEATURE_NAMES,
+                     "feature_names": _feat_names,
+                     "feature_version": args.feature_version,
                      "win_seconds": args.win_seconds,
                      "hidden": args.hidden,
                      "y_mean": np.array([y_mean], dtype=np.float64),
@@ -553,7 +586,8 @@ def train(args):
         json.dump({
             "n_features": int(N_FEATURES),
             "output_names": ["n"],
-            "feature_names": FEATURE_NAMES,
+            "feature_names": _feat_names,
+            "feature_version": args.feature_version,
             "hidden": int(args.hidden),
             "win_seconds": float(args.win_seconds),
             "stride_seconds": float(args.stride_seconds),
@@ -567,6 +601,7 @@ def train(args):
             held_traces, win_seconds=args.win_seconds,
             stride_seconds=args.stride_seconds,
             warmup_seconds=args.warmup_seconds,
+            feature_version=args.feature_version,
         )
         Xhs = (Xh - x_mean) / x_std
         with torch.no_grad():
@@ -608,6 +643,9 @@ def main():
     p.add_argument("--epochs", type=int, default=120)
     p.add_argument("--batch", type=int, default=128)
     p.add_argument("--hidden", type=int, default=64)
+    p.add_argument("--feature-version", choices=["v1", "v2"], default="v1",
+                   help="v1: deployed feature set. v2: speed-normalized "
+                        "vertical-dynamics channels (firm-soil-at-speed fix).")
     p.add_argument("--lr", type=float, default=2e-3)
     p.add_argument("--val-frac", type=float, default=0.2)
     p.add_argument("--seed", type=int, default=0)

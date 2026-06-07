@@ -149,6 +149,10 @@ class LearnedTerrainEstimator:
 
         self._x_mean = np.asarray(sc["x_mean"], dtype=np.float64)
         self._x_std  = np.asarray(sc["x_std"],  dtype=np.float64)
+        # Feature set version: v1 (deployed default) or v2 (speed-normalized
+        # vertical-dynamics). Defaults to v1 for older checkpoints with no key.
+        self._feature_version = str(cfg.get("feature_version",
+                                            sc.get("feature_version", "v1")))
         self._win_seconds = float(cfg["win_seconds"])
         hidden = int(cfg.get("hidden", sc.get("hidden", 64)))
         output_names = list(cfg.get("output_names", ["n"]))
@@ -366,7 +370,7 @@ class LearnedTerrainEstimator:
             # feature extractor's new columns evaluate to 0.
             dyn = np.column_stack([arr[:, 1:11], np.zeros((arr.shape[0], 3))])
         thr = arr[:, 11]
-        feat = compute_window_features(dyn, thr)
+        feat = compute_window_features(dyn, thr, version=self._feature_version)
 
         x_s = (feat - self._x_mean) / self._x_std
         pred = self._nn_forward(x_s)
