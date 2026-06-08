@@ -570,7 +570,18 @@ def run_controller_node(args):
         # This follows Dallas et al. who initialize with a "wrong" but not
         # extreme initial guess.
         _te_default = terrain_preset_to_internal(get_terrain_preset("dirt"))
-        if getattr(args, "terrain_estimator_backend", "learned") == "nn_ukf":
+        if getattr(args, "terrain_estimator_backend", "learned") == "fused":
+            # Regime-aware fusion of the window-MLP and the NN-UKF.
+            from fused_terrain_estimator import FusedTerrainEstimator
+            _fy_dir = (str(Path(args.learned_terrain_model_dir).resolve())
+                       if args.learned_terrain_model_dir else None)
+            terrain_estimator = FusedTerrainEstimator(
+                initial_terrain=_te_default,
+                update_interval=args.te_update_interval,
+                verbose=bool(getattr(args, "te_verbose", False)),
+                fy_model_dir=_fy_dir, q_n=float(getattr(args, "nn_ukf_q_n", 0.01)))
+            _te_src_desc = "backend=fused [MLP+NN-UKF regime blend]"
+        elif getattr(args, "terrain_estimator_backend", "learned") == "nn_ukf":
             # Online Dallas-style state-augmented UKF (whole-vehicle Fy surrogate).
             from dallas_ukf_terrain_estimator import DallasUKFTerrainEstimator
             # For nn_ukf, --learned-terrain-model-dir (if given) selects the
@@ -1977,7 +1988,7 @@ def main():
     p.add_argument("--terrain-estimator-mode", choices=["n"], default="n",
                    help="Select live terrain-estimator output mode. The retained "
                         "paper/runtime estimator is n-only.")
-    p.add_argument("--terrain-estimator-backend", choices=["learned", "nn_ukf"],
+    p.add_argument("--terrain-estimator-backend", choices=["learned", "nn_ukf", "fused"],
                    default="learned",
                    help="Runtime terrain-estimator backend: 'learned' = deployed "
                         "sliding-window MLP; 'nn_ukf' = online Dallas-style "
