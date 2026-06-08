@@ -226,6 +226,11 @@ class Vehicle:
     # iterations used a 5500 kg HMMWV-class number which is 2× the real
     # Chrono HMMWV and pushed the NN ~2× out of distribution.
     m: float = 2370.0      # total mass, kg (Chrono HMMWV_Full)
+    # NB: param_consistency.HMMWV_VEHICLE_PARAMS["M"]=2573 (the value the MPC
+    # uses). This 2370 is intentionally kept here AND in vehicle_fy training
+    # (Fy_total = m*ay), so train/inference are self-consistent. For the
+    # n-estimate, m cancels (the UKF matches measured a_y to predicted
+    # Fy/m = predicted a_y), so the 2370-vs-2573 difference does NOT bias n.
     # Chrono HMMWV chassis Iz = 3570 kg·m²; adding 4×(70 kg)×(1.65 m)² ≈
     # 760 for the wheel mass gives total ≈ 4330. Lf / Lr taken from
     # Chrono spindle positions (axle 0 at x=+1.59, axle 1 at x=−1.71).

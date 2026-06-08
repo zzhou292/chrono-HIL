@@ -1872,6 +1872,14 @@ class AcadosMPC:
         if status == 4:
             self._prev_Z = None
             self._prev_U = None
+            # Make the silent hold-fallback visible: QP_FAILURE means the
+            # commanded (delta, Jx) below are stale/degraded. Rate-limit the
+            # warning so a bad patch of terrain doesn't flood stderr.
+            self._qp_fail_count = getattr(self, "_qp_fail_count", 0) + 1
+            if self._qp_fail_count <= 3 or self._qp_fail_count % 50 == 0:
+                import sys as _sys
+                print(f"  [MPC] WARNING: QP_FAILURE (status 4) — holding last command "
+                      f"(failure #{self._qp_fail_count})", file=_sys.stderr, flush=True)
         else:
             self._prev_Z = Z_opt.copy()
             self._prev_U = U_opt.copy()
