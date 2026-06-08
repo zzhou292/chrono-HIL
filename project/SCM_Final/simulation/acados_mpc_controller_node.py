@@ -570,32 +570,49 @@ def run_controller_node(args):
         # This follows Dallas et al. who initialize with a "wrong" but not
         # extreme initial guess.
         _te_default = terrain_preset_to_internal(get_terrain_preset("dirt"))
-        default_model_name = "terrain_window_mlp"
-        learned_dir = (Path(args.learned_terrain_model_dir).resolve()
-                       if args.learned_terrain_model_dir else
-                       Path(__file__).parent.parent / "nn_models" /
-                       default_model_name)
-        blend_cfg_path = learned_dir / "blend.json"
-        if blend_cfg_path.exists():
-            try:
-                with blend_cfg_path.open() as f:
-                    blend_cfg = json.load(f)
-            except Exception:
-                blend_cfg = {}
-            if blend_cfg.get("type") == "hybrid_joint":
-                learned_estimator_cls = HybridJointLearnedTerrainEstimator
-            else:
-                learned_estimator_cls = BlendedLearnedTerrainEstimator
+        if getattr(args, "terrain_estimator_backend", "learned") == "nn_ukf":
+            # Online Dallas-style state-augmented UKF (whole-vehicle Fy surrogate).
+            from dallas_ukf_terrain_estimator import DallasUKFTerrainEstimator
+            # For nn_ukf, --learned-terrain-model-dir (if given) selects the
+            # vehicle_fy surrogate dir (used for the data-scaling study).
+            _fy_dir = (str(Path(args.learned_terrain_model_dir).resolve())
+                       if args.learned_terrain_model_dir else None)
+            terrain_estimator = DallasUKFTerrainEstimator(
+                model_dir=_fy_dir,
+                initial_terrain=_te_default,
+                update_interval=args.te_update_interval,
+                verbose=bool(getattr(args, "te_verbose", False)),
+                q_n=float(getattr(args, "nn_ukf_q_n", 0.01)),
+            )
+            _te_src_desc = "backend=nn_ukf [online Dallas UKF]"
         else:
-            learned_estimator_cls = LearnedTerrainEstimator
-        terrain_estimator = learned_estimator_cls(
-            model_dir=str(learned_dir),
-            initial_terrain=_te_default,
-            update_interval=args.te_update_interval,
-            verbose=bool(getattr(args, "te_verbose", False)),
-            window_size=args.te_window,
-            min_excitation=args.te_min_excitation,
-        )
+            default_model_name = "terrain_window_mlp"
+            learned_dir = (Path(args.learned_terrain_model_dir).resolve()
+                           if args.learned_terrain_model_dir else
+                           Path(__file__).parent.parent / "nn_models" /
+                           default_model_name)
+            blend_cfg_path = learned_dir / "blend.json"
+            if blend_cfg_path.exists():
+                try:
+                    with blend_cfg_path.open() as f:
+                        blend_cfg = json.load(f)
+                except Exception:
+                    blend_cfg = {}
+                if blend_cfg.get("type") == "hybrid_joint":
+                    learned_estimator_cls = HybridJointLearnedTerrainEstimator
+                else:
+                    learned_estimator_cls = BlendedLearnedTerrainEstimator
+            else:
+                learned_estimator_cls = LearnedTerrainEstimator
+            terrain_estimator = learned_estimator_cls(
+                model_dir=str(learned_dir),
+                initial_terrain=_te_default,
+                update_interval=args.te_update_interval,
+                verbose=bool(getattr(args, "te_verbose", False)),
+                window_size=args.te_window,
+                min_excitation=args.te_min_excitation,
+            )
+            _te_src_desc = f"model={learned_dir.name}, window={args.te_window}"
         # Override MPC terrain params to the conservative default too,
         # so the MPC starts blind and adapts as the estimator learns.
         terrain_params_est = dict(_te_default)
@@ -606,8 +623,7 @@ def run_controller_node(args):
         print(
             f"  Terrain estimator: ON  (mode={args.terrain_estimator_mode}, "
             f"outputs={estimator_outputs}, init=dirt/n=0.7, "
-            f"window={args.te_window}, update_every={args.te_update_interval}, "
-            f"model={learned_dir.name})"
+            f"update_every={args.te_update_interval}, {_te_src_desc})"
         )
     elif args.terrain_estimator and args.model != "nn":
         print("  WARNING: --terrain-estimator requires --model nn (disabled)")
@@ -1961,6 +1977,13 @@ def main():
     p.add_argument("--terrain-estimator-mode", choices=["n"], default="n",
                    help="Select live terrain-estimator output mode. The retained "
                         "paper/runtime estimator is n-only.")
+    p.add_argument("--terrain-estimator-backend", choices=["learned", "nn_ukf"],
+                   default="learned",
+                   help="Runtime terrain-estimator backend: 'learned' = deployed "
+                        "sliding-window MLP; 'nn_ukf' = online Dallas-style "
+                        "state-augmented UKF with the whole-vehicle Fy surrogate.")
+    p.add_argument("--nn-ukf-q-n", type=float, default=0.01,
+                   help="Process-noise std on n for the nn_ukf backend (tracking speed).")
     p.add_argument("--te-window", type=int, default=50,
                    help="Terrain estimator sliding window size in 10 Hz-equivalent samples "
                         "(default 50 -> 5 s)")

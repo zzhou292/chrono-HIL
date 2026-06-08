@@ -1,0 +1,50 @@
+{
+  "input_names": [
+    "u",
+    "v",
+    "omega",
+    "delta",
+    "throttle",
+    "Kphi",
+    "Kc",
+    "n",
+    "c",
+    "phi_rad",
+    "k"
+  ],
+  "kappa_inputs": [
+    "kappa_f",
+    "kappa_r"
+  ],
+  "head_a_names": [
+    "Fx_f",
+    "Fy_f",
+    "Fx_r",
+    "Fy_r"
+  ],
+  "head_b_names": [
+    "Fy_total_inertial",
+    "Myaw_inertial"
+  ],
+  "trunk": [
+    128,
+    128
+  ],
+  "wheel_r": 0.4563,
+  "fx_smooth_win": 15,
+  "Lf": 1.59,
+  "Lr": 1.71,
+  "head_hidden": 64,
+  "decim": 2,
+  "best_val_loss": 0.18351563811302185,
+  "held_out_r2_control": {
+    "Fx_f": 0.9590082109911422,
+    "Fy_f": 0.9676281201933425,
+    "Fx_r": 0.8323918280298549,
+    "Fy_r": 0.853405283076941
+  },
+  "held_out_r2_estimation": {
+    "Fy_total_inertial": 0.8769563719821667,
+    "Myaw_inertial": 0.9255549232543991
+  }
+}

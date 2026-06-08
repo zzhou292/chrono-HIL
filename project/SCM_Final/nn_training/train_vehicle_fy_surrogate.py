@@ -64,7 +64,7 @@ INPUT_COLS = ("u", "v", "omega", "delta",
 OUTPUT_COLS = ("Fy_total", "M_yaw_total")
 
 
-def _aggregate(log_dir: Path, decim: int = 4
+def _aggregate(log_dir: Path, decim: int = 4, max_scenarios: int = 0
                ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Walk every SCM log + matching yaml, return (X, Y, scenario_id)."""
     veh = Vehicle()
@@ -72,6 +72,8 @@ def _aggregate(log_dir: Path, decim: int = 4
     Y: List[np.ndarray] = []
     sid: List[int] = []
     yaml_files = sorted(log_dir.glob("scn_*.yaml"))
+    if max_scenarios and max_scenarios > 0:
+        yaml_files = yaml_files[:max_scenarios]   # data-scaling ablation
     print(f"Reading {len(yaml_files)} scenario configs from {log_dir}")
     for yp in yaml_files:
         idx = int(yp.stem.split("_")[1])
@@ -133,6 +135,10 @@ def main() -> int:
     import argparse
     p = argparse.ArgumentParser(__doc__)
     p.add_argument("--lhs-dir", default="data/dallas_scm/lhs_train300")
+    p.add_argument("--max-scenarios", type=int, default=0,
+                   help="Limit scenarios loaded (0=all) for data-scaling studies.")
+    p.add_argument("--out-dir", default="nn_models/vehicle_fy_64_32",
+                   help="Output model directory (default overwrites the deployed model).")
     p.add_argument("--decim", type=int, default=4,
                    help="Decimation stride within each scenario "
                         "(default 4 -> 25 Hz from 24-ms logs).")
@@ -146,12 +152,14 @@ def main() -> int:
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
 
-    out_dir = ROOT / "nn_models" / "vehicle_fy_64_32"
+    out_dir = (Path(args.out_dir) if Path(args.out_dir).is_absolute()
+               else ROOT / args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     fig_path = (ROOT / "my_paper" / "paper_figures"
                 / "vehicle_fy_surrogate_training.png")
 
-    X_all, Y_all, sid_all = _aggregate(ROOT / args.lhs_dir, decim=args.decim)
+    X_all, Y_all, sid_all = _aggregate(ROOT / args.lhs_dir, decim=args.decim,
+                                       max_scenarios=args.max_scenarios)
     print(f"Aggregated training rows: {len(X_all)} from "
           f"{len(np.unique(sid_all))} scenarios")
 

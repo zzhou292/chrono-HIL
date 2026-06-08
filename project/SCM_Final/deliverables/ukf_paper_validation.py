@@ -1145,6 +1145,59 @@ def _vehicle_fy_total(z_aug: np.ndarray, delta: float,
     return float(out[0]), float(out[1])
 
 
+_VEH_2H_DIR = Path(__file__).resolve().parents[1] / "nn_models" / "vehicle_twohead_128"
+_VEH_2H_CACHE: dict = {}
+
+
+def _load_vehicle_twohead_model():
+    """Load the unified two-head whole-vehicle surrogate (control head +
+    estimation head). The UKF uses estimation head B = (Fy_total, M_yaw)."""
+    if "loaded" in _VEH_2H_CACHE:
+        return _VEH_2H_CACHE.get("net"), _VEH_2H_CACHE.get("scaler"), _VEH_2H_CACHE.get("cfg")
+    _VEH_2H_CACHE["loaded"] = True
+    if not (_VEH_2H_DIR / "weights.pt").exists():
+        return None, None, None
+    import pickle
+    import json as _json
+    import sys as _sys
+    import torch
+    nn_dir = str(Path(__file__).resolve().parents[1] / "nn_training")
+    if nn_dir not in _sys.path:
+        _sys.path.insert(0, nn_dir)
+    from train_vehicle_twohead import TwoHeadSurrogate, INPUT_NAMES
+    with open(_VEH_2H_DIR / "scaler.pkl", "rb") as f:
+        sc = pickle.load(f)
+    cfg = _json.loads((_VEH_2H_DIR / "config.json").read_text())
+    net = TwoHeadSurrogate(len(INPUT_NAMES),
+                           trunk=tuple(cfg.get("trunk", [128, 128])),
+                           head_hidden=int(cfg.get("head_hidden", 64)))
+    net.load_state_dict(torch.load(_VEH_2H_DIR / "weights.pt", map_location="cpu"))
+    net.eval()
+    _VEH_2H_CACHE.update(net=net, scaler=sc, cfg=cfg)
+    return net, sc, cfg
+
+
+def _vehicle_twohead_total(z_aug: np.ndarray, delta: float, throttle: float,
+                           soil: SoilParams) -> Tuple[float, float]:
+    """Estimation head (Fy_total=m*ay, M_yaw=Iz*dwz) from the unified two-head
+    surrogate. Input order matches train_vehicle_twohead.INPUT_NAMES:
+    [u, v, omega, delta, throttle, Kphi, Kc, n, c, phi_rad, k]."""
+    net, sc, _ = _load_vehicle_twohead_model()
+    if net is None:
+        raise RuntimeError("vehicle_twohead_128 model not found on disk")
+    import torch
+    _, _, _, u, v, omega, n_val = z_aug
+    n_val = float(np.clip(n_val, 0.2, 1.4))
+    feats = np.array([float(u), float(v), float(omega), float(delta), float(throttle),
+                       float(soil.kphi), float(soil.kc), n_val, float(soil.c),
+                       float(soil.phi), float(soil.kx)], dtype=np.float64)
+    z = (feats - np.asarray(sc["x_mean"])) / np.asarray(sc["x_std"])
+    with torch.no_grad():
+        pb = net.forward_head_b(torch.tensor(z, dtype=torch.float32).unsqueeze(0))
+    out = pb.numpy().reshape(-1) * np.asarray(sc["yb_std"]) + np.asarray(sc["yb_mean"])
+    return float(out[0]), float(out[1])
+
+
 def _nn_per_wheel(model, Fz_wheel: float, vl: float, vc: float,
                   soil: SoilParams) -> Tuple[float, float]:
     """Per-wheel NN tire force query (raw rig surrogate output).
@@ -1287,6 +1340,38 @@ def _bicycle_step_vehicle_fy(z_aug: np.ndarray, delta: float, ax_in: float,
     omegadot = M_yaw / veh.Iz
     out = z_aug + dt * np.array(
         [xdot, ydot, psidot, udot, vdot, omegadot, 0.0], dtype=float)
+    out[2] = float((out[2] + math.pi) % (2.0 * math.pi) - math.pi)
+    out[6] = float(np.clip(out[6], 0.2, 1.4))
+    return out
+
+
+def _bicycle_step_vehicle_twohead(z_aug: np.ndarray, delta: float, ax_in: float,
+                                   dt: float, soil_template: SoilParams,
+                                   veh: Vehicle = Vehicle(),
+                                   ay_in: float = None,  # noqa - API-compat
+                                   throttle: float = 0.0,
+                                   soil_from_n=None,
+                                   ) -> np.ndarray:
+    """Bicycle prediction step using the unified two-head surrogate's
+    estimation head (Fy_total, M_yaw). Mirrors _bicycle_step_vehicle_fy."""
+    x, y, psi, u, v, omega, n_val = z_aug
+    n_val = float(np.clip(n_val, 0.2, 1.4))
+    if soil_from_n is not None:
+        soil = soil_from_n(n_val)
+    else:
+        soil = SoilParams(kc=soil_template.kc, kphi=soil_template.kphi,
+                          n=n_val, c=soil_template.c, phi=soil_template.phi,
+                          kx=soil_template.kx, ky=soil_template.ky)
+    Fy_total, M_yaw = _vehicle_twohead_total(z_aug, delta, throttle, soil)
+    cospsi, sinpsi = math.cos(psi), math.sin(psi)
+    out = z_aug + dt * np.array([
+        u * cospsi - v * sinpsi,
+        u * sinpsi + v * cospsi,
+        omega,
+        ax_in,
+        Fy_total / veh.m - u * omega,
+        M_yaw / veh.Iz,
+        0.0], dtype=float)
     out[2] = float((out[2] + math.pi) % (2.0 * math.pi) - math.pi)
     out[6] = float(np.clip(out[6], 0.2, 1.4))
     return out
@@ -1508,6 +1593,8 @@ def run_dallas_from_log(log_path: Path, sc: DallasScenario,
     v_log     = data["v"][mask]
     om_log    = data["omega"][mask]
     delta_log = data["delta_meas"][mask]
+    throttle_log = (data["throttle_cmd"][mask] if "throttle_cmd" in data.files
+                    else np.zeros(int(mask.sum())))
     # The 4-wheel SCM-replay bicycle (``_bicycle_step_4wheel``) is
     # paper118-style: udot = ax_log. ax_log is the measured Chrono
     # body-frame longitudinal acceleration; the lateral channel
@@ -1562,6 +1649,7 @@ def run_dallas_from_log(log_path: Path, sc: DallasScenario,
         delta = float(delta_log[k - step])
         ax_in = float(ax_log[k - step])
         ay_in = float(ay_log[k - step])
+        throttle = float(throttle_log[k - step])
         Fy_meas_norm = Fy_total_log[k] / veh.m
         y_noisy = np.array([
             x_log[k]   + rng.normal(0.0, sig[0]),
@@ -1609,6 +1697,10 @@ def run_dallas_from_log(log_path: Path, sc: DallasScenario,
                 return _bicycle_step_vehicle_fy(
                     z, delta, ax_in, dt_step, soil_template, veh,
                     ay_in=ay_in, soil_from_n=soil_from_n)
+            elif backend == "vehicle_twohead":
+                return _bicycle_step_vehicle_twohead(
+                    z, delta, ax_in, dt_step, soil_template, veh,
+                    ay_in=ay_in, throttle=throttle, soil_from_n=soil_from_n)
             else:
                 return _bicycle_step_4wheel(
                     z, delta, ax_in, dt_step, soil_template, veh,
@@ -1627,6 +1719,14 @@ def run_dallas_from_log(log_path: Path, sc: DallasScenario,
                 return out
             elif backend == "vehicle_fy":
                 Fy_total, _ = _vehicle_fy_total(z, delta, soil_template)
+                out = np.empty(7, dtype=float)
+                out[:6] = z[:6]
+                out[6] = Fy_total / veh.m
+                return out
+            elif backend == "vehicle_twohead":
+                _soil = (soil_from_n(float(np.clip(z[6], 0.2, 1.4)))
+                         if soil_from_n is not None else soil_template)
+                Fy_total, _ = _vehicle_twohead_total(z, delta, throttle, _soil)
                 out = np.empty(7, dtype=float)
                 out[:6] = z[:6]
                 out[6] = Fy_total / veh.m

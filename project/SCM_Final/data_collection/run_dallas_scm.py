@@ -178,6 +178,12 @@ def main():
             "roll", "pitch",
             "roll_rate", "pitch_rate",
             "Fy_tire_total",
+            # Per-axle body-frame tyre forces + vehicle-total longitudinal
+            # force and yaw moment, for the unified two-head whole-vehicle
+            # surrogate (control head: per-axle Fx/Fy; estimation head:
+            # Fy_total / M_yaw_total).
+            "Fx_axle_f", "Fy_axle_f", "Fx_axle_r", "Fy_axle_r",
+            "Fx_tire_total", "Myaw_tire_total",
             "w_fl", "w_fr", "w_rl", "w_rr",
             "delta_meas", "throttle_cmd", "steer_cmd"]}
 
@@ -243,8 +249,13 @@ def main():
             # returns the tyre force at the contact patch in the
             # tire's reference frame. Rotate to chassis body frame
             # and accumulate.
-            Fy_tire = 0.0
-            for ax_obj in veh_obj.GetAxles():
+            # Per-axle body-frame tyre forces + yaw moment about the CG.
+            # GetAxles() is ordered [front, rear] for the HMMWV.
+            Fx_axle = [0.0, 0.0]
+            Fy_axle = [0.0, 0.0]
+            Myaw_tire = 0.0
+            for ai, ax_obj in enumerate(veh_obj.GetAxles()):
+                idx = 0 if ai == 0 else 1
                 for w in ax_obj.GetWheels():
                     tire = w.GetTire()
                     if tire is None:
@@ -253,7 +264,19 @@ def main():
                     # tf.force is in WORLD frame for RIGID tires in
                     # current Chrono — rotate to chassis body.
                     F_body = rot.RotateBack(tf.force)
-                    Fy_tire += F_body.y
+                    Fx_axle[idx] += F_body.x
+                    Fy_axle[idx] += F_body.y
+                    # Yaw moment about CG: (r x F).z with the contact point
+                    # relative to the chassis CG, plus the tyre's own
+                    # aligning moment if reported. r and F both body-frame.
+                    r_body = rot.RotateBack(tf.point - pos)
+                    Myaw_tire += r_body.x * F_body.y - r_body.y * F_body.x
+                    try:
+                        Myaw_tire += rot.RotateBack(tf.moment).z
+                    except Exception:
+                        pass
+            Fy_tire = Fy_axle[0] + Fy_axle[1]
+            Fx_tire = Fx_axle[0] + Fx_axle[1]
 
             log["t"][log_idx]            = t
             log["x"][log_idx]            = pos.x
@@ -270,6 +293,12 @@ def main():
             log["roll_rate"][log_idx]    = roll_rate
             log["pitch_rate"][log_idx]   = pitch_rate
             log["Fy_tire_total"][log_idx] = Fy_tire
+            log["Fx_axle_f"][log_idx]    = Fx_axle[0]
+            log["Fy_axle_f"][log_idx]    = Fy_axle[0]
+            log["Fx_axle_r"][log_idx]    = Fx_axle[1]
+            log["Fy_axle_r"][log_idx]    = Fy_axle[1]
+            log["Fx_tire_total"][log_idx] = Fx_tire
+            log["Myaw_tire_total"][log_idx] = Myaw_tire
             log["w_fl"][log_idx]         = w_fl
             log["w_fr"][log_idx]         = w_fr
             log["w_rl"][log_idx]         = w_rl
