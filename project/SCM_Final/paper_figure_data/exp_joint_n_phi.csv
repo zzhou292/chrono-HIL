@@ -1,0 +1,5 @@
+model,split,target,rmse,bias,n_windows
+n_only,val,n,0.04635,-0.00288,7220
+phi_only,val,phi,1.11169,+0.04438,7220
+joint,val,n,0.04716,-0.00155,7220
+joint,val,phi,1.09242,+0.02852,7220

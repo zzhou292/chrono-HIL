@@ -1,0 +1,4 @@
+variant,n,rms_mean,rms_std,speed_mean,speed_std
+gp_loaded,23,0.0923,0.0332,0.6489,0.1787
+gp_off,24,0.0926,0.0369,0.6378,0.1808
+gp_warmup,24,0.0908,0.035,0.6376,0.1809
