@@ -66,3 +66,56 @@ Repro: `benchmarking/closed_loop_estimator_compare_fused.py` (backends).
 The probe-amplitude sweep that confirmed active probing does NOT rescue
 closed-loop sand was archived (negative result) to
 `archive/2026-06-08_innovation_a_active_probing/nnukf_probe_sweep.py`.
+
+## Stage F: root cause of the firm-sand failure, and the fix
+
+### Why both UKFs fail firm sand (quantified observability hole)
+Both the NN-UKF and the analytical Bekker-UKF fail canonical firm sand
+identically (|Δn|≈0.44) in closed loop, and the failure is in the shared
+*observable*, not the force model. The n-channel is identified only through
+`ay = ΣF_y/m`. Probing the surrogate `F_y(n)` at representative operating
+points:
+
+| operating point | ΔF_y as n:0.7→1.1 | meas noise (~770 N) |
+|---|---|---|
+| closed-loop sand (small slip) | **132 N** | far below → n unobservable |
+| offline sand (large slip 0.6 rad) | 743 N | ~at noise → marginally observable |
+
+`dF_y/dn` is ~16× larger at the offline 0.6-rad-steer point (3618 vs 231 N).
+A path-tracking NMPC keeps slip small, so on firm sand the lateral channel
+carries no n-information and the filter drifts on noise — it actually drives n
+the *wrong way* (0.70→0.52→0.68, never toward 1.10), aliasing small firm-soil
+lateral force to soft soil. The deployed window-MLP nails sand (n̂≈1.13)
+because it reads vertical/vibration features (az std, pitch-rate, sinkage
+signatures) that *do* distinguish firm from soft soil. This is exactly why the
+offline UKF (strong scripted steer) reproduced the paper but the closed-loop
+one does not — an excitation/observability gap, not a bug.
+
+### The fix: proprioceptive pseudo-measurement (`nn_ukf_aug`)
+`DallasUKFTerrainEstimator(mlp_meas=True)` co-runs the window-MLP and folds its
+n in as an 8th UKF measurement (`h(z)[7]=n`, σ≈0.12). The UKF then weights the
+force-channel-n against the proprioceptive-n by covariance; on firm sand the
+force gain collapses and the MLP channel carries n.
+
+| estimator | canonical ALL | canonical sand | LHS-100 median %err |
+|---|---|---|---|
+| MLP | 0.064 | 0.037 | 20.5% |
+| NN-UKF (plain) | 0.169 | 0.443 (fails) | 17.5% |
+| **nn_ukf_aug** | 0.046 | **0.025** (fixed) | 19.3% |
+| Fused (external, gated) | 0.046 | 0.038 | **16.2%** |
+
+`nn_ukf_aug` closes the sand hole (0.44→0.025, even beats the MLP) and ties the
+external fusion on canonical, as a single principled filter. On the broad LHS
+it is slightly worse (19.3% vs 16.2%) because it folds the MLP at *constant*
+weight everywhere and pays its off-manifold noise on soils where the force
+channel is already informative; the external Fused avoids this by *gating*
+(MLP only on firm soil). 
+
+### Decision
+Deploy the **external gated Fusion** (best LHS, ties canonical); present
+`nn_ukf_aug` in §VI as the principled diagnosis + fix proving the UKF firm-sand
+failure is an observability hole closable with a proprioceptive measurement.
+Future work: make the proprioceptive weight regime-adaptive (trust it only when
+the force-channel innovation is flat) to get single-filter elegance + gated-LHS
+accuracy. Repro: `--terrain-estimator-backend nn_ukf_aug`; observability probe
++ canonical/LHS sweeps in this session's scratch (`/tmp/aug_*`).
