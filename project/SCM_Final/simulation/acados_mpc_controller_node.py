@@ -1998,10 +1998,12 @@ def main():
                    help="Select live terrain-estimator output mode. The retained "
                         "paper/runtime estimator is n-only.")
     p.add_argument("--terrain-estimator-backend", choices=["learned", "nn_ukf", "fused", "bekker_ukf"],
-                   default="learned",
-                   help="Runtime terrain-estimator backend: 'learned' = deployed "
-                        "sliding-window MLP; 'nn_ukf' = online Dallas-style "
-                        "state-augmented UKF with the whole-vehicle Fy surrogate.")
+                   default="fused",
+                   help="Runtime terrain-estimator backend (default 'fused' = the "
+                        "deployed regime-aware blend of the window-MLP and the "
+                        "online NN-UKF). 'learned' = window-MLP only; 'nn_ukf' / "
+                        "'bekker_ukf' = the online state-augmented UKF with the "
+                        "whole-vehicle Fy surrogate / analytical Bekker tyre.")
     p.add_argument("--nn-ukf-q-n", type=float, default=0.01,
                    help="Process-noise std on n for the nn_ukf backend (tracking speed).")
     p.add_argument("--te-window", type=int, default=50,

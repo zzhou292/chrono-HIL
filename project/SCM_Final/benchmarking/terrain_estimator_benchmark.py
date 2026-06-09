@@ -88,11 +88,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sine-wavelength", type=float, default=30.0)
     p.add_argument("--estimator-mode", choices=["n"], default="n",
                    help="Live estimator mode. The retained paper path is n-only.")
-    p.add_argument("--estimator-backend", choices=["learned"], default="learned",
-                   help="Runtime terrain-estimator backend. Only the deployed "
-                        "sliding-window MLP ('learned') is wired into the live "
-                        "stack; the Dallas-style UKF is offline-only "
-                        "(deliverables/ukf_paper_validation.py) and PIL is archived.")
+    p.add_argument("--estimator-backend",
+                   choices=["learned", "nn_ukf", "bekker_ukf", "fused"], default="fused",
+                   help="Runtime terrain-estimator backend (default 'fused' = the "
+                        "deployed regime-aware blend of the window-MLP and the online "
+                        "NN-UKF). 'learned' = window-MLP only; 'nn_ukf'/'bekker_ukf' = "
+                        "the online state-augmented UKF (Fy surrogate / analytical Bekker).")
     p.add_argument("--learned-terrain-model-dir", default=None,
                    help="Optional terrain estimator checkpoint directory to "
                         "forward to the controller. Useful for evaluating "
