@@ -6,9 +6,11 @@ it live (selectable via ``--terrain-estimator-backend nn_ukf``). This is what
 makes the NN-UKF closed-loop-testable instead of offline-replay-only.
 
 State z = [x, y, psi, u, v, omega, n]; measurement y = [x, y, psi, u, v, omega,
-ay] (ay = Fy_total/m). One predict+update UKF step is run per estimate() call
-(i.e. at the controller's te_update_interval cadence), reconstructing the
-steering angle from the slip angle + state. Soil is mapped from the estimated n
+ay] (ay = Fy_total/m). One predict+update UKF step is run per observe() call
+(i.e. every control tick), reconstructing the steering angle from the slip
+angle + state; estimate() simply returns the current smoothed n to the MPC at
+its throttled pull cadence. Stepping the UKF per tick (not per MPC pull) is
+required to identify n on firm soil. Soil is mapped from the estimated n
 along the canonical clay->dirt->sand manifold (matching the deployed estimator
 and giving the Fy surrogate a self-consistent soil vector).
 """
@@ -146,7 +148,7 @@ class DallasUKFTerrainEstimator:
             return 0.0
         return (self._omega_hist[-1] - self._omega_hist[0]) / dt
 
-    # ---- interface: observe (store latest live signals) ----
+    # ---- interface: observe (store live signals AND step the UKF) ----
     def observe(self, kappa: float, alpha_f: float, alpha_r: float, u: float,
                 Fz_f: float, Fz_r: float, sr: float, ay_imu: float,
                 omega_dot: float, *, omega: float = 0.0, v_lateral: float = 0.0,
@@ -166,23 +168,27 @@ class DallasUKFTerrainEstimator:
             self._last_t = self._latest["t"]
             self._initialized = True
         self._obs_count += 1
+        # Step the UKF on EVERY observation (~per control tick). The state-
+        # augmented UKF needs fine-grained measurement updates to identify n on
+        # firm soil; stepping it only at the MPC pull cadence (e.g. every 8th
+        # tick, ~96 ms) integrates the nonlinear bicycle over too long a horizon
+        # and the weak firm-soil n-channel never converges (sand |dn| 0.49 vs
+        # 0.12 at per-tick stepping). The numpy force forward is cheap enough to
+        # run every tick. The MPC still pulls params only at should_update().
+        self._ukf_step()
         return True
 
-    def should_update(self) -> bool:
-        return self._obs_count >= self._update_interval
-
-    # ---- interface: estimate (run ONE UKF step at the update cadence) ----
-    def estimate(self) -> Tuple[Dict[str, float], float]:
-        self._obs_count = 0
+    def _ukf_step(self) -> None:
+        """Run one UKF predict+update using the latest observation and the real
+        per-tick dt. Updates the smoothed n estimate in place."""
         m = self._latest
         if m is None:
-            return dict(self._estimated_params), self._confidence
+            return
         dt = m["t"] - (self._last_t if self._last_t is not None else m["t"])
         self._last_t = m["t"]
         if dt <= 1e-4 or m["u"] < 0.8:
             # not enough motion / time advanced; hold estimate
-            return self._sync_outputs()
-
+            return
         delta, ax_in = m["delta"], m["ax"]
 
         def f_dyn(z):
@@ -201,10 +207,19 @@ class DallasUKFTerrainEstimator:
         except Exception as exc:  # pragma: no cover - defensive
             if self._verbose:
                 print(f"  [nn_ukf] step failed: {exc!r}")
-            return self._sync_outputs()
+            return
         n_raw = float(np.clip(self._ukf.z[6], self._n_lo, self._n_hi))
         self._ukf.z[6] = n_raw
         self._n_smooth += self._alpha_smooth * (n_raw - self._n_smooth)
+
+    def should_update(self) -> bool:
+        return self._obs_count >= self._update_interval
+
+    # ---- interface: estimate (return current smoothed output to the MPC) ----
+    def estimate(self) -> Tuple[Dict[str, float], float]:
+        # The UKF already steps every observe(); here we just hand the MPC the
+        # current smoothed estimate at its (throttled) pull cadence.
+        self._obs_count = 0
         return self._sync_outputs()
 
     def _sync_outputs(self) -> Tuple[Dict[str, float], float]:
