@@ -1,15 +1,20 @@
 """Regime-aware fusion of the window-MLP and the NN-UKF terrain estimators.
 
 Closed-loop evaluation showed the two learned estimators are *complementary*:
-the NN-UKF is excellent on soft soil (clay |Δn|≈0.013) but fails on firm sand
-(≈0.47), while the deployed window-MLP is balanced and strong on firm soil
-(sand ≈0.04). This estimator runs BOTH live and blends their n by soil regime:
-trust the NN-UKF where it excels (soft soil / low n) and the MLP on firm soil.
-The MLP estimate (reliable across the whole range) is used as the regime
-selector, so the blend doesn't depend on the NN-UKF's unreliable firm-soil read.
+with the per-tick UKF fix the NN-UKF wins clay (|Δn|≈0.039) AND dirt (≈0.050)
+but still fails firm sand (≈0.42, an observability limit), while the deployed
+window-MLP is balanced and strong on firm soil (sand ≈0.04). This estimator
+runs BOTH live and blends their n by soil regime: trust the NN-UKF where it
+excels (soft/mid soil) and the MLP on firm soil. The MLP estimate (reliable
+across the whole range) is used as the regime selector, so the blend doesn't
+depend on the NN-UKF's unreliable firm-soil read.
 
     w_ukf(n_mlp) = sigmoid((n0 - n_mlp) / k)        # ->1 soft, ->0 firm
     n_fused      = w_ukf * n_ukf + (1 - w_ukf) * n_mlp
+
+n0=0.85, k=0.06: w_ukf ≈ 1 at clay/dirt (n≲0.7), ≈ 0 approaching sand (n≳1.0).
+(The previous n0=0.65 was tuned against the broken NN-UKF, before the per-tick
+fix moved the NN-UKF/MLP crossover firmer; see NNUKF_CLOSED_LOOP_FINDINGS.md.)
 
 Runtime-interface compatible with LearnedTerrainEstimator (so it is selectable
 as --terrain-estimator-backend fused).
@@ -34,7 +39,7 @@ class FusedTerrainEstimator:
     def __init__(self, model_dir: Optional[str] = None,
                  initial_terrain: Optional[Dict[str, float]] = None,
                  *, update_interval: int = 10, verbose: bool = False,
-                 fuse_n0: float = 0.65, fuse_k: float = 0.08,
+                 fuse_n0: float = 0.85, fuse_k: float = 0.06,
                  mlp_model_dir: Optional[str] = None,
                  fy_model_dir: Optional[str] = None,
                  window_size: int = 50, min_excitation: float = 0.0,

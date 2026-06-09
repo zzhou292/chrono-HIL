@@ -50,12 +50,19 @@ Same fixed estimator + Fy surrogate, three feeds:
   **fused** estimator (`fused_terrain_estimator.py`) uses the NN-UKF on soft
   soil and the MLP on firm, and beats both overall closed-loop.
 
-## Closed-loop comparison (post-fix, 3 terrains × 2 speeds × 3 seeds)
+## Closed-loop comparison (post-fix, re-tuned fusion, 3 terrains × 2 speeds × 3 seeds)
 | backend | clay | dirt | sand | ALL |
 |---|---|---|---|---|
-| MLP (deployed) | 0.066 | 0.075 | 0.040 | 0.060 |
-| NN-UKF (per-tick fix) | 0.039 | 0.050 | 0.416 | 0.169 |
-| Fused (regime) | 0.053 | 0.043 | 0.037 | **0.044** |
+| MLP (deployed) | 0.071 | 0.075 | 0.042 | 0.063 |
+| NN-UKF (per-tick fix) | 0.044 | 0.057 | 0.429 | 0.177 |
+| Fused (regime, n0=0.85) | 0.044 | 0.044 | 0.037 | **0.042** |
 
-Repro: `benchmarking/closed_loop_estimator_compare_fused.py` (backends),
-`benchmarking/nnukf_probe_sweep.py` (probe-amplitude sweep).
+The per-tick fix moved the NN-UKF/MLP crossover firmer (the NN-UKF now wins
+clay AND dirt), so the fusion blend center was re-tuned 0.65 → 0.85; the fused
+estimator is now best on every terrain class and 33 % better than the deployed
+MLP overall.
+
+Repro: `benchmarking/closed_loop_estimator_compare_fused.py` (backends).
+The probe-amplitude sweep that confirmed active probing does NOT rescue
+closed-loop sand was archived (negative result) to
+`archive/2026-06-08_innovation_a_active_probing/nnukf_probe_sweep.py`.
