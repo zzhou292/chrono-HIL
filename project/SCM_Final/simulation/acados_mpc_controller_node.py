@@ -570,7 +570,16 @@ def run_controller_node(args):
         # This follows Dallas et al. who initialize with a "wrong" but not
         # extreme initial guess.
         _te_default = terrain_preset_to_internal(get_terrain_preset("dirt"))
-        if getattr(args, "terrain_estimator_backend", "learned") == "fused":
+        if getattr(args, "terrain_estimator_backend", "learned") == "bekker_ukf":
+            # Online state-augmented UKF with the analytical Bekker 4-wheel tyre.
+            from bekker_ukf_terrain_estimator import BekkerUKFTerrainEstimator
+            terrain_estimator = BekkerUKFTerrainEstimator(
+                initial_terrain=_te_default,
+                update_interval=args.te_update_interval,
+                verbose=bool(getattr(args, "te_verbose", False)),
+                q_n=float(getattr(args, "nn_ukf_q_n", 0.01)))
+            _te_src_desc = "backend=bekker_ukf [online analytical-Bekker UKF]"
+        elif getattr(args, "terrain_estimator_backend", "learned") == "fused":
             # Regime-aware fusion of the window-MLP and the NN-UKF.
             from fused_terrain_estimator import FusedTerrainEstimator
             _fy_dir = (str(Path(args.learned_terrain_model_dir).resolve())
@@ -1988,7 +1997,7 @@ def main():
     p.add_argument("--terrain-estimator-mode", choices=["n"], default="n",
                    help="Select live terrain-estimator output mode. The retained "
                         "paper/runtime estimator is n-only.")
-    p.add_argument("--terrain-estimator-backend", choices=["learned", "nn_ukf", "fused"],
+    p.add_argument("--terrain-estimator-backend", choices=["learned", "nn_ukf", "fused", "bekker_ukf"],
                    default="learned",
                    help="Runtime terrain-estimator backend: 'learned' = deployed "
                         "sliding-window MLP; 'nn_ukf' = online Dallas-style "
