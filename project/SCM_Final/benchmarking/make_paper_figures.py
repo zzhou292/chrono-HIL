@@ -74,6 +74,8 @@ STEPS = [
                                   "--replot-only", "--out-name", "lhs100_fair"]),
     ("terrain_estimator_comparison (Fig 10, UKF replay)",
                                  [PY, "-u", str(HERE / "eval_terrain_estimators.py")]),
+    ("closed_loop_estimator_backends (cl reality check, re-plot)",
+                                 [PY, "-u", str(HERE / "plot_cl_estimator_backends.py")]),
     ("cw_brake_validation (Fig 19)",
                                  [PY, "-u", str(HERE / "make_fig_cw_brake_validation.py")]),
     ("cw_timeline + cw_lead_vs_terrain (Fig 20/21)",
