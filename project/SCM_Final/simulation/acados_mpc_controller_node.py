@@ -590,9 +590,13 @@ def run_controller_node(args):
                 verbose=bool(getattr(args, "te_verbose", False)),
                 fy_model_dir=_fy_dir, q_n=float(getattr(args, "nn_ukf_q_n", 0.01)))
             _te_src_desc = "backend=fused [MLP+NN-UKF regime blend]"
-        elif getattr(args, "terrain_estimator_backend", "learned") == "nn_ukf":
+        elif getattr(args, "terrain_estimator_backend", "learned") in ("nn_ukf", "nn_ukf_aug"):
             # Online Dallas-style state-augmented UKF (whole-vehicle Fy surrogate).
+            # nn_ukf_aug additionally fuses the window-MLP's n as a proprioceptive
+            # (vertical-dynamics) pseudo-measurement, so n stays observable on
+            # firm soil where the lateral-force channel goes flat.
             from dallas_ukf_terrain_estimator import DallasUKFTerrainEstimator
+            _aug = getattr(args, "terrain_estimator_backend", "") == "nn_ukf_aug"
             # For nn_ukf, --learned-terrain-model-dir (if given) selects the
             # vehicle_fy surrogate dir (used for the data-scaling study).
             _fy_dir = (str(Path(args.learned_terrain_model_dir).resolve())
@@ -603,8 +607,9 @@ def run_controller_node(args):
                 update_interval=args.te_update_interval,
                 verbose=bool(getattr(args, "te_verbose", False)),
                 q_n=float(getattr(args, "nn_ukf_q_n", 0.01)),
+                mlp_meas=_aug,
             )
-            _te_src_desc = "backend=nn_ukf [online Dallas UKF]"
+            _te_src_desc = f"backend={'nn_ukf_aug [UKF+MLP proprioceptive meas]' if _aug else 'nn_ukf [online Dallas UKF]'}"
         else:
             default_model_name = "terrain_window_mlp"
             learned_dir = (Path(args.learned_terrain_model_dir).resolve()
@@ -1997,7 +2002,7 @@ def main():
     p.add_argument("--terrain-estimator-mode", choices=["n"], default="n",
                    help="Select live terrain-estimator output mode. The retained "
                         "paper/runtime estimator is n-only.")
-    p.add_argument("--terrain-estimator-backend", choices=["learned", "nn_ukf", "fused", "bekker_ukf"],
+    p.add_argument("--terrain-estimator-backend", choices=["learned", "nn_ukf", "fused", "bekker_ukf", "nn_ukf_aug"],
                    default="fused",
                    help="Runtime terrain-estimator backend (default 'fused' = the "
                         "deployed regime-aware blend of the window-MLP and the "

@@ -40,6 +40,8 @@ class DallasUKFTerrainEstimator:
                  initial_terrain: Optional[Dict[str, float]] = None,
                  *, update_interval: int = 10, verbose: bool = False,
                  q_n: float = 0.01, smoothing_alpha: float = 0.1,
+                 mlp_meas: bool = False, mlp_meas_sigma: float = 0.12,
+                 mlp_model_dir: Optional[str] = None,
                  # API-compat (ignored)
                  window_size: int = 50, min_excitation: float = 0.0,
                  **_ignored):
@@ -86,7 +88,24 @@ class DallasUKFTerrainEstimator:
         z0 = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, n0])
         P0 = np.diag([0.5**2, 0.5**2, 0.01**2, 0.3**2, 0.3**2, 0.01**2, 0.12**2])
         Q = np.diag([0.04**2, 0.04**2, 0.002**2, 0.04**2, 0.04**2, 0.004**2, q_n**2])
-        R = np.diag(np.array([0.05, 0.05, 0.005, 0.05, 0.05, 0.005, 0.3]) ** 2)
+        _Rdiag = [0.05, 0.05, 0.005, 0.05, 0.05, 0.005, 0.3]
+        # Optional proprioceptive (vertical-dynamics) pseudo-measurement of n,
+        # realised by the deployed window-MLP. The lateral-force channel cannot
+        # observe n on firm soil at small closed-loop slip (dFy/dn -> 0, signal
+        # << meas noise); the MLP reads vertical/vibration features that DO
+        # distinguish firm from soft soil, so we add y[7]=n_MLP with h(z)[7]=n.
+        # On firm sand the force-channel gain collapses and this term carries n.
+        self._mlp_meas = bool(mlp_meas)
+        self._mlp = None
+        self._n_mlp = n0
+        if self._mlp_meas:
+            from learned_terrain_estimator import LearnedTerrainEstimator  # noqa: E402
+            _mlp_dir = mlp_model_dir or str(_SIM_DIR.parent / "nn_models" / "terrain_window_mlp")
+            self._mlp = LearnedTerrainEstimator(
+                model_dir=_mlp_dir, initial_terrain=initial_terrain,
+                update_interval=1, verbose=False)
+            _Rdiag = _Rdiag + [float(mlp_meas_sigma)]
+        R = np.diag(np.array(_Rdiag) ** 2)
         self._ukf = StateAugmentedUKF(z0=z0, P0=P0, Q=Q, R=R, alpha=0.35, kappa=0.0)
         # dummy soil_template; manifold mapping supplies the real soil from n.
         self._soil_template = SoilParams(kc=13200.0, kphi=692200.0, n=n0,
@@ -167,6 +186,16 @@ class DallasUKFTerrainEstimator:
                                 self._latest["u"], self._latest["v"], self._latest["omega"]]
             self._last_t = self._latest["t"]
             self._initialized = True
+        # Feed the proprioceptive MLP (vertical-dynamics) channel, if enabled.
+        if self._mlp is not None:
+            self._mlp.observe(kappa=kappa, alpha_f=alpha_f, alpha_r=alpha_r, u=u,
+                              Fz_f=Fz_f, Fz_r=Fz_r, sr=sr, ay_imu=ay_imu,
+                              omega_dot=omega_dot, omega=omega, v_lateral=v_lateral,
+                              x_pos=x_pos, y_pos=y_pos, psi=psi, ax_cmd=ax_cmd,
+                              sim_time=sim_time, ax_imu=ax_imu, **_ignored)
+            if self._mlp.should_update():
+                self._mlp.estimate()
+            self._n_mlp = float(self._mlp.get_bekker_n())
         self._obs_count += 1
         # Step the UKF on EVERY observation (~per control tick). The state-
         # augmented UKF needs fine-grained measurement updates to identify n on
@@ -194,14 +223,24 @@ class DallasUKFTerrainEstimator:
         def f_dyn(z):
             return self._bstep(z, delta, ax_in, dt)
 
-        def h_meas(z):
-            Fy_total, _ = self._fy_np(z, delta)
-            out = np.empty(7)
-            out[:6] = z[:6]
-            out[6] = Fy_total / self._veh.m
-            return out
-
-        y_k = np.array([m["x"], m["y"], m["psi"], m["u"], m["v"], m["omega"], m["ay"]])
+        if self._mlp_meas:
+            def h_meas(z):
+                Fy_total, _ = self._fy_np(z, delta)
+                out = np.empty(8)
+                out[:6] = z[:6]
+                out[6] = Fy_total / self._veh.m
+                out[7] = z[6]          # direct (proprioceptive) observation of n
+                return out
+            y_k = np.array([m["x"], m["y"], m["psi"], m["u"], m["v"], m["omega"],
+                            m["ay"], self._n_mlp])
+        else:
+            def h_meas(z):
+                Fy_total, _ = self._fy_np(z, delta)
+                out = np.empty(7)
+                out[:6] = z[:6]
+                out[6] = Fy_total / self._veh.m
+                return out
+            y_k = np.array([m["x"], m["y"], m["psi"], m["u"], m["v"], m["omega"], m["ay"]])
         try:
             self._ukf.step(y_k, f_dyn, h_meas)
         except Exception as exc:  # pragma: no cover - defensive
