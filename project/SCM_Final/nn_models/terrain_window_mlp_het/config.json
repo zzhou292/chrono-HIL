@@ -1,0 +1,18 @@
+{
+  "n_features": 26,
+  "output_names": [
+    "n",
+    "log_var"
+  ],
+  "feature_version": "v1",
+  "hidden": 64,
+  "win_seconds": 4.0,
+  "stride_seconds": 0.4,
+  "warmup_seconds": 1.5,
+  "heteroscedastic": true,
+  "logv_clamp": [
+    -6.0,
+    3.0
+  ],
+  "best_val_rmse_n": 0.0641260487181926
+}

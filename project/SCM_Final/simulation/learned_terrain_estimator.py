@@ -181,6 +181,18 @@ class LearnedTerrainEstimator:
             self._y_mean = np.zeros(n_out, dtype=np.float64)
         if self._y_std.size != n_out:
             self._y_std = np.ones(n_out, dtype=np.float64)
+        # Heteroscedastic model: outputs [n, log_var] with a SCALAR y-normaliser.
+        # Denormalise col0 (n) the usual way but leave col1 (log_var) raw
+        # (x1 + 0); the per-sample n-uncertainty is sigma = exp(0.5*log_var)*y_std.
+        self._het = bool(cfg.get("heteroscedastic", False) or sc.get("heteroscedastic", False))
+        self._n_sigma = 0.12
+        if self._het:
+            _ys = float(np.asarray(sc.get("y_std", [1.0])).reshape(-1)[0])
+            _ym = float(np.asarray(sc.get("y_mean", [0.0])).reshape(-1)[0])
+            self._y_mean = np.array([_ym, 0.0], dtype=np.float64)
+            self._y_std = np.array([_ys, 1.0], dtype=np.float64)
+            self._y_std_scalar = _ys
+            self._logv_name = "log_var" if "log_var" in output_names else output_names[-1]
         output_bounds = cfg.get("output_bounds", {})
         phi_bounds = output_bounds.get("phi") if isinstance(output_bounds, dict) else None
         if phi_bounds and len(phi_bounds) == 2:
@@ -381,6 +393,9 @@ class LearnedTerrainEstimator:
         }
         n_pred = float(np.clip(pred_map["n"], _PRED_BOUNDS[0], _PRED_BOUNDS[1]))
         self._n_raw = n_pred
+        if self._het:
+            _lv = pred_map.get(self._logv_name, 0.0)
+            self._n_sigma = float(np.clip(np.exp(0.5 * _lv) * self._y_std_scalar, 0.01, 0.5))
         # Track raw/smooth disagreement before the smoother absorbs the new
         # sample, so high-noise periods inflate the residual EMA promptly.
         n_resid = n_pred - self._n_smooth
@@ -434,6 +449,12 @@ class LearnedTerrainEstimator:
 
     def get_bekker_n(self) -> float:
         return float(self._n_smooth)
+
+    def get_n_sigma(self) -> float:
+        """Per-sample n-uncertainty (std). Calibrated for a heteroscedastic
+        model; a constant fallback otherwise. Consumed by the NN-UKF's
+        proprioceptive measurement-noise R_n."""
+        return float(self._n_sigma)
 
     def get_friction_angle_deg(self) -> float:
         if self._phi_smooth is None:

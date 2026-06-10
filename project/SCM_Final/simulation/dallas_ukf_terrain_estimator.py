@@ -99,13 +99,22 @@ class DallasUKFTerrainEstimator:
         self._mlp_meas = bool(mlp_meas)
         self._mlp = None
         self._n_mlp = n0
+        self._mlp_sigma = float(mlp_meas_sigma)
+        self._mlp_het = False
         if self._mlp_meas:
             from learned_terrain_estimator import LearnedTerrainEstimator  # noqa: E402
-            _mlp_dir = mlp_model_dir or str(_SIM_DIR.parent / "nn_models" / "terrain_window_mlp")
+            # Prefer the heteroscedastic window-MLP (reports a calibrated
+            # per-sample n-uncertainty) so the proprioceptive measurement noise
+            # R_n is data-driven, not a hand-set constant. Fall back to the
+            # deployed MLP (constant sigma) if the het checkpoint is absent.
+            _het_dir = _SIM_DIR.parent / "nn_models" / "terrain_window_mlp_het"
+            _mlp_dir = mlp_model_dir or (str(_het_dir) if _het_dir.exists()
+                                         else str(_SIM_DIR.parent / "nn_models" / "terrain_window_mlp"))
             self._mlp = LearnedTerrainEstimator(
                 model_dir=_mlp_dir, initial_terrain=initial_terrain,
                 update_interval=1, verbose=False)
-            _Rdiag = _Rdiag + [float(mlp_meas_sigma)]
+            self._mlp_het = bool(getattr(self._mlp, "_het", False))
+            _Rdiag = _Rdiag + [float(mlp_meas_sigma)]   # placeholder; set per-step
         R = np.diag(np.array(_Rdiag) ** 2)
         self._ukf = StateAugmentedUKF(z0=z0, P0=P0, Q=Q, R=R, alpha=0.35, kappa=0.0)
         # dummy soil_template; manifold mapping supplies the real soil from n.
@@ -197,6 +206,8 @@ class DallasUKFTerrainEstimator:
             if self._mlp.should_update():
                 self._mlp.estimate()
             self._n_mlp = float(self._mlp.get_bekker_n())
+            if self._mlp_het:
+                self._mlp_sigma = float(self._mlp.get_n_sigma())
         self._obs_count += 1
         # Step the UKF on EVERY observation (~per control tick). The state-
         # augmented UKF needs fine-grained measurement updates to identify n on
@@ -234,6 +245,11 @@ class DallasUKFTerrainEstimator:
                 return out
             y_k = np.array([m["x"], m["y"], m["psi"], m["u"], m["v"], m["omega"],
                             m["ay"], self._n_mlp])
+            # Time-varying proprioceptive measurement noise: the het MLP's own
+            # per-sample sigma. Small on firm sand (MLP confident, force channel
+            # dead) -> n follows the MLP; large on soils the MLP is unsure about
+            # -> the force channel keeps priority. No hand-set blend.
+            self._ukf.R[7, 7] = float(np.clip(self._mlp_sigma, 0.02, 0.5)) ** 2
         else:
             def h_meas(z):
                 Fy_total, _ = self._fy_np(z, delta)
