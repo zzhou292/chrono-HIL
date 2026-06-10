@@ -50,7 +50,7 @@ def plot_figures(csv_path: Path = CSV, out_path: Path = OUT) -> Path:
     ax.set_ylabel(r"closed-loop tail $|\Delta n|$")
     ax.set_ylim(0, max(0.5, max(max(v) for _, _, v in rows) * 1.12))
     ax.set_title("Terrain estimators run live in the closed loop, canonical soils\n"
-                 "(both UKFs win soft/mid soil; both fail firm sand; the regime fusion wins overall)",
+                 "(force-only UKFs fail firm sand; the deployed force+proprioceptive Fused-UKF fixes it, best overall)",
                  fontsize=10.5)
     ax.legend(loc="upper left", fontsize=8.5, framealpha=0.92, ncol=2)
     ax.grid(axis="y", alpha=0.3)
