@@ -20,10 +20,10 @@ CSV = ROOT / "benchmarking" / "closed_loop_estimator_all_summary.csv"
 OUT = ROOT / "my_paper" / "paper_figures" / "terrain_estimator_comparison.png"
 
 STYLE = [
-    ("MLP", "MLP (deployed branch)", "#4c78a8"),
-    ("NN-UKF", "NN-UKF (live)", "#dd8452"),
-    ("Bekker-UKF", "Bekker-UKF (live)", "#b07aa1"),
-    ("Fused", "Fused (regime, default)", "#59a14f"),
+    ("MLP", "MLP (window, vibration)", "#4c78a8"),
+    ("Bekker-UKF", "Bekker-UKF (force)", "#b07aa1"),
+    ("NN-UKF", "NN-UKF (force)", "#dd8452"),
+    ("Fused-UKF", "Fused-UKF (force+proprio, deployed)", "#59a14f"),
 ]
 GROUPS = [("clay", "Clay"), ("dirt", "Dirt"), ("sand", "Sand"), ("ALL", "Overall")]
 

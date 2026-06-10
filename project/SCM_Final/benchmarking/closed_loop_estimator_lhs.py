@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "simulation")); sys.path.insert(0, str(ROOT / "ben
 from common import launch_and_collect
 from param_consistency import generate_lhs_terrain_yaml_dicts
 
-BACKENDS = {"MLP": "learned", "NN-UKF": "nn_ukf", "Bekker-UKF": "bekker_ukf", "Fused": "fused"}
+BACKENDS = {"MLP": "learned", "Bekker-UKF": "bekker_ukf", "NN-UKF": "nn_ukf", "Fused-UKF": "nn_ukf_aug"}
 SOIL_DIR = Path("/tmp/ttrans/cl_lhs_soils")
 N_LO, N_HI = 0.52, 1.08  # interior of the estimator clamp [0.5,1.1]
 

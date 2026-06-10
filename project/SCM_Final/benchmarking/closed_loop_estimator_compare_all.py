@@ -12,8 +12,8 @@ from common import launch_and_collect
 ROOT = Path(__file__).resolve().parents[1]
 TN = {"clay": 0.5, "dirt": 0.7, "sand": 1.1}
 terrains = ["clay", "dirt", "sand"]; speeds = [5.0, 7.0]; seeds = [720, 721, 722]
-backends = {"MLP(deployed)": "learned", "NN-UKF(live)": "nn_ukf",
-            "Bekker-UKF(live)": "bekker_ukf", "Fused(regime)": "fused"}
+backends = {"MLP": "learned", "Bekker-UKF": "bekker_ukf",
+            "NN-UKF": "nn_ukf", "Fused-UKF": "nn_ukf_aug"}
 cells = [(bk, t, sp, sd) for bk in backends for t in terrains for sp in speeds for sd in seeds]
 
 

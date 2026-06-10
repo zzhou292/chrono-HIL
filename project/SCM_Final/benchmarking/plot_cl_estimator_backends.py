@@ -18,14 +18,15 @@ import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-CSV = ROOT / "benchmarking" / "closed_loop_estimator_fused_summary.csv"
+CSV = ROOT / "benchmarking" / "closed_loop_estimator_all_summary.csv"
 OUT = ROOT / "my_paper" / "paper_figures" / "closed_loop_estimator_backends.png"
 
 # display label + colour per CSV backend row (matched by prefix)
 STYLE = [
-    ("MLP(deployed)",  "MLP (deployed)",      "#4c78a8"),
-    ("NN-UKF",         "NN-UKF (live)",       "#dd8452"),
-    ("Fused",          "Fused (regime)",      "#59a14f"),
+    ("MLP",         "MLP (window)",            "#4c78a8"),
+    ("Bekker-UKF",  "Bekker-UKF (force)",      "#b07aa1"),
+    ("NN-UKF",      "NN-UKF (force)",          "#dd8452"),
+    ("Fused-UKF",   "Fused-UKF (deployed)",    "#59a14f"),
 ]
 GROUPS = [("clay", "Clay"), ("dirt", "Dirt"), ("sand", "Sand"), ("ALL", "Overall")]
 
@@ -57,8 +58,8 @@ def plot_figures(csv_path: Path = CSV, out_path: Path = OUT) -> Path:
     ax.set_xticklabels([g[1] for g in GROUPS])
     ax.set_ylabel(r"closed-loop tail $|\Delta n|$")
     ax.set_ylim(0, max(0.5, max(max(v) for _, _, v in rows) * 1.12))
-    ax.set_title("Live in-loop terrain estimation: deployed MLP vs. NN-UKF vs. regime fusion\n"
-                 "(per-tick UKF; NN-UKF wins soft/mid soil, MLP wins firm sand, fusion wins everywhere)",
+    ax.set_title("Live in-loop terrain estimation, four estimators\n"
+                 "(force-only UKFs fail firm sand; the deployed force+proprioceptive Fused-UKF tracks all soils)",
                  fontsize=10.5)
     ax.legend(loc="upper left", fontsize=9, framealpha=0.92)
     ax.grid(axis="y", alpha=0.3)

@@ -54,9 +54,9 @@ def _traj_panel(ax):
         m = np.isfinite(t) & np.isfinite(n)
         return t[m].to_numpy(), n[m].to_numpy()
     series = [
-        ("force-only NN-UKF", "/tmp/ttrans/clestall/NN-UKF(live)_sand_v5_s720/*/diag_*.csv", "#d62728"),
-        ("MLP (vibration)", "/tmp/ttrans/clestall/MLP(deployed)_sand_v5_s720/*/diag_*.csv", "#4c78a8"),
-        ("force+proprio UKF (deployed)", "/tmp/aug_smoke_sand/*/diag_*.csv", "#59a14f"),
+        ("force-only NN-UKF", "/tmp/ttrans/clestall/NN-UKF_sand_v5_s720/*/diag_*.csv", "#d62728"),
+        ("MLP (vibration)", "/tmp/ttrans/clestall/MLP_sand_v5_s720/*/diag_*.csv", "#4c78a8"),
+        ("force+proprio UKF (deployed)", "/tmp/ttrans/clestall/Fused-UKF_sand_v5_s720/*/diag_*.csv", "#59a14f"),
     ]
     for name, pat, col in series:
         tr = tail_traj(pat)
