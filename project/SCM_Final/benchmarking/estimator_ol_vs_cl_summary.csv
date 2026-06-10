@@ -1,0 +1,13 @@
+backend,soil,OL_abs_dn,CL_abs_dn
+MLP,clay,0.018,0.076
+MLP,dirt,0.080,0.078
+MLP,sand,0.000,0.036
+Bekker-UKF,clay,0.112,0.047
+Bekker-UKF,dirt,0.057,0.054
+Bekker-UKF,sand,0.484,0.471
+NN-UKF,clay,0.071,0.045
+NN-UKF,dirt,0.083,0.049
+NN-UKF,sand,0.086,0.437
+Fused-UKF,clay,0.044,0.103
+Fused-UKF,dirt,0.050,0.068
+Fused-UKF,sand,0.005,0.006

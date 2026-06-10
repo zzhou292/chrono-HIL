@@ -70,6 +70,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--te-update-interval", type=int, default=10)
     p.add_argument("--te-min-confidence", type=float, default=0.3)
     p.add_argument("--learned-terrain-model-dir", default=None)
+    p.add_argument("--estimator-backend",
+                   choices=["learned", "nn_ukf", "bekker_ukf", "nn_ukf_aug"], default="learned",
+                   help="Which terrain estimator to run open-loop (default deployed window-MLP).")
     p.add_argument("--base-port", type=int, default=43000)
     p.add_argument("--workers", type=int, default=6)
     p.add_argument("--timeout", type=float, default=180.0)
@@ -101,6 +104,7 @@ class OpenLoopTask:
     te_update_interval: int
     te_min_confidence: float
     learned_terrain_model_dir: str | None
+    estimator_backend: str = "learned"
 
 
 def _estimator_class(model_dir: Path):
@@ -117,12 +121,22 @@ def _estimator_class(model_dir: Path):
 
 
 def _make_estimator(task: OpenLoopTask):
+    initial = terrain_preset_to_internal(get_terrain_preset("dirt"))
+    bk = getattr(task, "estimator_backend", "learned")
+    if bk in ("nn_ukf", "nn_ukf_aug"):
+        from dallas_ukf_terrain_estimator import DallasUKFTerrainEstimator
+        return DallasUKFTerrainEstimator(
+            initial_terrain=initial, update_interval=task.te_update_interval,
+            verbose=False, mlp_meas=(bk == "nn_ukf_aug"))
+    if bk == "bekker_ukf":
+        from bekker_ukf_terrain_estimator import BekkerUKFTerrainEstimator
+        return BekkerUKFTerrainEstimator(
+            initial_terrain=initial, update_interval=task.te_update_interval, verbose=False)
     model_dir = (
         Path(task.learned_terrain_model_dir).expanduser().resolve()
         if task.learned_terrain_model_dir
         else PROJECT_ROOT / "nn_models" / "terrain_window_mlp"
     )
-    initial = terrain_preset_to_internal(get_terrain_preset("dirt"))
     cls = _estimator_class(model_dir)
     return cls(
         model_dir=str(model_dir),
@@ -335,6 +349,9 @@ def _run_one(task: OpenLoopTask) -> dict:
                         float(msg.wheel_omega_rr),
                     ),
                     ax_imu=float(msg.ax),
+                    az_imu=float(getattr(msg, "az", 0.0)),
+                    roll_rate=float(getattr(msg, "omega_x", 0.0)),
+                    pitch_rate=float(getattr(msg, "omega_y", 0.0)),
                     throttle_cmd=float(throttle),
                 )
             if estimator.should_update():
@@ -552,6 +569,7 @@ def main() -> None:
                             te_update_interval=args.te_update_interval,
                             te_min_confidence=args.te_min_confidence,
                             learned_terrain_model_dir=args.learned_terrain_model_dir,
+                            estimator_backend=args.estimator_backend,
                         ))
     total = len(tasks)
     tasks = [OpenLoopTask(**{**asdict(t), "total": total}) for t in tasks]
