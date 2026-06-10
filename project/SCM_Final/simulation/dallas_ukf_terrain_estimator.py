@@ -40,6 +40,7 @@ class DallasUKFTerrainEstimator:
                  initial_terrain: Optional[Dict[str, float]] = None,
                  *, update_interval: int = 10, verbose: bool = False,
                  q_n: float = 0.01, smoothing_alpha: float = 0.1,
+                 r_ay: float = 0.3,
                  mlp_meas: bool = False, mlp_meas_sigma: float = 0.12,
                  mlp_model_dir: Optional[str] = None,
                  # API-compat (ignored)
@@ -88,7 +89,7 @@ class DallasUKFTerrainEstimator:
         z0 = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, n0])
         P0 = np.diag([0.5**2, 0.5**2, 0.01**2, 0.3**2, 0.3**2, 0.01**2, 0.12**2])
         Q = np.diag([0.04**2, 0.04**2, 0.002**2, 0.04**2, 0.04**2, 0.004**2, q_n**2])
-        _Rdiag = [0.05, 0.05, 0.005, 0.05, 0.05, 0.005, 0.3]
+        _Rdiag = [0.05, 0.05, 0.005, 0.05, 0.05, 0.005, float(r_ay)]
         # Optional proprioceptive (vertical-dynamics) pseudo-measurement of n,
         # realised by the deployed window-MLP. The lateral-force channel cannot
         # observe n on firm soil at small closed-loop slip (dFy/dn -> 0, signal

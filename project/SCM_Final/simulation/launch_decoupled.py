@@ -313,6 +313,8 @@ Examples:
                         "compatibility but does not change runtime behaviour.")
     p.add_argument("--te-window", type=int, default=50)
     p.add_argument("--te-update-interval", type=int, default=10)
+    p.add_argument("--nn-ukf-q-n", type=float, default=0.01)
+    p.add_argument("--nn-ukf-r-ay", type=float, default=0.3)
     p.add_argument("--te-min-excitation", type=float, default=0.3)
     p.add_argument("--te-min-confidence", type=float, default=0.3)
     p.add_argument("--learned-terrain-model-dir", default=None,
@@ -529,6 +531,8 @@ Examples:
         ctrl_cmd.extend(["--te-update-interval", str(args.te_update_interval)])
         ctrl_cmd.extend(["--te-min-excitation", str(args.te_min_excitation)])
         ctrl_cmd.extend(["--te-min-confidence", str(args.te_min_confidence)])
+        ctrl_cmd.extend(["--nn-ukf-q-n", str(args.nn_ukf_q_n)])
+        ctrl_cmd.extend(["--nn-ukf-r-ay", str(args.nn_ukf_r_ay)])
         if args.learned_terrain_model_dir:
             ctrl_cmd.extend(["--learned-terrain-model-dir",
                              str(args.learned_terrain_model_dir)])

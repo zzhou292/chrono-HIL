@@ -607,6 +607,7 @@ def run_controller_node(args):
                 update_interval=args.te_update_interval,
                 verbose=bool(getattr(args, "te_verbose", False)),
                 q_n=float(getattr(args, "nn_ukf_q_n", 0.01)),
+                r_ay=float(getattr(args, "nn_ukf_r_ay", 0.3)),
                 mlp_meas=_aug,
             )
             _te_src_desc = f"backend={'nn_ukf_aug [UKF+MLP proprioceptive meas]' if _aug else 'nn_ukf [online Dallas UKF]'}"
@@ -2011,6 +2012,10 @@ def main():
                         "whole-vehicle Fy surrogate / analytical Bekker tyre.")
     p.add_argument("--nn-ukf-q-n", type=float, default=0.01,
                    help="Process-noise std on n for the nn_ukf backend (tracking speed).")
+    p.add_argument("--nn-ukf-r-ay", type=float, default=0.3,
+                   help="Lateral-accel measurement-noise std (m/s^2) for the nn_ukf "
+                        "backend. Default 0.3 is conservative (absorbs surrogate "
+                        "mismatch); lower values trust the force channel more.")
     p.add_argument("--te-window", type=int, default=50,
                    help="Terrain estimator sliding window size in 10 Hz-equivalent samples "
                         "(default 50 -> 5 s)")
