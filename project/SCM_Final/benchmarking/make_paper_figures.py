@@ -73,6 +73,8 @@ STEPS = [
                                  [PY, "-u", str(HERE / "plot_estimator_comparison_live.py")]),
     ("closed_loop_estimator_backends (cl reality check, re-plot)",
                                  [PY, "-u", str(HERE / "plot_cl_estimator_backends.py")]),
+    ("ukf_observability (Sec VI: force-channel n-observability)",
+                                 [PY, "-u", str(HERE / "plot_ukf_observability.py")]),
     ("cw_brake_validation (Fig 19)",
                                  [PY, "-u", str(HERE / "make_fig_cw_brake_validation.py")]),
     ("cw_timeline + cw_lead_vs_terrain (Fig 20/21)",

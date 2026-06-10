@@ -305,7 +305,7 @@ Examples:
     p.add_argument("--terrain-estimator-mode", choices=["n"], default="n",
                    help="Select terrain estimator output mode. The retained "
                         "paper/runtime estimator is n-only.")
-    p.add_argument("--terrain-estimator-backend", choices=["learned", "nn_ukf", "fused", "bekker_ukf", "nn_ukf_aug"], default="fused",
+    p.add_argument("--terrain-estimator-backend", choices=["learned", "nn_ukf", "fused", "bekker_ukf", "nn_ukf_aug"], default="nn_ukf_aug",
                    help="Runtime terrain-estimator backend. Only the learned "
                         "sliding-window MLP is wired into the live stack; the "
                         "Dallas-style UKF and PIL backends are offline-only "
