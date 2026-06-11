@@ -72,7 +72,7 @@ def main():
     ax.set_ylabel("RMS crosstrack error (m), $t \\geq 8\\,$s window", fontsize=11)
     ax.set_title(
         "Live-estimator tire-model benchmark "
-        f"(n={len(df)} runs, 3 terrains × 2 paths × 2 speeds × 2 bumpiness × 2 seeds)",
+        "(405 runs/variant: 3 terrains × 3 paths × 3 speeds × 3 bumpiness × 5 seeds)",
         fontsize=10.5)
     ax.legend(title="Terrain", loc="upper right", framealpha=0.95, fontsize=9)
     ax.grid(axis="y", alpha=0.3)

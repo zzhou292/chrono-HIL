@@ -24,21 +24,34 @@ for delay compensation only (not exposed as a selectable tire model).
 import casadi as ca
 
 # ============================================================================
-# Default parameters (from HMMWV_Pac02Tire.tir)
-# These are canonical rigid-terrain parameters intentionally kept at their
-# standard values to represent a deployment scenario where terrain-specific
-# calibration is unavailable (see TRACKING.md D1).
+# Default parameters: SINGLE GLOBAL, SCM-calibrated friction.
+# The peak friction coefficient mu is the dominant terrain-dependent
+# parameter and was the one egregiously wrong before: the old rigid-road
+# default mu=0.74 over-predicts grip ~2x, so the analytical baselines planned
+# over-aggressively and blew out on curvy references. We calibrate mu to the
+# SCM value -- mu=0.42, the mean lateral force coefficient |Fy|/Fz across the
+# whole soil box (data/tire_rig/scm_static_100k_v4.csv; SCM peak ranges
+# ~0.18 clay-like to ~0.47 sand-like, see calibrate_analytical_tires.py) --
+# and use a SINGLE global value for every terrain because the controller has
+# no per-terrain knowledge (the fair, deployment-consistent baseline). The
+# magic-formula / TMeasy shape factors are kept at their standard values so
+# the baselines retain realistic cornering stiffness (a pure force-magnitude
+# refit collapses the initial slope and cripples closed-loop tracking, which
+# would unfairly sandbag them). A single global mu still cannot track
+# terrain-to-terrain force variation -- that residual gap is what the NN
+# surrogate closes. Per-terrain "oracle" params below are a separate
+# upper-bound reference.
 # ============================================================================
 
-# Pacejka Magic Formula
-PACEJKA_B = 8.77    # Stiffness factor (|PKY1|/(PCY1*PDY1))
-PACEJKA_C = 1.5874  # Shape factor (PCY1)
-PACEJKA_E = 0.376   # Curvature factor (PEY1)
-PACEJKA_MU = 0.74   # Peak friction (PDY1)
+# Pacejka Magic Formula (standard shape; SCM-calibrated peak friction)
+PACEJKA_B = 8.77    # Stiffness factor (|PKY1|/(PCY1*PDY1)) -- standard
+PACEJKA_C = 1.5874  # Shape factor (PCY1) -- standard
+PACEJKA_E = 0.376   # Curvature factor (PEY1) -- standard
+PACEJKA_MU = 0.42   # Peak friction calibrated to SCM (was 0.74 rigid-road)
 
-# TMeasy
+# TMeasy (standard lateral shape; mu drives traction, calibrated to SCM)
 TMEASY_DFY0 = 40000.0       # Initial slope (N/rad per tire)
-TMEASY_FYM = 4000.0         # Peak lateral force per tire (N)
+TMEASY_FYM = 4000.0         # Peak lateral force per tire (N) ~ 0.40*Fz, matches SCM
 TMEASY_ALPHA_M = 0.12       # Slip angle at peak (~7 deg)
 TMEASY_ALPHA_SLIDE = 0.25   # Slip angle at full sliding (~14 deg)
 
