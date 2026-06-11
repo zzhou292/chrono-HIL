@@ -42,7 +42,9 @@ def _load_summary():
 
 
 def render_timeline():
-    fig, axes = plt.subplots(3, 1, figsize=(11, 7.5), sharex=True)
+    # Wide 1x3 (clay/dirt/sand side by side) so the figure is page-friendly
+    # full-width rather than a tall single-column stack.
+    fig, axes = plt.subplots(1, 3, figsize=(13.8, 4.0), sharey=True)
     summary = _load_summary()
     for ax, terr in zip(axes, TERRAINS):
         df = _load_run(terr, 150)
@@ -52,15 +54,14 @@ def render_timeline():
             continue
         t = df["t"].to_numpy()
         sev = df["severity"].to_numpy()
-        u = df["u"].to_numpy()
         # Background shading: severity bands as colored rectangles
         for i in range(len(t) - 1):
             ax.axvspan(t[i], t[i + 1], color=SEVERITY_BG[int(sev[i])], alpha=0.5)
         # Stop distance + clearance
         ax.plot(t, df["clearance"].to_numpy(), color="#222", lw=1.8,
-                label="Clearance to rock (m)")
+                label="clearance to rock (m)")
         ax.plot(t, df["stopping_distance"].to_numpy(), color="#d62728",
-                lw=1.5, ls="--", label="Required stopping distance (m)")
+                lw=1.5, ls="--", label="required stop dist (m)")
         # Annotate collision and RED warning fire
         row = summary[(summary.terrain == terr) & (summary.latency_s == 0.15)]
         if not row.empty:
@@ -68,20 +69,20 @@ def render_timeline():
             t_col = float(row.iloc[0].t_collision)
             if np.isfinite(t_red):
                 ax.axvline(t_red, color="#d62728", lw=1.5, ls=":",
-                           label=f"first RED  t={t_red:.2f}s")
+                           label=f"first RED  {t_red:.2f}s")
             if np.isfinite(t_col):
                 ax.axvline(t_col, color="black", lw=1.5,
-                           label=f"impact  t={t_col:.2f}s")
-        ax.set_ylabel(f"{terr} (n={TRUE_N[terr]:.2f})\nm  /  m/s",
-                      fontsize=10)
+                           label=f"impact  {t_col:.2f}s")
+        ax.set_title(f"{terr} (n={TRUE_N[terr]:.2f})", fontsize=10)
         ax.set_ylim(-1, 28)
         ax.set_xlim(0, 9.0)
         ax.grid(alpha=0.3)
-        ax.legend(loc="upper right", fontsize=8, framealpha=0.95)
-    axes[-1].set_xlabel("Sim time (s)", fontsize=11)
-    fig.suptitle("Collision-warning timeline (latency = 150 ms)\n"
+        ax.set_xlabel("sim time (s)", fontsize=10)
+        ax.legend(loc="upper right", fontsize=7.5, framealpha=0.95)
+    axes[0].set_ylabel("clearance / required stop distance (m)", fontsize=10)
+    fig.suptitle("Collision-warning timeline (latency = 150 ms); "
                  "background shading = severity GREEN→YELLOW→ORANGE→RED",
-                 fontsize=11)
+                 fontsize=10.5)
     fig.tight_layout()
     out = OUT_DIR / "cw_timeline.png"
     fig.savefig(out, dpi=200, bbox_inches="tight")

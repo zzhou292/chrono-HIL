@@ -11,6 +11,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,19 +69,28 @@ def main() -> None:
     fig.savefig(fig_dir / "latency_profile_timeseries.png", dpi=240)
     plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(7.5, 4.0), constrained_layout=True)
-    for col, label in [
-        ("control_delay_ms", "control"),
-        ("manual_delay_ms", "manual"),
-        ("camera_delay_ms", "camera"),
+    # The profile is bimodal: a low-latency "good-window" bulk plus discrete
+    # outage spikes (control->450 ms, camera->660 ms) with an empty gap in
+    # between, so a log-x histogram keeps both regimes legible instead of
+    # crushing the bulk into the leftmost linear bins. control==manual here, so
+    # we plot the two distinct channels named in the caption (control, camera).
+    fig, ax = plt.subplots(figsize=(6.0, 4.2), constrained_layout=True)
+    allv = pd.concat([df["control_delay_ms"], df["camera_delay_ms"]])
+    edges = np.logspace(np.log10(max(1.0, allv.min())),
+                        np.log10(allv.max() * 1.05), 28)
+    for col, label, color in [
+        ("control_delay_ms", "control", "#4c78a8"),
+        ("camera_delay_ms", "camera", "#59a14f"),
     ]:
-        ax.hist(df[col], bins=35, alpha=0.45, label=label)
-    ax.set_xlabel("One-way latency (ms)")
-    ax.set_ylabel("Samples")
-    ax.set_title("Latency distribution")
-    ax.grid(alpha=0.25)
+        ax.hist(df[col], bins=edges, alpha=0.55, label=label, color=color)
+        ax.axvline(df[col].mean(), color=color, ls="--", lw=1.3)
+    ax.set_xscale("log")
+    ax.set_xlabel("one-way latency (ms, log scale)")
+    ax.set_ylabel("samples")
+    ax.set_title("5G uplink latency distribution (dashed = channel mean)")
+    ax.grid(alpha=0.25, which="both")
     ax.legend()
-    fig.savefig(fig_dir / "latency_profile_histogram.png", dpi=240)
+    fig.savefig(fig_dir / "latency_profile_histogram.png", dpi=200)
     plt.close(fig)
 
     summary = df.drop(columns=["time_s"]).agg(["mean", "std", "min", "max"]).T
