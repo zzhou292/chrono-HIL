@@ -61,6 +61,11 @@ def _copy_latest(label: str, src_glob: str, dst_name: str) -> tuple[str, str]:
 # (label, argv) figure generators, each writing straight into paper_figures/
 STEPS = [
     ("sweep heatmaps (publish)", [PY, "-u", str(HERE / "publish_paper_figures.py")]),
+    # Overwrite the 6 tall per-scenario heatmaps with page-friendly compact
+    # 3-panel (clay/dirt/sand) facets averaged over bumpiness+seed. Must run
+    # AFTER publish_paper_figures so it overwrites the tall versions in place.
+    ("compact per-scenario heatmaps (page-fit)",
+                                 [PY, "-u", str(HERE / "plot_compact_heatmaps.py")]),
     ("cte_master_heatmap",       [PY, "-u", str(HERE / "make_fig_cte_master_heatmap.py")]),
     ("tire_model_with_estimator_rms_cte_heatmap",
                                  [PY, "-u", str(HERE / "make_fig_tire_estimator_box.py")]),
