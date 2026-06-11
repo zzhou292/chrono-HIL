@@ -20,11 +20,38 @@ import numpy as np, pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "simulation")); sys.path.insert(0, str(ROOT / "benchmarking"))
 from common import launch_and_collect
-from param_consistency import generate_lhs_terrain_yaml_dicts
+from param_consistency import generate_lhs_terrain_yaml_dicts, TERRAIN_PRESETS
 
 BACKENDS = {"MLP": "learned", "Bekker-UKF": "bekker_ukf", "NN-UKF": "nn_ukf", "Fused-UKF": "nn_ukf_aug"}
 SOIL_DIR = Path("/tmp/ttrans/cl_lhs_soils")
 N_LO, N_HI = 0.52, 1.08  # interior of the estimator clamp [0.5,1.1]
+_MANIFOLD_KEYS = ("Kphi", "Kc", "cohesion", "friction_angle", "janosi_shear")
+
+
+def _manifold_yaml_from_n(n_val: float, jitter_frac: float = 0.0, rng=None) -> dict:
+    """Bekker-Mohr soil yaml dict on the canonical clay->dirt->sand preset
+    manifold at ``n_val`` (the same soil model the deployed estimator
+    reconstructs from its n output), with optional +-``jitter_frac`` on the five
+    non-n parameters for realism. n itself is the swept ground truth (un-jittered),
+    so n-recovery is well posed: the soil's n IS the effective n to recover."""
+    pts = sorted(((float(p["n"]), p) for p in TERRAIN_PRESETS.values()),
+                 key=lambda kv: kv[0])
+    nv = min(max(float(n_val), pts[0][0]), pts[-1][0])
+    out = {"elastic_stiffness": 2e8, "damping": 3e4,
+           "description": f"manifold soil n={n_val:.3f} jitter={jitter_frac:g}"}
+    for i in range(len(pts) - 1):
+        n0, p0 = pts[i]
+        n1, p1 = pts[i + 1]
+        if nv <= n1 or i == len(pts) - 2:
+            w = 0.0 if n1 == n0 else (nv - n0) / (n1 - n0)
+            for k in _MANIFOLD_KEYS:
+                v = (1.0 - w) * float(p0[k]) + w * float(p1[k])
+                if jitter_frac and rng is not None:
+                    v *= (1.0 + jitter_frac * float(rng.uniform(-1.0, 1.0)))
+                out[k] = v
+            break
+    out["n"] = float(n_val)
+    return out
 
 
 @dataclass(frozen=True)
@@ -44,13 +71,14 @@ def _run_one(t: Task):
         sim_port=t.sim_port, ctrl_port=t.ctrl_port, sim_time=20.0, timeout=500.0,
         lead_in=5.0, metric_start=10.0, extra_args=extra)
     if r.status != "ok" or not r.diag_csv:
-        return (t.bk, t.idx, t.n_true, "fail", float('nan'))
+        return (t.bk, t.idx, t.n_true, "fail", float('nan'), float('nan'))
     d = pd.read_csv(r.diag_csv); tt = pd.to_numeric(d["sim_time"], errors="coerce")
     n = pd.to_numeric(d["n_terrain_est"], errors="coerce")
     tail = (tt >= 11) & np.isfinite(n)
     if not tail.any():
-        return (t.bk, t.idx, t.n_true, "fail", float('nan'))
-    return (t.bk, t.idx, t.n_true, "ok", abs(float(n[tail].mean()) - t.n_true))
+        return (t.bk, t.idx, t.n_true, "fail", float('nan'), float('nan'))
+    est = float(n[tail].mean())
+    return (t.bk, t.idx, t.n_true, "ok", abs(est - t.n_true), est)
 
 
 def main():
@@ -58,21 +86,35 @@ def main():
     ap.add_argument("--n", type=int, default=100)
     ap.add_argument("--workers", type=int, default=12)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--mode", choices=["manifold", "lhs"], default="manifold",
+                    help="manifold: sweep n along the clay->dirt->sand preset "
+                         "manifold (deployment-consistent, well-posed n-recovery); "
+                         "lhs: all-6-param uniform-LHS box (off-manifold stress test).")
+    ap.add_argument("--jitter", type=float, default=0.10,
+                    help="manifold mode: +-fractional jitter on the 5 non-n params.")
     args = ap.parse_args()
     SOIL_DIR.mkdir(parents=True, exist_ok=True)
-    dicts = generate_lhs_terrain_yaml_dicts(args.n, seed=args.seed)
-    # clamp n into the deployable estimator range
     rng = np.random.default_rng(args.seed)
+    soils = []  # (n_true, yaml_dict)
+    if args.mode == "manifold":
+        edges = np.linspace(N_LO, N_HI, args.n + 1)  # stratified-uniform n
+        for i in range(args.n):
+            nt = float(rng.uniform(edges[i], edges[i + 1]))
+            soils.append((nt, _manifold_yaml_from_n(nt, args.jitter, rng)))
+    else:
+        dicts = generate_lhs_terrain_yaml_dicts(args.n, seed=args.seed)
+        for i, d in enumerate(dicts):
+            d = dict(d); nt = float(np.clip(d["n"], N_LO, N_HI))
+            if dicts[i]["n"] < N_LO or dicts[i]["n"] > N_HI:
+                nt = float(rng.uniform(N_LO, N_HI))
+            d["n"] = nt
+            soils.append((nt, d))
     tasks = []
-    for i, d in enumerate(dicts):
-        d = dict(d); d["n"] = float(np.clip(d["n"], N_LO, N_HI))
-        # if the raw sample was outside, re-draw uniformly inside the band
-        if dicts[i]["n"] < N_LO or dicts[i]["n"] > N_HI:
-            d["n"] = float(rng.uniform(N_LO, N_HI))
+    for i, (nt, d) in enumerate(soils):
         yp = SOIL_DIR / f"soil_{i}.yaml"; yp.write_text(yaml.safe_dump(d))
         for bk in BACKENDS:
             base = 18000 + 2 * (i * len(BACKENDS) + list(BACKENDS).index(bk))
-            tasks.append(Task(i, bk, d["n"], str(yp), base, base + 1))
+            tasks.append(Task(i, bk, nt, str(yp), base, base + 1))
     # prewarm one per backend (shared acados build), then pool the rest
     pw = [next(t for t in tasks if t.bk == bk) for bk in BACKENDS]
     res = [_run_one(t) for t in pw]
@@ -81,8 +123,9 @@ def main():
         futs = {ex.submit(_run_one, t): t for t in rem}
         for f in as_completed(futs): res.append(f.result())
 
-    rows = [{"backend": bk, "idx": i, "n_true": nt, "status": st, "abs_dn": e}
-            for (bk, i, nt, st, e) in res]
+    rows = [{"backend": bk, "idx": i, "n_true": nt, "status": st,
+             "abs_dn": e, "est_n": en}
+            for (bk, i, nt, st, e, en) in res]
     df = pd.DataFrame(rows)
     df.to_csv(ROOT / "benchmarking" / "closed_loop_estimator_lhs_runs.csv", index=False)
     print(f"\nCLOSED-LOOP LHS-{args.n} live estimator benchmark:")

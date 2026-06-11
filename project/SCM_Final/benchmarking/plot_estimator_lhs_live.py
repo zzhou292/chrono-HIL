@@ -77,8 +77,8 @@ def plot_figures(csv_path: Path = CSV, figdir: Path = FIGDIR):
     axc.set_xlabel(r"$|\Delta n|/n_\mathrm{true}$  (%-error)"); axc.set_ylabel("empirical CDF")
     axc.set_title("Pooled error CDF (closed loop)", fontsize=10.5)
     axc.legend(loc="lower right", fontsize=8.5); axc.grid(alpha=0.3)
-    fig.suptitle("Per-backend convergence across 100 uniform-LHS Bekker-Mohr soils (live closed loop): "
-                 "faded points are individual soils, bold line is the binned median",
+    fig.suptitle("Per-backend convergence across 100 soils on the clay-dirt-sand manifold "
+                 "(live closed-loop NMPC): faded points are individual soils, bold line is the binned median",
                  fontsize=10.5, y=1.0)
     fig.savefig(figdir / "lhs100_fair.png", dpi=170, bbox_inches="tight"); plt.close(fig)
 
@@ -104,7 +104,7 @@ def plot_figures(csv_path: Path = CSV, figdir: Path = FIGDIR):
     a2.set_ylabel("% of soils within band"); a2.set_ylim(0, 100)
     a2.set_title("Fraction within accuracy band", fontsize=10.5)
     a2.legend(fontsize=9); a2.grid(axis="y", alpha=0.3)
-    fig.suptitle("Unified terrain-estimator head-to-head, 100 LHS soils, live closed loop",
+    fig.suptitle("Unified terrain-estimator head-to-head, 100 manifold soils, live closed loop",
                  fontsize=11.5, y=1.02)
     fig.tight_layout(); fig.savefig(figdir / "estimator_overall.png", dpi=170, bbox_inches="tight"); plt.close(fig)
     return figdir / "lhs100_fair.png", figdir / "estimator_overall.png"
