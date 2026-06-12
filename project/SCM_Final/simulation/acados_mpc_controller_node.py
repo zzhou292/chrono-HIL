@@ -436,6 +436,11 @@ def run_controller_node(args):
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     run_dir = Path(args.plot_dir) / f"{run_ts}_{terrain_name}_{path_type}_{model_tag}"
     run_dir.mkdir(parents=True, exist_ok=True)
+    # Optional MPC-prediction logging for rollout validation. Env-gated so it
+    # has zero effect on normal runs; the predicted horizon trajectory is
+    # buffered per solve and dumped to mpc_predictions.npz at shutdown.
+    _log_mpc_pred = bool(os.environ.get("LOG_MPC_PREDICTIONS"))
+    _pred_times, _pred_Z = [], []
 
     # ------------------------------------------------------------------
     # Reference path
@@ -1096,6 +1101,11 @@ def run_controller_node(args):
         solve_times.append(t_solve)
         delay_est.update_solve(t_solve)
 
+        if _log_mpc_pred and Z_opt is not None:
+            # predicted [x, y, psi, u, v, omega] over the horizon (stage dt = mpc.dt)
+            _pred_times.append(float(msg.time))
+            _pred_Z.append(np.asarray(Z_opt[:6, :], dtype=np.float32).copy())
+
         if Z_opt is None:
             # Solver fallback path: solver may return a hold command.
             if not np.isfinite(delta_cmd):
@@ -1715,6 +1725,12 @@ def run_controller_node(args):
         csv_file.close()
         if csv_path is not None:
             print(f"  Diagnostic CSV written: {csv_path} ({seq} rows)")
+    if _log_mpc_pred and _pred_times:
+        pred_path = run_dir / "mpc_predictions.npz"
+        np.savez_compressed(pred_path,
+                            times=np.asarray(_pred_times, dtype=np.float64),
+                            Z=np.stack(_pred_Z), dt=float(mpc.dt))
+        print(f"  MPC predictions written: {pred_path} ({len(_pred_times)} solves)")
     if tire_csv_file is not None:
         tire_csv_file.close()
         if tire_csv_path is not None:

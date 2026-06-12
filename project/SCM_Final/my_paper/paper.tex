@@ -788,6 +788,46 @@ traction-ceiling query (DOB-CBF). The full retrain log -- the
 offline force-prediction tables on both evaluation sets and the
 complete smoothness aggregation -- is omitted here for space.
 
+\subsection{Open-loop prediction validation}
+\label{sec:pred_validation}
+The closed-loop CTE results establish that the surrogate is accurate
+enough to control with, but not whether the NMPC's internal predictions
+match the plant --- the property an MPC actually relies on. We validate
+this directly: the controller logs its full predicted horizon trajectory
+($4\,$s at $0.1\,$s stages) at every solve, and we compare the predicted
+state at each horizon stage against the actual Chrono trajectory that
+many steps later, aggregated over $18$ runs (clay/dirt/sand $\times$
+sinusoidal $\times\,v\!\in\!\{5,7\}\,$m/s $\times$ 3 seeds, deployed
+vehicle-rate surrogate). Fig.~\ref{fig:pred_validation} reports the
+drift by component and terrain.
+
+The NMPC predicts the \emph{path geometry} accurately --- heading drift
+stays below $0.15\,$rad over the full $4\,$s horizon on every terrain ---
+but \emph{over-predicts longitudinal speed} by ${\approx}0.5\,$m/s almost
+immediately, growing to ${\approx}1.0\,$m/s by $4\,$s on firm sand. The
+position drift (up to $2.7\,$m at $4\,$s) is therefore dominated by
+accumulated speed error, not lateral error. The prediction weakness is
+concentrated in the longitudinal channel: the surrogate under-predicts
+soft-soil motion resistance, the same gap the throttle disturbance
+observer (Sec.~\ref{sec:throttledob}) compensates online and that the
+$10\,$Hz re-planning masks in closed loop. This identifies $F_x$ as the
+surrogate's primary improvement target, distinct from the
+already-accurate lateral ($F_y$) channel.
+
+\begin{figure*}[!t]
+  \centering
+  \includegraphics[width=\textwidth]{rollout_prediction_validation.png}
+  \caption{Open-loop NMPC prediction drift versus the Chrono plant, by
+    horizon time and terrain (mean over 18 runs, deployed vehicle-rate
+    surrogate). Left: front-axle position drift. Middle: longitudinal-speed
+    drift --- the deployment measure of $F_x$ prediction quality. Right:
+    heading drift (lateral, $F_y$). The model predicts heading well
+    ($\le 0.15\,$rad over $4\,$s) but carries a persistent
+    ${\approx}0.5\,$m/s speed bias, so $F_x$ is the dominant prediction
+    error.}
+  \label{fig:pred_validation}
+\end{figure*}
+
 %======================================================================
 \section{Online Terrain Estimator}
 \label{sec:estimator}
