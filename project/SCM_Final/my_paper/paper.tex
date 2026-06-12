@@ -57,7 +57,7 @@ Model (SCM) terrain. The runtime is organised around six explicit
 swap points --- command source, safety filter, collision warning, tire
 model, terrain estimator, and latency profile --- each declared as a
 Python \texttt{Protocol} and resolved through a per-role registry, so
-new flavors plug in without touching consumers. A differentiable
+new variants register without touching consumers. A differentiable
 neural tire surrogate is embedded in an \emph{acados} nonlinear MPC
 (NMPC), a sliding-window estimator re-conditions the surrogate online
 from inertial and wheel-speed signals, and an asymmetric throttle
@@ -120,7 +120,7 @@ Concretely, this work contributes:
   \item A modular framework (Section~\ref{sec:arch}) in which six
         runtime roles are declared as Python \texttt{Protocol}s and
         resolved through per-role registries; a runtime conformance
-        test rejects any flavor that drifts from its declared API,
+        test rejects any variant that drifts from its declared API,
         making the swap-ability claim structural rather than
         rhetorical.
   \item A differentiable neural SCM tire surrogate
@@ -184,7 +184,7 @@ they are measured together on the same matrix.
 The runtime is organised around six explicit swap points
 (Fig.~\ref{fig:sysarch}, Table~\ref{tab:swap_points}). Each swap point
 is a single Python protocol with a corresponding registry; adding a
-new flavor is a one-line registration with no edits to the consumers.
+new variant is a one-line registration with no edits to the consumers.
 Chrono::Vehicle simulates
 an HMMWV on a Soil Contact Model (SCM)~\cite{Krenn09} patch within
 Chrono::HIL~\cite{Zhou23}. The simulation and controller
@@ -219,7 +219,7 @@ arriving between estimator ticks.
   \renewcommand{\arraystretch}{1.15}
   \caption{The six swap points of the framework. Each role is defined
     by one Protocol and resolved through one registry. A conformance
-    test instantiates one of each shipped flavor and checks it against
+    test instantiates one of each shipped variant and checks it against
     the declared Protocol, so the swap-ability is structural rather
     than rhetorical.}
   \label{tab:swap_points}
@@ -228,7 +228,7 @@ arriving between estimator ticks.
   \setlength{\tabcolsep}{3pt}
   \begin{tabular}{@{}lll@{}}
     \toprule
-    \textbf{Role} & \textbf{Protocol method} & \textbf{Shipped flavors}\\
+    \textbf{Role} & \textbf{Protocol method} & \textbf{Shipped variants}\\
     \midrule
     Command source     & \texttt{next\_command}  & NMPC, G29, WASD\\
     Safety filter      & \texttt{filter}         & DOB-CBF, MPPI, NMPC, none\\
@@ -321,7 +321,7 @@ clay/dirt/sand) and the maneuver axes — 264 sand, 270 dirt, 266 clay;
 double-lane-change; commanded speeds randomised in
 $[3,7]\,\mathrm{m/s}$; bumpiness and rock-count randomised; each
 scenario simulated for $\sim$10\,s at the controller rate. The
-aggregated training table contains roughly $1.85\,\mathrm{M}$ rows of
+aggregated training table contains approximately $1.85\,\mathrm{M}$ rows of
 $(\kappa,\alpha,F_z,u,\dot\delta)\!\to\!(F_x,F_y)$ tuples (front +
 rear axle per tick) — fewer samples than the rig's $\sim$100k
 single-tire grid but drawn from the operating-point distribution the
@@ -451,13 +451,13 @@ mode at dirt/sinusoidal and dirt/right-left visible at a glance.
   \caption{Closed-loop RMS CTE per (terrain, path) cell across the
     broader 1215-run sweep (3~speeds $\times$ 3~bumpiness $\times$
     5~seeds per cell). The analytical baselines (Pacejka, TMeasy)
-    track well on clay and sand but blow out on dirt/sinusoidal
+    track well on clay and sand but diverge on dirt/sinusoidal
     ($\sim\!1.0\,\mathrm{m}$) and dirt/right-left
     ($0.9$--$1.2\,\mathrm{m}$), where the curvature-limited reference
     combines with off-nominal sinkage to produce a regime the analytical
     force laws do not cover even after SCM calibration. The Vehicle NN
     rate-MLP suppresses those tails to $0.4$--$0.6\,\mathrm{m}$ while
-    matching the calibrated baselines on the easy cells. This per-scenario
+    matching the calibrated baselines on the benign cells. This per-scenario
     view is what motivates the live-estimator benchmark in
     Sec.~\ref{sec:tires_estimator}.}
   \label{fig:tires_static_heatmap}
@@ -496,7 +496,7 @@ median RMS CTE by $35$--$43\,\%$ relative to the SCM-calibrated Pacejka
 and TMeasy baselines. The deployable claim is therefore that the
 estimator recovers most of the oracle-prior benefit without that prior,
 not that it improves on a correct prior. Second, the per-row distributions are
-strongly right-skewed by a handful of high-error scenarios (mostly
+strongly right-skewed by a few high-error scenarios (mostly
 Pacejka and TMeasy on dirt at $v_{\mathrm{ref}}\!=\!7\,\mathrm{m/s}$,
 where the analytical baselines collide with the curvature limit);
 Fig.~\ref{fig:tires_estimator_heatmap} shows the full distribution per
@@ -507,7 +507,7 @@ variant so the median and tail behaviour are both visible.
   \caption{Live-estimator-conditioned tire-model benchmark, full
     1620-run matrix (405 per variant), KPI window from $t=8\,\mathrm{s}$.
     Values are \emph{median} RMS CTE: the per-variant distributions are
-    strongly right-skewed by a handful of high-error dirt scenarios
+    strongly right-skewed by a few high-error dirt scenarios
     (Fig.~\ref{fig:tires_estimator_heatmap}), so the median is the
     representative statistic. The \texttt{static} neural row is
     conditioned on the matched terrain preset (near-oracle); the
@@ -557,7 +557,7 @@ $\approx 95\,\%$ of the prior-mismatch gap on the harder terrain.
     absolute numbers are therefore not comparable across the two
     tables. The estimator nearly recovers the matched-prior
     performance from a wrong initialisation on clay; matched and
-    wrong priors are both fine on sand because dirt is closer to sand
+    wrong priors both yield low error on sand because dirt is closer to sand
     than to clay on the soil-parameter manifold.}
   \label{tab:wrong_prior}
   \centering
@@ -579,7 +579,7 @@ $\approx 95\,\%$ of the prior-mismatch gap on the harder terrain.
     Box plots show interquartile range and median across all 405 runs
     per variant; jittered scatter points are coloured by terrain
     (clay, dirt, sand). The two analytical baselines (Pacejka, TMeasy)
-    carry long right tails driven by a handful of dirt cases at higher
+    carry long right tails driven by a few dirt cases at higher
     $v_{\mathrm{ref}}$; both neural variants compress the distribution
     sharply. The estimator-on variant nearly matches the matched-prior
     static row, the deployable claim of Sec.~\ref{sec:tires_estimator}.}
@@ -620,12 +620,12 @@ The controlled closed-loop tire-model sweep (432 runs, 6 surrogates
 $\times$ 3 terrains $\times$ 3 paths $\times$ 2 speeds $\times$ 2
 bumpiness $\times$ 2 seeds; planner-only, sensor noise on) is
 summarised in Table~\ref{tab:tires_rig_vs_vehicle}. The pre-retrain
-``rig wins everything'' result narrows substantially:
+rig-trained advantage narrows substantially:
 
 \begin{itemize}
-\item Static MLPs: rig still wins decisively
+\item Static MLPs: the rig surrogate remains decisively better
   ($0.085\,\mathrm{m}$ vs $0.112\,\mathrm{m}$, 24\,\%).
-\item Rate MLPs (32-16): rig and vehicle tie at $0.090\,\mathrm{m}$.
+\item Rate MLPs (32-16): rig and vehicle match at $0.090\,\mathrm{m}$.
 \item Rate MLPs (64-32): tied within noise
   ($0.097$ vs $0.099\,\mathrm{m}$).
 \end{itemize}
@@ -672,7 +672,7 @@ for the rig.
     surrogates paired by architecture and signature. RMS CTE,
     worst-case $|\mathrm{CTE}|$, achieved speed, and solver wall time
     on the same matrix. Bars are mean $\pm$ s.d.~across 72 cells per
-    surrogate. The pre-retrain ``rig wins everything'' result narrows
+    surrogate. The pre-retrain rig-trained advantage narrows
     to a static-only effect once architecture is matched and the
     whole-vehicle training data is LHS-sampled over the same Bekker--
     Mohr box the rig uses.}
@@ -711,8 +711,8 @@ the static surrogate degrades to $1.07\,\mathrm{m}$ RMS CTE while
 the rate surrogate stays at $0.16\,\mathrm{m}$. The mean RMS CTE
 across the six scenarios is therefore $0.18\,\mathrm{m}$ for the
 rate variant and $0.33\,\mathrm{m}$ for the static variant; excluding
-the catastrophic case they tie at $0.185\,\mathrm{m}$.  The
-rate-augmented variants pay for their force-RMSE deficit with a
+the catastrophic case they match at $0.185\,\mathrm{m}$.  The
+rate-augmented variants trade their force-RMSE deficit for a
 lower-bandwidth, lower-amplitude $F_y$ trace whose under-prediction at
 transient peaks (the controller that collected the LHS data planned
 conservatively, so the training distribution underweights
@@ -735,8 +735,8 @@ as the MPPI filter.
     rig rate (orange), and rig static (purple dashed). Vehicle rate
     consistently under-predicts the peaks; the rig variants
     over-predict the same peaks; both static checkpoints track the
-    envelope most tightly. The deployed default still wins on RMS
-    CTE but pays for that smoothness with the largest force-RMSE.}
+    envelope most tightly. The deployed default still attains the lowest RMS
+    CTE but at the cost of the largest force-RMSE.}
   \label{fig:rig_vs_vehicle_4way}
 \end{figure}
 
@@ -908,11 +908,11 @@ lateral-force channel adds complementary information
     estimators, canonical soils (tail $|\Delta n|$). A scripted
     $0.6\,$rad sine-steer maneuver (green) is compared to closed-loop
     NMPC path-tracking (red). On firm sand the force-only NN-UKF goes
-    $0.44\!\to\!0.09$ --- \emph{observability}-limited, a real maneuver
-    fixes it --- whereas the Bekker-UKF stays $\approx\!0.47$ in both
-    (\emph{model}-limited: its analytical contact law is wrong on sand).
+    $0.44\!\to\!0.09$ --- \emph{observability}-limited, a dedicated maneuver
+    resolves it --- whereas the Bekker-UKF remains $\approx\!0.47$ in both
+    (\emph{model}-limited: its analytical contact law is inaccurate on sand).
     The proprioceptive MLP is excitation-agnostic ($0.04\!\to\!0.00$),
-    and the deployed Fused-UKF is strong in both ($\approx\!0.01$),
+    and the deployed Fused-UKF is accurate in both ($\approx\!0.01$),
     so it needs no dedicated maneuver at runtime
     (cf.\ Sec.~\ref{sec:ukf}).}
   \label{fig:estimator_open_loop}
@@ -994,7 +994,7 @@ The surrogate is a 128–64 ReLU MLP trained on a 300-sample,
 9-axis uniform LHS sweep
 (seed 7)
 that varies the six Bekker--Mohr soil parameters together with three
-manoeuvre axes — steering amplitude $0.20\text{--}0.65\,$rad,
+maneuver axes — steering amplitude $0.20\text{--}0.65\,$rad,
 steering period $2\text{--}5\,$s, and target cruise speed
 $3.5\text{--}7\,$m/s (half the runs use constant open-loop throttle,
 half a PI cruise) — yielding $\approx 190\,000$ labelled rows.
@@ -1028,7 +1028,7 @@ separating firm from soft soil is
 $|F_y(n\!=\!1.1)-F_y(n\!=\!0.7)|\!\approx\!132\,$N, well below the
 lateral-accel measurement-noise floor of
 $\approx\!770\,$N ($=m\,R_{a_y}$ with $R_{a_y}\!=\!0.3\,$m/s$^2$). Under
-a \emph{scripted} $0.6\,$rad steering manoeuvre the same delta grows to
+a \emph{scripted} $0.6\,$rad steering maneuver the same delta grows to
 $743\,$N --- at the noise floor --- and $\mathrm{d}F_y/\mathrm{d}n$ is
 $\approx\!16\times$ larger. The yaw channel is worse still:
 $|\mathrm{d}M_z|\,\Delta n\!\approx\!191\,$N$\cdot$m sits below its
@@ -1050,10 +1050,10 @@ this gap.
     $R_{a_y}\!=\!0.3\,$m/s$^2$). At closed-loop small-slip path
     tracking the signal ($\approx\!132\,$N) stays \emph{inside} the
     band --- $n$ is unobservable from force --- whereas a scripted
-    $0.6\,$rad manoeuvre escapes it ($\approx\!743\,$N, with
+    $0.6\,$rad maneuver escapes it ($\approx\!743\,$N, with
     $\mathrm{d}F_y/\mathrm{d}n$ $\approx\!16\times$ larger). \textbf{Right:}
     closed-loop $\hat n(t)$ on firm sand: the force-only NN-UKF, lacking
-    an observable force signal, drifts the \emph{wrong} way, while the
+    an observable force signal, drifts in the \emph{wrong} direction, while the
     deployed Fused-UKF tracks the true $n$ by leaning on its
     proprioceptive channel.}
   \label{fig:ukf_observability}
@@ -1063,17 +1063,17 @@ this gap.
 The earlier open-loop diagnostic (Fig.~\ref{fig:estimator_open_loop})
 separates an \emph{observability} limit from a \emph{model} limit by
 comparing each estimator's tail $|\Delta n|$ on firm sand under a
-scripted excitation manoeuvre against the same soil under closed-loop
+scripted excitation maneuver against the same soil under closed-loop
 tracking. The force-only NN-UKF goes from $0.09$ (open-loop) to $0.44$
-(closed-loop): it is observability-limited, and a real excitation
-manoeuvre \emph{fixes} it. The Bekker-UKF stays bad in both
+(closed-loop): it is observability-limited, and a dedicated excitation
+maneuver \emph{resolves} it. The Bekker-UKF remains model-limited in both
 ($0.48\!\to\!0.47$): it is model-limited --- the analytical Bekker law
-is simply wrong on sand, and no amount of excitation rescues it. The
+is inaccurate on sand, and no amount of excitation can compensate. The
 proprioceptive MLP, which reads vibration and is excitation-agnostic,
-is strong in both ($0.00\!\to\!0.04$), and the Fused-UKF inherits that
+is accurate in both ($0.00\!\to\!0.04$), and the Fused-UKF inherits that
 robustness ($0.01\!\to\!0.01$). This is the observability story seen
 from the other side, and it is why the deployed estimator needs
-\emph{no} dedicated excitation manoeuvre at runtime.
+\emph{no} dedicated excitation maneuver at runtime.
 
 \paragraph{The deployed Fused-UKF closes the gap (canonical presets).}
 Fig.~\ref{fig:estimator_comparison} reports the four estimators run
@@ -1249,7 +1249,7 @@ runs per variant.
     CLI cruise target, because on curvature-heavy paths the profile
     itself caps below the cruise target -- the cruise target is the
     \emph{intent}, the profile is what the controller is actually
-    asked to track. The observer lifts achieved speed by approximately
+    asked to track. The observer increases achieved speed by approximately
     $5\,\%$ at a small ($\sim$3\,cm) increase in tracking error.}
   \label{tab:throttledob}
   \centering
@@ -1288,10 +1288,10 @@ command source, the \texttt{SAFETY\_FILTERS} registry exposes a
 common \texttt{filter} interface: the filter receives the desired
 steering, throttle, brake, the current state, and the nearby
 obstacles, and returns the filtered command plus diagnostics. The
-DOB-CBF flavor solves a single-step minimum-deviation QP around the
+DOB-CBF variant solves a single-step minimum-deviation QP around the
 incoming command --- the natural intent-preserving mechanism for HIL
 teleoperation --- and logs intervention rate and command deviation as
-an intrusiveness signal. The MPPI flavor runs at the controller rate,
+an intrusiveness signal. The MPPI variant runs at the controller rate,
 samples $K\!=\!384$ noisy command sequences, rolls each forward
 through the same neural tire surrogate the planner uses over a
 horizon padded by the exponentially smoothed round-trip delay, and
@@ -1469,7 +1469,7 @@ With the in-horizon NMPC barrier re-enabled the two-layer stack is
 evaluated. Table~\ref{tab:safety_aware} reports 3240 runs total
 across all four safety-filter variants under both planner-aware and
 planner-blind modes.
-Barriers alone (no-filter, planner-aware) cut collisions by roughly
+Barriers alone (no-filter, planner-aware) cut collisions by approximately
 $5.6\times$ relative to the planner-blind baseline ($3.06\to0.55$ per
 run), and combining the barrier with the DOB-CBF or MPPI filter drives
 collisions to near zero ($0.17$ and $0.07$ per run, respectively).
@@ -1569,7 +1569,7 @@ the minimum clearance into the obstacle footprint.
   \includegraphics[width=\textwidth]{mppi_seed_ablation_collision_heatmap.png}
   \caption{MPPI seed-trajectory ablation. Removing the seeds
     eliminates the safety filter's commitment to evasive maneuvers; the
-    weighted mean then averages over many comparably bad samples
+    weighted mean then averages over many comparably high-error samples
     rather than concentrating on a recoverable trajectory.}
   \label{fig:mppi_seeds}
 \end{figure*}
@@ -1834,7 +1834,7 @@ The benchmark
 sweeps three terrains and three one-way latency settings.
 Table~\ref{tab:cw_lead} reports the time between the first
 \textsc{red} warning and the rock impact: on soft clay the warning
-fires roughly $1.6\text{--}1.8\,\mathrm{s}$ before impact; on firm
+fires approximately $1.6\text{--}1.8\,\mathrm{s}$ before impact; on firm
 sand the same vehicle reaches the rock with about $0.7\text{--}1.3\,\mathrm{s}$
 of lead. The lead time also grows with the configured operator
 latency on every terrain (clay $1.56\!\to\!1.76\,\mathrm{s}$ as
@@ -1857,7 +1857,7 @@ approximately $13{,}000$ Chrono closed-loop trials on a single
 Sec.~\ref{sec:safety_hil} is run separately because it requires an
 operator at the wheel.
 
-Reproducibility is enforced through a handful of architectural
+Reproducibility is enforced through a few architectural
 choices in the suite itself. Sensor noise is enabled in every trial
 so no oracle quantity is observable at inference time. A per-trial
 diagnostic CSV is saved alongside each run for post-hoc inspection.
@@ -1883,7 +1883,7 @@ networks that supply the force coefficients -- and re-fit those
 coefficients online by stochastic gradient descent on state-derivative
 residuals. The approach is complementary to ours: they fold soil
 mechanics into a structured force law where we estimate the soil and
-re-condition an unstructured surrogate. A drop-in adaptation of their
+re-condition an unstructured surrogate. A direct adaptation of their
 model into the per-axle interface of our acados solver improved
 offline force prediction (held-out $R^2_{F_y}$ from $0.35$ to $0.59$)
 but underperformed on aggressive transient maneuvers because the
@@ -1906,8 +1906,8 @@ and reduces median RMS crosstrack error against the
 live-estimator regime (Table~\ref{tab:tires_estimator}), separating
 clearly from them in the tail across the full terrain matrix
 (Table~\ref{tab:tires_static}), where even the calibrated baselines
-blow out on off-nominal dirt. The asymmetric
-throttle disturbance observer lifts achieved speed by approximately
+diverge on off-nominal dirt. The asymmetric
+throttle disturbance observer increases achieved speed by approximately
 $5\,\%$ ($4.24\!\to\!4.42\,\mathrm{m/s}$, $0.63\!\to\!0.66$ of the
 curvature-limited profile) at a small (${\sim}3\,\mathrm{cm}$) tracking
 cost. The two-layer planner-aware stack drives collisions to near zero
@@ -1946,7 +1946,7 @@ neural surrogate is trained and evaluated on the same SCM plant, so the
 analytical baselines are calibrated to that plant's mean lateral
 friction with a single global parameter set
 (Sec.~\ref{sec:tires_static}): the comparison is against a fair,
-SCM-calibrated analytical model rather than a rigid-road strawman, and
+SCM-calibrated analytical model rather than an uninformative rigid-road baseline, and
 the residual gap reflects what a fixed parameterization structurally
 cannot capture about terrain-varying deformable forces, not a tuning
 deficit.
