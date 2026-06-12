@@ -828,6 +828,69 @@ already-accurate lateral ($F_y$) channel.
   \label{fig:pred_validation}
 \end{figure*}
 
+\subsection{Feature headroom and the structural force-prediction floor}
+\label{sec:feature_headroom}
+Section~\ref{sec:pred_validation} isolates $F_x$ as the dominant
+prediction error. We test directly whether that gap, and the companion
+rear-axle $F_y$ weakness, is closable with additional \emph{causal,
+MPC-available} input features. Holding the deployed per-axle surrogate
+architecture fixed ($64\!\times\!32$ tanh, scenario split, three seeds),
+we retrain it with progressively richer inputs --- body-frame lateral
+velocity $v$, yaw rate $\omega$, road-wheel angle $\delta$, a kinematic
+lateral-load-transfer estimate, and their first differences --- and
+report held-out RMSE per axle (Table~\ref{tab:feature_headroom}). IMU
+accelerations are excluded as force consequences (label leakage).
+
+The response is sharply asymmetric. Front-axle lateral force improves by
+$14\%$ once the dynamic state and its rates are supplied: $F_{y,f}$
+genuinely benefits from richer vehicle context. The longitudinal channel
+is already at its feature floor --- $F_x$ RMSE falls at most $3\%$ on
+either axle --- which
+confirms the Section~\ref{sec:pred_validation} diagnosis at the model
+level: the soft-soil speed bias is a dynamics-level motion-resistance
+term, not a missing tire-model feature, and is therefore exactly the
+bias the throttle disturbance observer
+(Section~\ref{sec:throttledob}) absorbs online rather than something a
+richer surrogate could learn away.
+
+Rear-axle $F_y$ is a genuine structural floor. Beyond the $4\%$ of
+Table~\ref{tab:feature_headroom} we tested two further
+physically-motivated hypotheses on dedicated data, and neither moved it.
+First, per-wheel \emph{sinkage}: because the rear wheels run on soil the
+front has just compacted, the rear sinks markedly deeper (roughly $50\%$
+deeper than the front in a controlled probe), so multi-pass soil state
+is a plausible missing input; yet adding it improves rear $F_y$ by
+$\le 3\%$ \emph{even when the surrogate is handed the ground-truth SCM
+sinkage as an oracle}. Second, a $0.32$\,s causal history of the slip
+and dynamic-state channels (a tire-relaxation hypothesis) yields $0\%$.
+The rear lateral force is thus irreducible from MPC-available signals at
+the deployed capacity; we treat it as a characterized limit
+(Section~\ref{sec:limitations}), not a tuning target.
+
+\begin{table}[!t]
+  \renewcommand{\arraystretch}{1.15}
+  \caption{Per-axle held-out force RMSE (N) as causal, MPC-available
+    dynamic features are added to the deployed per-axle rate surrogate
+    (mean over three scenario-split seeds). Front $F_y$ improves $14\%$;
+    $F_x$ sits at its feature floor ($\le 3\%$) and rear $F_y$ barely moves
+    ($4\%$), the structural limit characterized in the text.}
+  \label{tab:feature_headroom}
+  \centering
+  \setlength{\tabcolsep}{5pt}
+  \begin{tabular}{lcccc}
+    \toprule
+    & \multicolumn{2}{c}{\textbf{$F_x$ (N)}} & \multicolumn{2}{c}{\textbf{$F_y$ (N)}}\\
+    \cmidrule(lr){2-3}\cmidrule(lr){4-5}
+    \textbf{Surrogate inputs} & front & rear & front & rear\\
+    \midrule
+    Deployed (rate)            & 433 & 579 & 377 & 444\\
+    {}\;+ dynamic state \& rates & 419 & 573 & \textbf{326} & 429\\
+    \midrule
+    Change                     & $-3\%$ & $-1\%$ & $\mathbf{-14\%}$ & $-4\%$\\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
 %======================================================================
 \section{Online Terrain Estimator}
 \label{sec:estimator}
@@ -1990,6 +2053,21 @@ SCM-calibrated analytical model rather than an uninformative rigid-road baseline
 the residual gap reflects what a fixed parameterization structurally
 cannot capture about terrain-varying deformable forces, not a tuning
 deficit.
+
+A characterized floor within the surrogate is the rear-axle lateral
+force. Section~\ref{sec:feature_headroom} shows that, unlike the front
+axle, rear $F_y$ does not respond to any causal MPC-available feature we
+tried --- dynamic vehicle state, kinematic load transfer, per-wheel
+sinkage (the multi-pass effect, tested even with ground-truth SCM
+sinkage as an oracle), or a $0.32$\,s slip/state history --- all of
+which leave it within $4\%$ of the deployed model. We therefore treat
+rear $F_y$ as irreducible at the deployed capacity rather than a tuning
+target. Separately, the longitudinal channel's soft-soil speed bias is a
+dynamics-level motion-resistance term, not a learnable tire feature
+($F_x$ RMSE moves at most $3\%$ under the same feature sweep); we compensate it
+with the throttle disturbance observer (Sec.~\ref{sec:throttledob})
+online, and a feedforward sinkage-drag term in the prediction model is
+the natural future replacement.
 
 The online estimator recovers only the sinkage exponent $n$ and
 reconstructs the remaining five Bekker--Mohr parameters from $\hat n$
