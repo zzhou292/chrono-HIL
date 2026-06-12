@@ -186,7 +186,7 @@ def _run_one(task: TransitionTask) -> dict:
     extra = [
         "--terrain-estimator",
         "--terrain-estimator-mode", "n",
-        "--terrain-estimator-backend", "fused",
+        "--terrain-estimator-backend", "nn_ukf_aug",
         "--te-verbose",
         "--terrain-transition",
         "--terrain-start", task.start_preset,

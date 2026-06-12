@@ -193,6 +193,10 @@ class LearnedTerrainEstimator:
             self._y_std = np.array([_ys, 1.0], dtype=np.float64)
             self._y_std_scalar = _ys
             self._logv_name = "log_var" if "log_var" in output_names else output_names[-1]
+            # Variance recalibration: scale predicted sigma so it matches the
+            # empirical held-out error (z-score unit variance). Fit on the
+            # validation set, NOT the closed-loop benchmark.
+            self._sigma_scale = float(cfg.get("sigma_scale", 1.0))
         output_bounds = cfg.get("output_bounds", {})
         phi_bounds = output_bounds.get("phi") if isinstance(output_bounds, dict) else None
         if phi_bounds and len(phi_bounds) == 2:
@@ -395,7 +399,8 @@ class LearnedTerrainEstimator:
         self._n_raw = n_pred
         if self._het:
             _lv = pred_map.get(self._logv_name, 0.0)
-            self._n_sigma = float(np.clip(np.exp(0.5 * _lv) * self._y_std_scalar, 0.01, 0.5))
+            self._n_sigma = float(np.clip(
+                np.exp(0.5 * _lv) * self._y_std_scalar * self._sigma_scale, 0.01, 0.5))
         # Track raw/smooth disagreement before the smoother absorbs the new
         # sample, so high-noise periods inflate the residual EMA promptly.
         n_resid = n_pred - self._n_smooth

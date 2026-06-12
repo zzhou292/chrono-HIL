@@ -1,0 +1,7 @@
+terrain,variant,n,rms_mean,rms_std,speed_mean
+clay,gp_loaded,12,0.0864,0.0132,0.6545
+clay,gp_off,12,0.0811,0.0127,0.6465
+clay,gp_warmup,12,0.0819,0.0117,0.6457
+sand,gp_loaded,11,0.0988,0.0463,0.6427
+sand,gp_off,12,0.1041,0.0489,0.6292
+sand,gp_warmup,12,0.0998,0.0475,0.6295

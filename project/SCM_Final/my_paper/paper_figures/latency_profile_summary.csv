@@ -1,0 +1,4 @@
+,mean,std,min,max
+control_delay_ms,450.0,0.0,450.0,450.0
+manual_delay_ms,450.0,0.0,450.0,450.0
+camera_delay_ms,660.5,0.0,660.5,660.5
