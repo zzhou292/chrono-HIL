@@ -74,7 +74,7 @@ stack cuts median RMS crosstrack error by $35$--$43\,\%$ over
 SCM-calibrated Pacejka and TMeasy baselines in the live-estimator regime
 (recovering near-oracle tracking with no prior terrain knowledge), the disturbance observer
 recovers part of the soft-soil speed gap at a small tracking cost, both
-shields cut collisions by more than 90\,\% under the learned 5G
+safety filters cut collisions by more than 90\,\% under the learned 5G
 profile, and the warning predicts stopping distance to within
 $0.17\,\mathrm{m}$ mean absolute error against actual Chrono brake
 stops.
@@ -150,7 +150,7 @@ Concretely, this work contributes:
         (Section~\ref{sec:safety}) pairing in-horizon NMPC softplus
         barriers with a swappable downstream safety filter: an
         intent-preserving DOB-CBF-QP inspired by~\cite{Zhang25}, an
-        MPPI predictive shield with seeded recovery trajectories, and
+        MPPI predictive safety filter with seeded recovery trajectories, and
         a gradient-based NMPC variant on the same rollout.
   \item A learned 5G latency model (Section~\ref{sec:latency}) that
         drives a queue-load delay on both the operator-command and
@@ -194,7 +194,7 @@ at the physics state rate ($100\,\mathrm{Hz}$),
 a control command at the controller rate ($10\,\mathrm{Hz}$),
 and a lifecycle status message. The control command carries the
 most recent live terrain estimate as optional fields so the sim-side
-safety shield re-conditions itself without a separate high-priority
+safety filter re-conditions itself without a separate high-priority
 channel; the deployed estimator is $n$-only, and the remaining
 Bekker--Mohr fields are mapped from $\hat n$ along the
 terrain manifold before attachment. Piggy-backing is required because
@@ -722,7 +722,7 @@ checkpoint exhibits. A simple $w=0.4$ rig-plus-vehicle ensemble
 cancels the opposing biases at zero deployment cost (RMSE drops to
 637\,N, a 5\,\% improvement over vehicle alone), and is the
 recommended default for downstream force-prediction consumers such
-as the MPPI shield.
+as the MPPI filter.
 
 \begin{figure}[!t]
   \centering
@@ -826,7 +826,7 @@ smoothed by an exponential moving average. The MPC starts from a
 neutral dirt prior ($n\!=\!0.7$), accepts an estimator update about
 $4.2\,\mathrm{s}$ into a run, and maps the smoothed $\hat n$ onto
 $(K_\phi,K_c,c,\phi,k)$ by interpolation along the retained
-clay--dirt--sand terrain manifold. The controller and safety shield
+clay--dirt--sand terrain manifold. The controller and safety filter
 therefore receive a complete soil-parameter vector, but the live
 identified degree of freedom in this paper is $n$ only.
 
@@ -1313,7 +1313,7 @@ an ablation that confirms the seeds are not optional.
 \paragraph{Comparison filters.}
 The safety-filter contract is evaluated with (i) the DOB-CBF filter of
 Zhang et al.~\cite{Zhang25}, optionally evaluated on the same neural
-surrogate; (ii) the MPPI predictive shield; (iii) a gradient-based
+surrogate; (ii) the MPPI predictive safety filter; (iii) a gradient-based
 NMPC variant solved via SLSQP on the identical rollout; and (iv) no
 filter.
 
@@ -1353,10 +1353,10 @@ pending.]} Across the four filters and the
 $\Delta_\mathrm{cmd}\!\in\!\{0,0.15,0.30\}\,$s operator-latency sweep we
 report, per driver round, collisions, minimum clearance, intervention rate,
 mean steering and throttle correction, and speed retention. The expected
-reading is that the DOB-CBF and MPPI shields cut collisions relative to the
+reading is that the DOB-CBF and MPPI filters cut collisions relative to the
 no-filter baseline while holding a low intervention rate and small command
 deviation (operator intent is preserved whenever the human command is
-already safe), corroborating the autonomous shield-only sweep of
+already safe), corroborating the autonomous safety-filter-only sweep of
 Sec.~\ref{sec:safety_blind}.
 
 \begin{table}[!t]
@@ -1405,33 +1405,33 @@ Sec.~\ref{sec:safety_blind}.
 \end{figure}
 
 
-\subsection{Autonomous validation: shield-only collision avoidance}
+\subsection{Autonomous validation: safety-filter-only collision avoidance}
 \label{sec:safety_blind}
 
 The HIL protocol of Section~\ref{sec:safety_hil} is complemented by
 an autonomous controlled experiment in which an obstacle-blind planner
-stands in for the operator, isolating the shield as the sole collision
+stands in for the operator, isolating the safety filter as the sole collision
 avoider. This
 removes operator variance and supports a larger, fully repeatable
 matrix (405 trials per filter; 1620 trials total). The same matrix is
 re-evaluated with the planner's in-horizon barriers re-enabled in
 Sec.~\ref{sec:safety_aware} for a total of 3240 runs.
 Table~\ref{tab:safety_blind} and Fig.~\ref{fig:safety_blind} report the
-shield-only outcome. Because the planner's reference here is
+safety-filter-only outcome. Because the planner's reference here is
 deliberately routed through the obstacles, the crosstrack-error (CTE)
 column does not measure tracking quality: it measures how far an active
-shield must pull the vehicle off that obstacle-blind reference to stay
+safety filter must pull the vehicle off that obstacle-blind reference to stay
 safe, and therefore reads as an intrusiveness proxy. A larger CTE for
 DOB-CBF and NMPC than for MPPI is consistent with their higher
 per-step deviation, not with worse tracking.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
-  \caption{Autonomous shield-only validation (planner blind to
+  \caption{Autonomous safety-filter-only validation (planner blind to
     obstacles). 405 runs per filter (1620 total); same scenario matrix
     as Table~\ref{tab:safety_aware}, blind rows only. MPPI achieves the
     lowest mean collisions \emph{and} the largest clearance margin;
-    DOB-CBF is the least intrusive shield (lowest intervention rate),
+    DOB-CBF is the least intrusive safety filter (lowest intervention rate),
     the natural intent-preserving filter for the HIL case in
     Sec.~\ref{sec:safety_hil}.}
   \label{tab:safety_blind}
@@ -1452,7 +1452,7 @@ per-step deviation, not with worse tracking.
 \begin{figure*}[!t]
   \centering
   \includegraphics[width=\textwidth]{safety_filter_collision_heatmap.png}
-  \caption{Autonomous shield-only validation. Mean unique obstacles hit
+  \caption{Autonomous safety-filter-only validation. Mean unique obstacles hit
     per run, stratified by terrain and safety filter, with whisker
     error bars showing across-seed standard deviation. The reported
     sweep covers all three deployment terrains (clay, dirt, sand) across
@@ -1467,18 +1467,18 @@ per-step deviation, not with worse tracking.
 
 With the in-horizon NMPC barrier re-enabled the two-layer stack is
 evaluated. Table~\ref{tab:safety_aware} reports 3240 runs total
-across all four shield flavours under both planner-aware and
+across all four safety-filter variants under both planner-aware and
 planner-blind modes.
-Barriers alone (no-shield, planner-aware) cut collisions by roughly
+Barriers alone (no-filter, planner-aware) cut collisions by roughly
 $5.6\times$ relative to the planner-blind baseline ($3.06\to0.55$ per
-run), and combining the barrier with the DOB-CBF or MPPI shield drives
+run), and combining the barrier with the DOB-CBF or MPPI filter drives
 collisions to near zero ($0.17$ and $0.07$ per run, respectively).
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
   \caption{Planner-aware vs.\ planner-blind safety sweep. 3240 runs.
-    The two-layer stack (barrier $+$ shield) drives collisions to near
-    zero ($\le 0.17$/run) for both DOB-CBF and MPPI shields.}
+    The two-layer stack (barrier $+$ safety filter) drives collisions to near
+    zero ($\le 0.17$/run) for both DOB-CBF and MPPI filters.}
   \label{tab:safety_aware}
   \centering
   \setlength{\tabcolsep}{4pt}
@@ -1542,7 +1542,7 @@ two variants over 1215 closed-loop trials.
 
 The contribution of the hand-crafted seed trajectories is
 quantified by disabling the seed-injection logic and forcing the
-shield to rely solely on Gaussian sampling around the operator
+safety filter to rely solely on Gaussian sampling around the operator
 command. Table~\ref{tab:mppi_seeds} and Fig.~\ref{fig:mppi_seeds}
 report the result over 810 closed-loop trials. Removing the seeds
 increases the collision rate by approximately 30$\times$ and drives
@@ -1568,29 +1568,29 @@ the minimum clearance into the obstacle footprint.
   \centering
   \includegraphics[width=\textwidth]{mppi_seed_ablation_collision_heatmap.png}
   \caption{MPPI seed-trajectory ablation. Removing the seeds
-    eliminates the shield's commitment to evasive maneuvers; the
+    eliminates the safety filter's commitment to evasive maneuvers; the
     weighted mean then averages over many comparably bad samples
     rather than concentrating on a recoverable trajectory.}
   \label{fig:mppi_seeds}
 \end{figure*}
 
-\subsection{Planner tire model under a fixed MPPI shield}
+\subsection{Planner tire model under a fixed MPPI filter}
 \label{sec:safety_tire}
 
 A separate sweep runs the autonomous obstacle scenario with the
-MPPI shield always on, varying only the planner's tire model (the
+MPPI filter always on, varying only the planner's tire model (the
 analytical planners use the SCM-calibrated parameters of
 Sec.~\ref{sec:tires_static}). All three tire models avoid the obstacles
 approximately equally
 (Table~\ref{tab:auto_obstacle} and Fig.~\ref{fig:auto_obstacle}),
-indicating that the shield dominates the shield-mediated outcome
+indicating that the safety filter dominates the filter-mediated outcome
 and that the planner-tire choice is largely orthogonal to the
 safety outcome.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
   \caption{Autonomous obstacle avoidance, planner tire model swept
-    under a fixed MPPI shield (analytical planners SCM-calibrated).
+    under a fixed MPPI filter (analytical planners SCM-calibrated).
     1215 runs (405 per model).}
   \label{tab:auto_obstacle}
   \centering
@@ -1610,10 +1610,10 @@ safety outcome.
   \centering
   \includegraphics[width=\textwidth]{autonomous_obstacle_collision_heatmap.png}
   \caption{Autonomous obstacle avoidance, planner tire model swept
-    under a fixed MPPI shield. Mean unique obstacles hit per run
+    under a fixed MPPI filter. Mean unique obstacles hit per run
     stratified by terrain with across-seed whisker error bars; the
     three tire models are statistically indistinguishable here because
-    the shield, not the planner-tire choice, dominates the safety
+    the safety filter, not the planner-tire choice, dominates the safety
     outcome. Sweep matrix is clay/dirt/sand $\times$ 3 paths $\times$ 3
     speeds $\times$ 3 bumpiness $\times$ 5 seeds.
     Aggregate KPIs are in Table~\ref{tab:auto_obstacle}.}
@@ -1650,8 +1650,8 @@ channels.
 The closed-loop obstacle scenario is then run under the synthetic
 profile with three filter configurations:
 Table~\ref{tab:latency_comp} and Fig.~\ref{fig:latency_comp}
-report the result over 1215 trials. Both shield variants reduce
-collisions by more than 90\,\% relative to the no-shield
+report the result over 1215 trials. Both safety filter variants reduce
+collisions by more than 90\,\% relative to the no-filter
 baseline (DOB-CBF by $99.7\,\%$, MPPI by $96\,\%$).
 
 \begin{table}[!t]
@@ -1912,9 +1912,9 @@ $5\,\%$ ($4.24\!\to\!4.42\,\mathrm{m/s}$, $0.63\!\to\!0.66$ of the
 curvature-limited profile) at a small (${\sim}3\,\mathrm{cm}$) tracking
 cost. The two-layer planner-aware stack drives collisions to near zero
 ($\le 0.17$/run) when paired with either DOB-CBF or MPPI as the
-downstream shield, the MPPI seed trajectories are essential rather
+downstream safety filter, the MPPI seed trajectories are essential rather
 than auxiliary, the DOB-CBF filter benefits substantially from
-re-using the neural surrogate, and both shields cut collisions by
+re-using the neural surrogate, and both safety filters cut collisions by
 ${>}90\,\%$ under the learned 5G profile. The forward
 collision warning closes the advisory gap the override-style filters
 leave open: its analytical stopping-distance prediction lands within
@@ -1937,7 +1937,7 @@ on Chrono's Soil Contact Model. We make no sim-to-real transfer claim:
 the contribution is the modular, latency-aware \emph{architecture} and
 the relative comparisons it enables on a high-fidelity, widely-used
 deformable-terrain plant~\cite{Krenn09,Tasora16}. Those comparisons ---
-learned surrogate versus analytical tire model, shield versus no shield,
+learned surrogate versus analytical tire model, safety filter versus no safety filter,
 estimator-on versus wrong-prior --- are internal to one plant and one
 harness, so they are unaffected by any absolute sim-to-real offset; and
 the plant is itself a swap point, so porting to hardware or another
@@ -1972,7 +1972,7 @@ avoidance, and a terrain- and latency-aware collision warning around a
 single deformable-terrain plant. The novelty is the \emph{integration}:
 where prior work treats terrain adaptation and delay-compensated safety
 in isolation, here a differentiable SCM tire surrogate, an online
-$n$-estimator that re-conditions it, swappable safety shields, and an
+$n$-estimator that re-conditions it, swappable safety filters, and an
 advisory warning share one plant, one messaging substrate, and one
 benchmarking harness, so every architectural choice is measured on the
 same matrix. Empirically, the surrogate-plus-estimator recovers
@@ -1980,7 +1980,7 @@ near-oracle tracking with no prior terrain knowledge --- within
 $\approx\!20\,\mathrm{mm}$ median RMS crosstrack error of the
 matched-prior oracle and well below SCM-calibrated analytical baselines;
 the deployed proprioceptive-fused UKF tracks $n$ across the deployable
-range at $4.5\,\%$ median error; both safety shields cut collisions by
+range at $4.5\,\%$ median error; both safety filters cut collisions by
 more than $90\,\%$ under a learned 5G latency profile; and the collision
 warning predicts stopping distance to $0.17\,\mathrm{m}$. The modular
 swap points make each of these a replaceable component rather than a
