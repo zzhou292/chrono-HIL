@@ -95,6 +95,21 @@ _DEFAULT_TERRAIN_CLASS = "clay"
 # Subset of terrain_preset_to_internal keys passed into the OCP each stage
 TERRAIN_MPC_PARAM_KEYS = ("Kphi", "Kc", "n", "c", "phi", "k")
 
+# Feedforward motion-resistance (sinkage-drag) calibration: unmodelled
+# longitudinal deceleration [m/s^2] vs sinkage exponent n, fit from DOB-off
+# rollout drift (benchmarking/calibrate_motion_resistance.py). Indexed online by
+# the live estimate n_hat. Ascending n. The fit is non-monotonic: only firm,
+# high-n soil (dry sand) genuinely over-predicts speed, so the calibrated drag
+# is effectively sand-specific (clay accurate, dirt under-predicts -> clipped to
+# 0). Gated behind --ff-drag so default behaviour is unchanged.
+_FF_DRAG_N = np.array([0.50, 0.70, 1.10])
+_FF_DRAG_C = np.array([0.0, 0.0, 0.171])  # DOB-off rollout-drift calibration
+
+
+def _c_drag(n_hat: float) -> float:
+    """Calibrated feedforward drag deceleration (m/s^2) at sinkage exponent n_hat."""
+    return float(np.interp(float(n_hat), _FF_DRAG_N, _FF_DRAG_C))
+
 # Minimum forward speed represented in MPC state (physical bound).
 MPC_STATE_MIN_FORWARD_SPEED_MPS = 0.0
 # Speed epsilon used only in slip-angle/rate feature computations.
@@ -1075,6 +1090,13 @@ def run_controller_node(args):
             sr_meas=sr_h,
             terrain_params=terrain_params_est,
         )
+        # Feedforward sinkage-drag: anticipate soft-soil motion resistance in the
+        # NMPC longitudinal prediction (u_dot = ax + du_dot_resid). Indexed by the
+        # live n_hat; the solver fades it in above ~0.5 m/s.
+        if getattr(args, "ff_drag", False) and float(args.ff_drag_scale) != 0.0:
+            _du_dot = -float(args.ff_drag_scale) * _c_drag(n_terrain_est)
+            solve_kwargs["dynamics_residuals"] = np.tile(
+                np.array([_du_dot, 0.0, 0.0], dtype=float), (mpc.N + 1, 1))
         if tire_hist is not None:
             solve_kwargs['hist_front'] = tire_hist.front
             solve_kwargs['hist_rear'] = tire_hist.rear
@@ -1940,6 +1962,24 @@ def main():
         type=float,
         default=0.5,
         help="Exponential bleed rate of the DOB during MPC braking [1/s]",
+    )
+    # Feedforward sinkage-drag term: injects du_dot_resid = -c_drag(n_hat) into
+    # the NMPC longitudinal prediction (u_dot = ax + du_dot_resid) so the planner
+    # proactively anticipates soft-soil motion resistance instead of relying on
+    # the reactive throttle DOB. c_drag(n) is calibrated from DOB-off rollout
+    # drift (benchmarking/calibrate_motion_resistance.py).
+    p.add_argument(
+        "--ff-drag",
+        action="store_true",
+        help="Enable the feedforward sinkage-drag term in the NMPC longitudinal "
+             "prediction (du_dot_resid = -c_drag(n_hat)).",
+    )
+    p.add_argument(
+        "--ff-drag-scale",
+        type=float,
+        default=1.0,
+        help="Scale on the calibrated feedforward drag deceleration (1.0 = as "
+             "calibrated; 0 disables).",
     )
 
     # Analytics

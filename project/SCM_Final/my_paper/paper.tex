@@ -807,12 +807,16 @@ but \emph{over-predicts longitudinal speed} by ${\approx}0.5\,$m/s almost
 immediately, growing to ${\approx}1.0\,$m/s by $4\,$s on firm sand. The
 position drift (up to $2.7\,$m at $4\,$s) is therefore dominated by
 accumulated speed error, not lateral error. The prediction weakness is
-concentrated in the longitudinal channel: the surrogate under-predicts
-soft-soil motion resistance, the same gap the throttle disturbance
-observer (Sec.~\ref{sec:throttledob}) compensates online and that the
-$10\,$Hz re-planning masks in closed loop. This identifies $F_x$ as the
-surrogate's primary improvement target, distinct from the
-already-accurate lateral ($F_y$) channel.
+concentrated in the longitudinal channel, and a signed analysis shows
+the bias is \emph{terrain-dependent}: firm soil over-predicts speed,
+soft dirt under-predicts, and clay is accurate. It reflects the
+kinematic longitudinal model ($\dot u\!=\!a_x$) omitting a
+terrain-varying motion-resistance term --- not a tire-surrogate feature
+deficit, since the surrogate $F_x$ is not used in the longitudinal
+channel (Sec.~\ref{sec:feature_headroom}). The throttle disturbance
+observer (Sec.~\ref{sec:throttledob}) closes this gap online and the
+$10\,$Hz re-planning masks it in closed loop; the lateral ($F_y$)
+channel is already accurate.
 
 \begin{figure*}[!t]
   \centering
@@ -1379,6 +1383,54 @@ runs per variant.
     sinkage drag in that regime.}
   \label{fig:throttledob}
 \end{figure*}
+
+\subsection{Why a reactive observer rather than a feedforward drag model}
+\label{sec:throttledob_ff}
+A natural alternative is to make the resistance \emph{feedforward}: the
+OCP already exposes a longitudinal residual ($\dot u = a_x +
+\mathrm{d}u_\mathrm{resid}$), so one can set
+$\mathrm{d}u_\mathrm{resid} = -c_\mathrm{drag}(\hat n)$ with
+$c_\mathrm{drag}$ calibrated from the DOB-off rollout drift and indexed
+by the live estimate $\hat n$. We implemented and calibrated this, and it
+clarifies why the reactive observer is the better choice. First, the
+prediction bias is \emph{not} a monotonic drag: only firm soil (dry
+sand) genuinely over-predicts speed
+($c_\mathrm{drag}\!\approx\!0.17\,\mathrm{m/s^2}$); on dirt the kinematic
+prediction \emph{under}-predicts and on clay it is accurate, so the
+calibrated feedforward is effectively sand-specific. Second, a
+head-to-head over clay/dirt/sand (Table~\ref{tab:ffdrag}) shows the
+feedforward term helps where calibrated (sand speed ratio
+$0.60\!\to\!0.64$, dirt $0.82\!\to\!0.85$) and is correctly inert on
+clay, but it \emph{cannot replace} the observer: the DOB is higher on
+every terrain (clay $0.70$ vs.\ $0.54$, sand $0.67$ vs.\ $0.64$) because
+clay's deficit is a traction limit, not a drag, which only integral
+feedback closes. Combining the two does not raise speed and inflates
+tracking error. A terrain-dependent, sign-varying bias is exactly the
+regime where an adaptive observer beats a fixed model, so the DOB is
+retained as the default and the feedforward term is left as an optional
+firm-soil refinement.
+
+\begin{table}[!t]
+  \renewcommand{\arraystretch}{1.15}
+  \caption{Feedforward sinkage-drag vs.\ the reactive DOB --- mean speed
+    ratio (achieved $\bar u$ / reference), sinusoidal path,
+    $v\!\in\!\{5,7\}\,$m/s, two seeds. \emph{off}: neither;
+    \emph{ffdrag}: feedforward drag, DOB off; \emph{DOB}: reactive
+    observer. The feedforward term helps where calibrated (sand, dirt)
+    but trails the DOB on every terrain.}
+  \label{tab:ffdrag}
+  \centering
+  \setlength{\tabcolsep}{6pt}
+  \begin{tabular}{lccc}
+    \toprule
+    \textbf{Terrain} & \textbf{off} & \textbf{ffdrag} & \textbf{DOB}\\
+    \midrule
+    clay & $0.53$ & $0.54$ & $\mathbf{0.70}$\\
+    dirt & $0.82$ & $0.85$ & $\mathbf{0.88}$\\
+    sand & $0.60$ & $0.64$ & $\mathbf{0.67}$\\
+    \bottomrule
+  \end{tabular}
+\end{table}
 
 %======================================================================
 \section{Two-Layer Obstacle Avoidance}

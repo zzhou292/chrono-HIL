@@ -158,6 +158,10 @@ Examples:
                    help="Asymmetric upper clip on the DOB throttle bias")
     p.add_argument("--dob-bleed", type=float, default=0.5,
                    help="Exponential bleed rate of DOB during MPC braking [1/s]")
+    p.add_argument("--ff-drag", action="store_true",
+                   help="Feedforward sinkage-drag term in NMPC longitudinal prediction")
+    p.add_argument("--ff-drag-scale", type=float, default=1.0,
+                   help="Scale on the calibrated feedforward drag (0 disables)")
     p.add_argument("--no-plot", action="store_true",
                    help="Skip generating end-of-run plots")
     p.add_argument("--live-plot", action="store_true",
@@ -481,7 +485,10 @@ Examples:
         "--dob-ki", str(args.dob_ki),
         "--dob-max", str(args.dob_max),
         "--dob-bleed", str(args.dob_bleed),
+        "--ff-drag-scale", str(args.ff_drag_scale),
     ]
+    if getattr(args, "ff_drag", False):
+        ctrl_cmd.append("--ff-drag")
     if getattr(args, "controller_prior_terrain", None):
         ctrl_cmd.extend(["--controller-prior-terrain",
                          args.controller_prior_terrain])
