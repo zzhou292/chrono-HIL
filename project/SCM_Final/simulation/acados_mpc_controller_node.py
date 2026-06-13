@@ -95,15 +95,22 @@ _DEFAULT_TERRAIN_CLASS = "clay"
 # Subset of terrain_preset_to_internal keys passed into the OCP each stage
 TERRAIN_MPC_PARAM_KEYS = ("Kphi", "Kc", "n", "c", "phi", "k")
 
-# Feedforward motion-resistance (sinkage-drag) calibration: unmodelled
-# longitudinal deceleration [m/s^2] vs sinkage exponent n, fit from DOB-off
-# rollout drift (benchmarking/calibrate_motion_resistance.py). Indexed online by
-# the live estimate n_hat. Ascending n. The fit is non-monotonic: only firm,
-# high-n soil (dry sand) genuinely over-predicts speed, so the calibrated drag
-# is effectively sand-specific (clay accurate, dirt under-predicts -> clipped to
-# 0). Gated behind --ff-drag so default behaviour is unchanged.
+# Feedforward motion-resistance (sinkage-drag) term for the longitudinal
+# dynamics (u_dot = ax + du_dot_resid). Gated by --ff-drag (default off).
+#
+# NOTE (negative result): a constant dynamics-level drag cannot replace the DOB.
+# Sizing it from the DOB's converged throttle offset (c_drag = d_hat*ax_max)
+# OVER-estimates the drag, because on soil the throttle->accel gain is far below
+# ax_max (that gain error IS the soil effect the DOB absorbs) -- feeding it makes
+# the NMPC wildly over-throttle (clay 5.3 m/s, CTE 1.0 m). Even a hand-tuned
+# smaller value hits the reference speed but destroys tracking (clay CTE
+# 0.7-0.9 m vs DOB 0.20), because a constant drag perturbs the coupled NMPC
+# solution. Properly modelling the drag needs the soil-dependent throttle->force
+# map (i.e. a surrogate-driven longitudinal force balance), not a scalar. The
+# value below is the weak sand-specific rollout-drift fit kept only for the
+# §IX-A comparison.
 _FF_DRAG_N = np.array([0.50, 0.70, 1.10])
-_FF_DRAG_C = np.array([0.0, 0.0, 0.171])  # DOB-off rollout-drift calibration
+_FF_DRAG_C = np.array([0.0, 0.0, 0.171])  # weak sand-only fit; see note above
 
 
 def _c_drag(n_hat: float) -> float:
