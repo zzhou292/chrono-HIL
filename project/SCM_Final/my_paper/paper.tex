@@ -1384,7 +1384,7 @@ runs per variant.
   \label{fig:throttledob}
 \end{figure*}
 
-\subsection{Why a reactive observer rather than a feedforward drag model}
+\subsection{Why a reactive observer rather than a feedforward model}
 \label{sec:throttledob_ff}
 A natural alternative is to make the resistance \emph{feedforward}: the
 OCP already exposes a longitudinal residual ($\dot u = a_x +
@@ -1409,6 +1409,25 @@ tracking error. A terrain-dependent, sign-varying bias is exactly the
 regime where an adaptive observer beats a fixed model, so the DOB is
 retained as the default and the feedforward term is left as an optional
 firm-soil refinement.
+
+The same conclusion holds for a feedforward at the \emph{actuation map}
+itself, the most direct DOB replacement. The naive map
+$\tau=a_x/a_{x,\max}$ omits a terrain-dependent throttle offset; the
+integral DOB converges to exactly that offset, which is smooth in $\hat
+n$ (clay/dirt ${\approx}0.24$, sand ${\approx}0.07$). Baking the
+converged offset in as a static held bias $d_\mathrm{ff}(\hat n)$ and
+removing the integral (a 48-run clay/dirt/sand ablation) again fails to
+replace the observer: it recovers part of the clay deficit
+($3.20\!\to\!3.39$ vs.\ DOB $3.79\,$m/s) but \emph{over}-throttles
+firmer dirt ($5.01\!\to\!4.80$, below even no compensation) and raises
+tracking error, because the required offset is not a static function of
+$\hat n$ alone --- it varies with instantaneous speed, curvature, and
+load transfer, which the integral tracks online and a terrain-indexed
+map cannot. Stacking feedforward and integral matches the DOB's speed
+but inflates clay CTE ($0.20\!\to\!0.35\,$m). The longitudinal
+disturbance-rejection burden is therefore genuinely adaptive: the DOB is
+not a tunable patch over a poor model but a necessary closed-loop
+element.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.15}

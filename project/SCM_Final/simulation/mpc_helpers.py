@@ -243,7 +243,8 @@ class ControlIntegrator:
         self.dob_ki = float(dob_ki)         # integrator gain [throttle / (m/s) / s]
         self.dob_max = float(dob_max)       # upper clip on d_hat (asymmetric)
         self.dob_bleed = float(dob_bleed)   # exponential bleed rate during braking
-        self._d_hat = 0.0                   # estimated throttle bias
+        self._d_hat = 0.0                   # estimated throttle bias (integral DOB)
+        self._d_ff = 0.0                    # feedforward terrain throttle offset
 
     def update(self, delta_dot: float, Jx: float, dt: float, u: float,
                v_ref_now: float | None = None):
@@ -300,6 +301,24 @@ class ControlIntegrator:
                 # Asymmetric clip: only positive bias, capped at dob_max.
                 self._d_hat = float(np.clip(self._d_hat, 0.0, self.dob_max))
             throttle = float(np.clip(throttle + self._d_hat, 0.0, 1.0))
+
+        # --- Feedforward terrain-aware throttle offset (calibrated DOB
+        # replacement) ---
+        # The integral DOB above converges to a per-terrain throttle offset that
+        # the naive throttle = a_x / a_x_max map omits on deformable soil. Here we
+        # apply that offset directly as a precomputed feedforward d_ff(n_hat),
+        # gated like the DOB (only when under-speed and not braking) but WITHOUT
+        # any integral accumulation. With dob_ki=0 this fully replaces the
+        # reactive observer with a static terrain-aware actuation map; the two can
+        # also stack (feedforward bulk + small integral for the residual).
+        # Applied as a PERSISTENT held bias whenever not braking (mirroring how
+        # the integral DOB keeps applying its converged _d_hat, gating only the
+        # growth, not the application). An instantaneous v_err>0 gate would switch
+        # the bias off at equilibrium and let the speed sag, under-applying the
+        # offset; the not-braking gate already prevents fighting MPC braking and
+        # overshoot is absorbed by the MPC commanding braking.
+        if self._d_ff > 0.0 and not is_braking:
+            throttle = float(np.clip(throttle + self._d_ff, 0.0, 1.0))
 
         # Low-pass filter: prevent instant throttle↔brake switching.
         alpha = min(4.0 * dt, 1.0)

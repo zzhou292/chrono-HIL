@@ -110,6 +110,20 @@ def _c_drag(n_hat: float) -> float:
     """Calibrated feedforward drag deceleration (m/s^2) at sinkage exponent n_hat."""
     return float(np.interp(float(n_hat), _FF_DRAG_N, _FF_DRAG_C))
 
+
+# Feedforward THROTTLE offset that replaces the integral DOB: the per-terrain
+# value the asymmetric velocity-error DOB converges to (throttle - a_x/a_x_max),
+# extracted from DOB-on logs. Soft low-n soil needs the largest offset. Indexed
+# by the live n_hat; applied with --ff-throttle (set dob-ki 0 for a pure
+# feedforward actuation map, the reactive-DOB replacement).
+_FF_THROTTLE_N = np.array([0.50, 0.70, 1.10])
+_FF_THROTTLE_D = np.array([0.244, 0.242, 0.067])
+
+
+def _d_ff_throttle(n_hat: float) -> float:
+    """Calibrated feedforward throttle offset at sinkage exponent n_hat."""
+    return float(np.interp(float(n_hat), _FF_THROTTLE_N, _FF_THROTTLE_D))
+
 # Minimum forward speed represented in MPC state (physical bound).
 MPC_STATE_MIN_FORWARD_SPEED_MPS = 0.0
 # Speed epsilon used only in slip-angle/rate feature computations.
@@ -1258,6 +1272,11 @@ def run_controller_node(args):
         # throttle.
         v_ref_now = float(v_ref[0]) if len(v_ref) else float(v_target)
 
+        # Feedforward terrain-aware throttle offset (calibrated DOB replacement):
+        # index the per-terrain offset by the live n_hat and hand it to the
+        # integrator. Inert unless --ff-throttle is set.
+        if getattr(args, "ff_throttle", False) and float(args.ff_throttle_scale) != 0.0:
+            integrator._d_ff = float(args.ff_throttle_scale) * _d_ff_throttle(n_terrain_est)
         _, throttle, braking = integrator.update(
             0.0, Jx, dt_ctrl, msg.u,
             v_ref_now=v_ref_now,
@@ -1980,6 +1999,19 @@ def main():
         default=1.0,
         help="Scale on the calibrated feedforward drag deceleration (1.0 = as "
              "calibrated; 0 disables).",
+    )
+    p.add_argument(
+        "--ff-throttle",
+        action="store_true",
+        help="Replace the integral throttle DOB with a calibrated feedforward "
+             "terrain throttle offset d_ff(n_hat). Pair with --dob-ki 0 for a "
+             "pure feedforward actuation map (the reactive-DOB replacement).",
+    )
+    p.add_argument(
+        "--ff-throttle-scale",
+        type=float,
+        default=1.0,
+        help="Scale on the calibrated feedforward throttle offset (0 disables).",
     )
 
     # Analytics

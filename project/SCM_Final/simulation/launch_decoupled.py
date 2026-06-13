@@ -162,6 +162,10 @@ Examples:
                    help="Feedforward sinkage-drag term in NMPC longitudinal prediction")
     p.add_argument("--ff-drag-scale", type=float, default=1.0,
                    help="Scale on the calibrated feedforward drag (0 disables)")
+    p.add_argument("--ff-throttle", action="store_true",
+                   help="Feedforward terrain throttle offset replacing the integral DOB")
+    p.add_argument("--ff-throttle-scale", type=float, default=1.0,
+                   help="Scale on the calibrated feedforward throttle offset (0 disables)")
     p.add_argument("--no-plot", action="store_true",
                    help="Skip generating end-of-run plots")
     p.add_argument("--live-plot", action="store_true",
@@ -486,9 +490,12 @@ Examples:
         "--dob-max", str(args.dob_max),
         "--dob-bleed", str(args.dob_bleed),
         "--ff-drag-scale", str(args.ff_drag_scale),
+        "--ff-throttle-scale", str(args.ff_throttle_scale),
     ]
     if getattr(args, "ff_drag", False):
         ctrl_cmd.append("--ff-drag")
+    if getattr(args, "ff_throttle", False):
+        ctrl_cmd.append("--ff-throttle")
     if getattr(args, "controller_prior_terrain", None):
         ctrl_cmd.extend(["--controller-prior-terrain",
                          args.controller_prior_terrain])

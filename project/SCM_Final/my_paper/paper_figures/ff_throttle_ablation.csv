@@ -1,0 +1,4 @@
+terrain,speed_off,cte_off,speed_ffwd,cte_ffwd,speed_dob,cte_dob,speed_ffwd+dob,cte_ffwd+dob
+clay,3.199,0.119,3.392,0.225,3.786,0.201,3.779,0.35
+dirt,5.011,0.325,4.802,0.347,5.251,0.321,5.26,0.378
+sand,3.653,0.069,3.558,0.078,3.905,0.069,3.896,0.068
