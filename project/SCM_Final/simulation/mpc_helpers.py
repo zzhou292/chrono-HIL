@@ -247,7 +247,8 @@ class ControlIntegrator:
         self._d_ff = 0.0                    # feedforward terrain throttle offset
 
     def update(self, delta_dot: float, Jx: float, dt: float, u: float,
-               v_ref_now: float | None = None):
+               v_ref_now: float | None = None,
+               desired_ax: float | None = None):
         """Integrate rate commands and produce vehicle inputs.
 
         Args:
@@ -257,6 +258,10 @@ class ControlIntegrator:
             u: measured forward speed [m/s]
             v_ref_now: current reference speed [m/s].  When provided, enables
                 the velocity-error DOB on the throttle channel.
+            desired_ax: when provided (force-balance mode, where the MPC
+                longitudinal control is slip-rate not jerk), set the integrator
+                acceleration directly to this force-balance-planned value instead
+                of integrating ``Jx``.
 
         Returns:
             (steering, throttle, braking) -- normalised Chrono inputs.
@@ -264,9 +269,12 @@ class ControlIntegrator:
         self.steering_angle += delta_dot * dt
         self.steering_angle = np.clip(self.steering_angle,
                                       -self.delta_max, self.delta_max)
-        self.acceleration += Jx * dt
-        self.acceleration = np.clip(self.acceleration,
-                                    self.ax_min, self.ax_max)
+        if desired_ax is not None:
+            self.acceleration = float(np.clip(desired_ax, self.ax_min, self.ax_max))
+        else:
+            self.acceleration += Jx * dt
+            self.acceleration = np.clip(self.acceleration,
+                                        self.ax_min, self.ax_max)
 
         # Steering → normalised
         steering = np.clip(self.steering_angle * self.steering_gain, -1.0, 1.0)

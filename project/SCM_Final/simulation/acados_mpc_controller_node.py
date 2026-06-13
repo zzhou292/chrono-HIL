@@ -355,7 +355,9 @@ def run_controller_node(args):
         speed_weight=float(args.speed_weight),
         speed_cost_mode=args.speed_cost_mode,
         obstacle_weight=float(args.obstacle_weight),
+        longitudinal_force_balance=bool(getattr(args, "longitudinal_force_balance", False)),
     )
+    _force_balance = bool(getattr(args, "longitudinal_force_balance", False))
     if tire_model == 'nn':
         model_label = f"ACADOS-NN ({nn_tire.model_type})"
     else:
@@ -1307,9 +1309,18 @@ def run_controller_node(args):
         # integrator. Inert unless --ff-throttle is set.
         if getattr(args, "ff_throttle", False) and float(args.ff_throttle_scale) != 0.0:
             integrator._d_ff = float(args.ff_throttle_scale) * _d_ff_throttle(n_terrain_est)
+        # Force-balance mode: the solver's longitudinal control is slip-rate κ̇,
+        # not jerk, so the integrator's ax += Jx·dt path is meaningless. Instead
+        # hand it the force-balance-planned acceleration u̇ = (u_pred1 − u0)/dt
+        # from the predicted horizon, then the existing throttle = ax/ax_max (+
+        # residual DOB) realises it.
+        _fb_desired_ax = None
+        if _force_balance and Z_opt is not None and Z_opt.shape[1] > 1:
+            _fb_desired_ax = float((Z_opt[3, 1] - z0[3]) / mpc.dt)
         _, throttle, braking = integrator.update(
             0.0, Jx, dt_ctrl, msg.u,
             v_ref_now=v_ref_now,
+            desired_ax=_fb_desired_ax,
         )
 
         # Force stopping if path is done
@@ -2054,6 +2065,13 @@ def main():
         action="store_true",
         help="Revert to the static curvature-only speed reference (disables the "
              "default terrain/dynamics-aware g-g speed profile).",
+    )
+    p.add_argument(
+        "--longitudinal-force-balance",
+        action="store_true",
+        help="Principled longitudinal model: NMPC state slip kappa (control "
+             "kappa-dot), u_dot = SumFx(kappa)/M from the surrogate, instead of "
+             "the kinematic u_dot=ax. Throttle realised from the planned accel.",
     )
 
     # Analytics

@@ -170,6 +170,8 @@ Examples:
                    help="(deprecated, now default) live terrain/dynamics-aware g-g speed profile")
     p.add_argument("--legacy-speed-ref", action="store_true",
                    help="Revert to the static curvature-only speed reference (disables the default g-g profile)")
+    p.add_argument("--longitudinal-force-balance", action="store_true",
+                   help="Principled longitudinal force-balance NMPC (slip kappa as control, u_dot=SumFx(kappa)/M)")
     p.add_argument("--no-plot", action="store_true",
                    help="Skip generating end-of-run plots")
     p.add_argument("--live-plot", action="store_true",
@@ -504,6 +506,8 @@ Examples:
         ctrl_cmd.append("--terrain-speed-profile")
     if getattr(args, "legacy_speed_ref", False):
         ctrl_cmd.append("--legacy-speed-ref")
+    if getattr(args, "longitudinal_force_balance", False):
+        ctrl_cmd.append("--longitudinal-force-balance")
     if getattr(args, "controller_prior_terrain", None):
         ctrl_cmd.extend(["--controller-prior-terrain",
                          args.controller_prior_terrain])

@@ -217,7 +217,7 @@ class AcadosMPC:
         # Principled longitudinal force balance (gated): state idx6 becomes the
         # slip ratio κ (control κ̇), u̇ = ΣFx(κ)/M from the surrogate.
         self._force_balance = bool(longitudinal_force_balance)
-        self._kappa_fb_max = 0.5      # slip-ratio box bound
+        self._kappa_fb_max = 0.2      # slip-ratio box bound
         self._kappa_dot_max = 4.0     # slip-rate (κ̇) box bound [1/s]
 
         # Oracle Pacejka params (terrain-specific mu/B), pre-resolved at init
