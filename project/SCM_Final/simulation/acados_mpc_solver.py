@@ -140,7 +140,8 @@ class AcadosMPC:
                  friction_angle_deg=None, rate_feature_dt=None,
                  oracle_terrain=None, speed_weight: float = 70.0,
                  speed_cost_mode: str = 'symmetric',
-                 obstacle_weight: float = 5e3):
+                 obstacle_weight: float = 5e3,
+                 longitudinal_force_balance: bool = False):
         """
         Args:
             nn_tire_model: Instance of NNTireModel from nn_tire_model.py.
@@ -210,9 +211,14 @@ class AcadosMPC:
         self.dt = dt
         self.N = N
         self.nx = 9    # [x, y, ψ, u, v, ω, ax, δ_prev, Jx_prev]
-        self.nu = 2    # [δ, Jx]
+        self.nu = 2    # [δ, Jx]  (Jx -> κ̇ in force-balance mode)
         self.lateral_load_transfer = lateral_load_transfer
         self.kappa_mode = kappa_mode
+        # Principled longitudinal force balance (gated): state idx6 becomes the
+        # slip ratio κ (control κ̇), u̇ = ΣFx(κ)/M from the surrogate.
+        self._force_balance = bool(longitudinal_force_balance)
+        self._kappa_fb_max = 0.5      # slip-ratio box bound
+        self._kappa_dot_max = 4.0     # slip-rate (κ̇) box bound [1/s]
 
         # Oracle Pacejka params (terrain-specific mu/B), pre-resolved at init
         # so they are embedded as constants in the CasADi expression tree.
@@ -514,10 +520,16 @@ class AcadosMPC:
         ocp.cost.cost_type_e = 'EXTERNAL'
 
         # ---- Constraints: bounds ----
-        ocp.constraints.lbx = np.array([self.u_min, -10.0, -5.0, self.ax_min,
-                                        self.delta_min, self.Jx_min])
-        ocp.constraints.ubx = np.array([self.u_max, 10.0, 5.0, self.ax_max,
-                                        self.delta_max, self.Jx_max])
+        # In force-balance mode state idx6 is the slip ratio κ (not ax) and the
+        # control / idx8 are κ̇ (not jerk), so retune those box bounds.
+        _x6_lo, _x6_hi = ((-self._kappa_fb_max, self._kappa_fb_max)
+                          if self._force_balance else (self.ax_min, self.ax_max))
+        _u1_lo, _u1_hi = ((-self._kappa_dot_max, self._kappa_dot_max)
+                          if self._force_balance else (self.Jx_min, self.Jx_max))
+        ocp.constraints.lbx = np.array([self.u_min, -10.0, -5.0, _x6_lo,
+                                        self.delta_min, _u1_lo])
+        ocp.constraints.ubx = np.array([self.u_max, 10.0, 5.0, _x6_hi,
+                                        self.delta_max, _u1_hi])
         ocp.constraints.idxbx = np.array([3, 4, 5, 6, 7, 8])
 
         if self._symbolic_rate_mode:
@@ -543,8 +555,8 @@ class AcadosMPC:
         ocp.constraints.ubx_e = ocp.constraints.ubx.copy()
         ocp.constraints.idxbx_e = ocp.constraints.idxbx.copy()
 
-        ocp.constraints.lbu = np.array([self.delta_min, self.Jx_min])
-        ocp.constraints.ubu = np.array([self.delta_max, self.Jx_max])
+        ocp.constraints.lbu = np.array([self.delta_min, _u1_lo])
+        ocp.constraints.ubu = np.array([self.delta_max, _u1_hi])
         ocp.constraints.idxbu = np.array([0, 1])
 
         # ---- Polytopic constraints: steering rate & jounce ----
@@ -760,6 +772,7 @@ class AcadosMPC:
             'N': self.N, 'dt': self.dt, 'nx': self.nx, 'nu': self.nu,
             'lat_transfer': self.lateral_load_transfer,
             'kappa_mode': self.kappa_mode,
+            'force_balance': self._force_balance,
             'np': self._np_per_stage,
             'tire_model': self.tire_model,
             'qp_solver': 'PARTIAL_CONDENSING_HPIPM',
@@ -976,8 +989,13 @@ class AcadosMPC:
         Fz_r_inner = ca.fmax(Fz_r_mean - dFz_r, Fz_r_mean * 0.1)
 
         # Slip ratio — terrain-adaptive using friction angle φ
-        if self.kappa_mode == 'approx':
-            mu_terrain = ca.fmax(ca.tan(phi_sym), 0.1)  # phi_sym in radians
+        mu_terrain = ca.fmax(ca.tan(phi_sym), 0.1)  # phi_sym in radians; always defined
+        if self._force_balance:
+            # Force-balance mode: state x[6] (aliased here as `ax`) IS the
+            # longitudinal slip ratio κ, a genuine control variable (κ̇ = u[1]),
+            # not the ax/(μg) proxy. The surrogate's Fx(κ) then drives u̇ directly.
+            kappa = ca.fmax(ca.fmin(ax, self._kappa_fb_max), -self._kappa_fb_max)
+        elif self.kappa_mode == 'approx':
             kappa = ca.fmax(ca.fmin(ax / (mu_terrain * 9.81), 0.8), -0.8)
         else:
             kappa = 0.0
@@ -1071,7 +1089,10 @@ class AcadosMPC:
             if self._symbolic_rate_mode:
                 # dκ: derivative of slip ratio approximation κ ≈ ax/(μg)
                 #     dκ/dt = Jx / (μg)  where μ = tan(φ)
-                if self.kappa_mode == 'approx':
+                if self._force_balance:
+                    # κ is the state x[6]; its rate κ̇ is the control u[1] (Jx slot).
+                    sym_dk = Jx
+                elif self.kappa_mode == 'approx':
                     sym_dk = Jx / (mu_terrain * 9.81)
                 else:
                     sym_dk = ca.SX(0.0)
@@ -1080,8 +1101,10 @@ class AcadosMPC:
                 _dt_feat = self._rate_feature_dt
                 sym_da_f = (alpha_f - alpha_f_prev) / _dt_feat
                 sym_da_r = (alpha_r - alpha_r_prev) / _dt_feat
-                # du: longitudinal acceleration is state ax
-                sym_du = ax
+                # du: longitudinal-accel rate feature. In force-balance mode the
+                # accel is u̇=Fx_op/M (circular with the surrogate), so use the
+                # quasi-steady value 0; otherwise it is the ax state.
+                sym_du = ca.SX(0.0) if self._force_balance else ax
 
                 # Package per-axle: front uses sym_da_f, rear uses sym_da_r
                 rates_f_dk = sym_dk
@@ -1300,7 +1323,14 @@ class AcadosMPC:
         # via the integrator AND slip-ratio surrogate via κ ≈ ax/(μg)).
         # du_dot_resid is preserved as an additive online residual that a
         # learned dynamics adapter (e.g. GP) can populate at runtime.
-        u_dot_long = ax + du_dot_resid * _dyn_fade
+        if self._force_balance:
+            # Principled longitudinal force balance: u̇ = ΣFx(κ, Fz, n̂)/M, with
+            # Fx_op the surrogate's net longitudinal force at the live slip κ=x[6]
+            # (drag, traction, and soil-dependence all from the one learned
+            # curve). No kinematic u̇=ax, no du_dot_resid patch.
+            u_dot_long = Fx_op / M + du_dot_resid * _dyn_fade
+        else:
+            u_dot_long = ax + du_dot_resid * _dyn_fade
 
         f_expl_base = ca.vertcat(
             u_vel * ca.cos(psi) - (v_vel + Lf * omega) * ca.sin(psi),  # ẋ
@@ -1452,7 +1482,9 @@ class AcadosMPC:
         # limits in the tire force curves themselves).
         # Skip for GRU mode: the decoder's Fx predictions are unreliable
         # (consistently negative) making the constraint infeasible.
-        if self.use_nn and not self._gru_mode:
+        # Skip in force-balance mode: x[6] is κ (not ax), and the traction limit
+        # is already intrinsic to the surrogate's Fx(κ) curve driving u̇.
+        if self.use_nn and not self._gru_mode and not self._force_balance:
             self._traction_h_indices = [len(h_list), len(h_list) + 1]
             h_list.append(M * ax - Fx_traction)
             h_list.append(-M * ax - ca.fabs(Fx_traction))
