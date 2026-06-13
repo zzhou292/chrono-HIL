@@ -21,8 +21,8 @@ from common import (  # noqa: E402
 )
 
 VARIANTS = {
-    "baseline": [],
-    "terrain":  ["--terrain-speed-profile"],
+    "baseline": ["--legacy-speed-ref"],   # static curvature reference (old default)
+    "terrain":  [],                        # terrain-aware g-g profile (new default)
 }
 
 
@@ -32,6 +32,7 @@ class _Task:
     variant: str
     extra: tuple
     terrain: str
+    path: str
     speed: float
     seed: int
     run_dir_str: str
@@ -45,7 +46,7 @@ def _run_one(task: _Task) -> RunResult:
     return launch_and_collect(
         experiment="speed_profile_ablation", variant=task.variant,
         controller_mode="standard", mpc_model="nn", nn_model=DEFAULT_NN_MODEL,
-        terrain=task.terrain, path="sinusoidal", speed=task.speed,
+        terrain=task.terrain, path=task.path, speed=task.speed,
         bumpiness=0, seed=task.seed, run_dir=Path(task.run_dir_str),
         sim_port=task.sim_port, ctrl_port=task.ctrl_port,
         sim_time=task.sim_time, timeout=task.timeout, rocks=0, lead_in=5.0,
@@ -56,6 +57,7 @@ def _run_one(task: _Task) -> RunResult:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--terrains", nargs="+", default=["clay", "dirt", "sand"])
+    ap.add_argument("--paths", nargs="+", default=["sinusoidal"])
     ap.add_argument("--speeds", nargs="+", type=float, default=[5.0, 7.0])
     ap.add_argument("--seeds", type=int, default=2)
     ap.add_argument("--time", type=float, default=18.0)
@@ -69,14 +71,15 @@ def main():
     tasks, idx = [], 0
     for variant, extra in VARIANTS.items():
         for terr in args.terrains:
-            for sp in args.speeds:
-                for si in range(args.seeds):
-                    port = args.base_port + 2 * idx
-                    rd = out_dir / "raw" / f"{idx:03d}_{variant}_{terr}_v{sp:g}_s{si}"
-                    tasks.append(_Task(idx, variant, tuple(extra), terr, sp,
-                                       950 + si, str(rd), port, port + 1,
-                                       args.time, args.timeout))
-                    idx += 1
+            for path in args.paths:
+                for sp in args.speeds:
+                    for si in range(args.seeds):
+                        port = args.base_port + 2 * idx
+                        rd = out_dir / "raw" / f"{idx:03d}_{variant}_{terr}_{path}_v{sp:g}_s{si}"
+                        tasks.append(_Task(idx, variant, tuple(extra), terr, path, sp,
+                                           950 + si, str(rd), port, port + 1,
+                                           args.time, args.timeout))
+                        idx += 1
     print(f"{len(tasks)} runs")
 
     results = [_run_one(tasks[0])]

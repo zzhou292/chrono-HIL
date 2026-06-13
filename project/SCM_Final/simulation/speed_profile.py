@@ -149,6 +149,7 @@ def terrain_grip_limits(
     ax_actuator_max: float = 1.9,
     ax_actuator_min: float = -2.6,
     mu_floor: float = 0.12,
+    grip_safety: float = 0.85,
 ) -> tuple[float, float, float]:
     """Live terrain grip limits (ay_max, ax_accel, ax_brake) from the surrogate.
 
@@ -160,7 +161,7 @@ def terrain_grip_limits(
     g = 9.81
     if nn_tire is None:
         mu = max(math.tan(math.radians(float(terrain_params.get("phi", 20.0)))), mu_floor)
-        ay = mu * g
+        ay = float(grip_safety) * mu * g
         return ay, min(ax_actuator_max, ay), min(abs(ax_actuator_min), ay)
 
     u_eval = float(max(abs(u), 0.5))
@@ -193,11 +194,16 @@ def terrain_grip_limits(
         Fx_brake = 2.0 * (abs(float(Fx_br_f)) + abs(float(Fx_br_r)))
     except Exception:
         mu = max(math.tan(math.radians(float(terrain_params.get("phi", 20.0)))), mu_floor)
-        ay = mu * g
+        ay = float(grip_safety) * mu * g
         return ay, min(ax_actuator_max, ay), min(abs(ax_actuator_min), ay)
 
     m = float(max(mass, 1.0))
-    ay_max = max(Fy_total / m, mu_floor * g)
-    ax_accel = min(ax_actuator_max, max(Fx_drive / m, 0.1))
-    ax_brake = min(abs(ax_actuator_min), max(Fx_brake / m, 0.3))
+    gs = float(grip_safety)
+    # Apply a grip safety margin: the surrogate's peak-force query can be
+    # optimistic, and a quasi-steady-state g-g budget should leave headroom for
+    # transients. De-rating ay/ax keeps cornering speeds achievable (notably on
+    # soft soil) so the profile stays trackable.
+    ay_max = max(gs * Fy_total / m, mu_floor * g)
+    ax_accel = min(ax_actuator_max, max(gs * Fx_drive / m, 0.1))
+    ax_brake = min(abs(ax_actuator_min), max(gs * Fx_brake / m, 0.3))
     return float(ay_max), float(ax_accel), float(ax_brake)
