@@ -166,6 +166,8 @@ Examples:
                    help="Feedforward terrain throttle offset replacing the integral DOB")
     p.add_argument("--ff-throttle-scale", type=float, default=1.0,
                    help="Scale on the calibrated feedforward throttle offset (0 disables)")
+    p.add_argument("--terrain-speed-profile", action="store_true",
+                   help="Live terrain/dynamics-aware g-g speed profile (replaces curvature heuristic)")
     p.add_argument("--no-plot", action="store_true",
                    help="Skip generating end-of-run plots")
     p.add_argument("--live-plot", action="store_true",
@@ -496,6 +498,8 @@ Examples:
         ctrl_cmd.append("--ff-drag")
     if getattr(args, "ff_throttle", False):
         ctrl_cmd.append("--ff-throttle")
+    if getattr(args, "terrain_speed_profile", False):
+        ctrl_cmd.append("--terrain-speed-profile")
     if getattr(args, "controller_prior_terrain", None):
         ctrl_cmd.extend(["--controller-prior-terrain",
                          args.controller_prior_terrain])

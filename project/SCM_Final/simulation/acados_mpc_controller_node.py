@@ -60,6 +60,7 @@ from mpc_helpers import (
     RateTracker,
     GRUHiddenTracker,
 )
+from speed_profile import gg_speed_profile, terrain_grip_limits
 
 # ACADOS solver + unified NN loader
 from acados_mpc_solver import (
@@ -1065,6 +1066,28 @@ def run_controller_node(args):
         if _path_done:
             v_ref[:] = 0.0
 
+        # --- Terrain/dynamics/state-aware speed profile -------------------
+        # Replace the over-aggressive curvature-only reference with a live
+        # friction-circle (g-g) profile whose grip budget comes from the
+        # surrogate at the current n_hat. Taken as a cap (min) so it only ever
+        # *reduces* the commanded speed where the terrain/dynamics cannot
+        # support it -- directly addressing the curvature heuristic asking for
+        # speeds that hurt tracking. Gated by --terrain-speed-profile.
+        if getattr(args, "terrain_speed_profile", False) and not _path_done:
+            _L = mpc.Lf + mpc.Lr
+            _Fz_f_axle = mpc.M * STANDARD_GRAVITY_M_S2 * mpc.Lr / _L
+            _Fz_r_axle = mpc.M * STANDARD_GRAVITY_M_S2 * mpc.Lf / _L
+            _ay_max, _ax_acc, _ax_brk = terrain_grip_limits(
+                nn_tire, n_terrain=n_terrain_est, terrain_params=terrain_params_est,
+                Fz_front_axle=_Fz_f_axle, Fz_rear_axle=_Fz_r_axle,
+                u=msg.u, mass=mpc.M,
+                ax_actuator_max=mpc.ax_max, ax_actuator_min=mpc.ax_min)
+            _v_gg = gg_speed_profile(
+                x_ref, y_ref, psi_ref, msg.u,
+                ay_max=_ay_max, ax_accel=_ax_acc, ax_brake=_ax_brk,
+                v_cap=float(v_target))
+            v_ref = np.minimum(v_ref, _v_gg)
+
 
         # --- Compute per-tire operating conditions (shared tire_input_features.py) ---
         delta_meas_now = float(integrator.steering_angle)
@@ -2019,6 +2042,13 @@ def main():
         type=float,
         default=1.0,
         help="Scale on the calibrated feedforward throttle offset (0 disables).",
+    )
+    p.add_argument(
+        "--terrain-speed-profile",
+        action="store_true",
+        help="Replace the static curvature-only speed reference with a live "
+             "terrain/dynamics/state-aware friction-circle (g-g) speed profile "
+             "whose grip budget comes from the surrogate at the current n_hat.",
     )
 
     # Analytics
