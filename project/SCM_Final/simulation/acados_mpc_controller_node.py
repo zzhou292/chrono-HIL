@@ -1084,10 +1084,18 @@ def run_controller_node(args):
                 Fz_front_axle=_Fz_f_axle, Fz_rear_axle=_Fz_r_axle,
                 u=msg.u, mass=mpc.M,
                 ax_actuator_max=mpc.ax_max, ax_actuator_min=mpc.ax_min)
+            # Analytic, speed-robust curvature: finite-differencing the MPC
+            # horizon spikes when the spacing varies with speed, cratering v_ref
+            # (the "slowing for no reason" surge). Use the path spline's curvature
+            # at the horizon nodes' arc-lengths instead.
+            _ds_seg = np.hypot(np.diff(x_ref), np.diff(y_ref))
+            _s0 = float(ref_path.s[ref_path._last_idx])
+            _cum = _s0 + np.concatenate([[0.0], np.cumsum(_ds_seg)])
+            _kappa_an = ref_path.curvature_at(0.5 * (_cum[:-1] + _cum[1:]))
             _v_gg = gg_speed_profile(
                 x_ref, y_ref, psi_ref, msg.u,
                 ay_max=_ay_max, ax_accel=_ax_acc, ax_brake=_ax_brk,
-                v_cap=float(v_target))
+                v_cap=float(v_target), kappa_override=_kappa_an)
             v_ref = np.minimum(v_ref, _v_gg)
 
 

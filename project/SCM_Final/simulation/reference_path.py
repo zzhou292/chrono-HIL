@@ -291,6 +291,22 @@ class ReferencePath:
     # MPC reference (drop-in replacement for old path_func)
     # ------------------------------------------------------------------
 
+    def curvature_at(self, s):
+        """Analytic path curvature kappa(s) from the arc-length splines.
+
+        kappa = |x'(s) y''(s) - y'(s) x''(s)| / (x'^2 + y'^2)^1.5. Robust to query
+        spacing -- unlike finite-differencing the MPC horizon, which collapses to
+        a few metres at low speed (or when speed varies) and produces spurious
+        curvature spikes that crater v_ref ("slowing for no reason").
+        """
+        s = np.clip(np.asarray(s, dtype=float), 0.0, self.s_max)
+        dx = self.cs_x(s, 1)
+        dy = self.cs_y(s, 1)
+        ddx = self.cs_x(s, 2)
+        ddy = self.cs_y(s, 2)
+        denom = np.power(dx * dx + dy * dy, 1.5)
+        return np.abs(dx * ddy - dy * ddx) / np.maximum(denom, 1e-9)
+
     def get_reference(self, time, z0, N, dt):
         """Generate a per-solve reference trajectory.
 

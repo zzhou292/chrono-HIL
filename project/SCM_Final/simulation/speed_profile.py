@@ -66,6 +66,7 @@ def gg_speed_profile(
     ax_brake: float,
     v_cap: float,
     v_floor: float = 0.5,
+    kappa_override: np.ndarray | None = None,
 ) -> np.ndarray:
     """Quasi-steady-state time-optimal speed profile over a reference horizon.
 
@@ -91,7 +92,14 @@ def gg_speed_profile(
     v_cap = max(float(v_cap), v_floor)
 
     ds, kappa = horizon_curvature(x_ref, y_ref, psi_ref)  # length N
-    abs_k = np.abs(kappa)
+    # Prefer analytic (spline) curvature when supplied -- robust to the horizon
+    # spacing collapsing/varying with speed, which makes the finite-difference
+    # kappa spike and craters v_ref (spurious "slowing for no reason"). ds
+    # (segment lengths) still come from the actual horizon for the passes.
+    if kappa_override is not None and len(kappa_override) == len(kappa):
+        abs_k = np.abs(np.asarray(kappa_override, dtype=float))
+    else:
+        abs_k = np.abs(kappa)
 
     # 1) Lateral-grip cap per node: v_lat = sqrt(ay_max / |kappa|), capped at v_cap.
     #    Node curvature = max of the adjacent segment curvatures (conservative).
@@ -149,7 +157,7 @@ def terrain_grip_limits(
     ax_actuator_max: float = 1.9,
     ax_actuator_min: float = -2.6,
     mu_floor: float = 0.12,
-    grip_safety: float = 0.85,
+    grip_safety: float = 0.72,
 ) -> tuple[float, float, float]:
     """Live terrain grip limits (ay_max, ax_accel, ax_brake) from the surrogate.
 
