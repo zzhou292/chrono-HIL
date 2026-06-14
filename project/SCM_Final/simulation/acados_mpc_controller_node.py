@@ -1310,13 +1310,17 @@ def run_controller_node(args):
         if getattr(args, "ff_throttle", False) and float(args.ff_throttle_scale) != 0.0:
             integrator._d_ff = float(args.ff_throttle_scale) * _d_ff_throttle(n_terrain_est)
         # Force-balance mode: the solver's longitudinal control is slip-rate κ̇,
-        # not jerk, so the integrator's ax += Jx·dt path is meaningless. Instead
-        # hand it the force-balance-planned acceleration u̇ = (u_pred1 − u0)/dt
-        # from the predicted horizon, then the existing throttle = ax/ax_max (+
-        # residual DOB) realises it.
+        # not jerk, so the integrator's ax += Jx·dt path is meaningless. Hand it
+        # the planned acceleration read from the OCP's own (smooth) predicted
+        # speed trajectory -- stages 1->k -- NOT (u_pred1 - u0_measured)/dt.
+        # Differencing the noisy measured u0 against the plan injects measurement
+        # noise that trips an under-damped throttle limit cycle (stop-start); the
+        # internal plan is smooth (slip is rate-limited), so reading the accel
+        # from it is stable. Then throttle = ax/ax_max (+ residual DOB) realises it.
         _fb_desired_ax = None
-        if _force_balance and Z_opt is not None and Z_opt.shape[1] > 1:
-            _fb_desired_ax = float((Z_opt[3, 1] - z0[3]) / mpc.dt)
+        if _force_balance and Z_opt is not None and Z_opt.shape[1] > 2:
+            _k = min(4, Z_opt.shape[1] - 1)
+            _fb_desired_ax = float((Z_opt[3, _k] - Z_opt[3, 1]) / ((_k - 1) * mpc.dt))
         _, throttle, braking = integrator.update(
             0.0, Jx, dt_ctrl, msg.u,
             v_ref_now=v_ref_now,
