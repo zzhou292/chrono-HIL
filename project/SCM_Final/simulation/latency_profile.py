@@ -214,17 +214,26 @@ def _load_or_generate_bitrate(
         raw_path = Path(str(source.get("path", ""))).expanduser()
         if not raw_path.is_absolute():
             raw_path = (cfg_path.parent / raw_path).resolve()
-        if raw_path.exists():
-            direction = str(source.get("direction", "DL_bitrate"))
-            start_index = int(source.get("start_index", 0))
-            values = _read_bitrate_column(raw_path, direction)
-            if values.size:
-                values = values.astype(float)
-                if start_index >= values.size:
-                    start_index = 0
-                return np.resize(values[start_index:], n)
-        else:
-            print(f"  [LATENCY] Source CSV not found, using synthetic load: {raw_path}")
+        # A profile that explicitly names a 5G traffic CSV MUST have it. Do not
+        # silently fall through to the synthetic load: a missing CSV there made
+        # the queue saturate to a degenerate constant-450ms latency, which
+        # corrupted the 5G figures/results without any error (recurring bug).
+        if not raw_path.exists():
+            raise FileNotFoundError(
+                f"[LATENCY] profile '{cfg_path.name}' specifies a 5G traffic CSV that is "
+                f"missing:\n    {raw_path}\nRestore it (e.g. from archive/) or regenerate via "
+                f"benchmarking/train_5g_nhits.py --skip-train. Refusing to fall back to a "
+                f"synthetic load (it degenerates to a constant-latency profile).")
+        direction = str(source.get("direction", "DL_bitrate"))
+        start_index = int(source.get("start_index", 0))
+        values = _read_bitrate_column(raw_path, direction)
+        if not values.size:
+            raise ValueError(
+                f"[LATENCY] 5G traffic CSV has no '{direction}' column data: {raw_path}")
+        values = values.astype(float)
+        if start_index >= values.size:
+            start_index = 0
+        return np.resize(values[start_index:], n)
 
     mean_bps = float(cfg.get("synthetic_mean_bps", 14e6))
     sigma = float(cfg.get("synthetic_log_sigma", 0.65))

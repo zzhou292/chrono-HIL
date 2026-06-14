@@ -1895,8 +1895,8 @@ channels.
     $30$--$50\,\mathrm{ms}$), a poor-window cluster near
     $100$--$200\,\mathrm{ms}$, and discrete outage spikes at
     $450\,\mathrm{ms}$ (control) and $660\,\mathrm{ms}$ (camera). Mean
-    one-way latency is approximately $94\,\mathrm{ms}$ (control) and
-    $144\,\mathrm{ms}$ (camera).}
+    one-way latency is approximately $57\,\mathrm{ms}$ (control) and
+    $91\,\mathrm{ms}$ (camera).}
   \label{fig:latency_profile}
 \end{figure}
 
@@ -1905,7 +1905,7 @@ profile with three filter configurations:
 Table~\ref{tab:latency_comp} and Fig.~\ref{fig:latency_comp}
 report the result over 1215 trials. Both safety filter variants reduce
 collisions by more than 90\,\% relative to the no-filter
-baseline (DOB-CBF by $99.6\,\%$, MPPI by $96\,\%$).
+baseline (DOB-CBF by $91.4\,\%$, MPPI by $96.8\,\%$).
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
@@ -1917,9 +1917,9 @@ baseline (DOB-CBF by $99.6\,\%$, MPPI by $96\,\%$).
     \toprule
     \textbf{Filter} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)}\\
     \midrule
-    None      & $2.47$ & $-1.42$ & ---\\
-    DOB-CBF   & $\mathbf{0.01}$ & $+2.53$ & $54$\\
-    MPPI      & $0.10$ & $\mathbf{+3.28}$ & $86$\\
+    None      & $2.80$ & $-1.44$ & ---\\
+    DOB-CBF   & $0.24$ & $+0.78$ & $49$\\
+    MPPI      & $\mathbf{0.09}$ & $\mathbf{+2.71}$ & $88$\\
     \bottomrule
   \end{tabular}
 \end{table}
