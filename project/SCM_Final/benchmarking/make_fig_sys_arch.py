@@ -66,6 +66,9 @@ BOXES = {
                   "Tire Models\n{ rate-MLP | axle-rate | Pacejka | TMeasy }",          SWAP_EDGE,  SWAP_FILL),
     "est"      : ( 9.0, Y_ROW1, 3.6, 0.95,
                   "Terrain Estimators\n{ sliding-window MLP → ñ }",                    SWAP_EDGE,  SWAP_FILL),
+    # ---------- left of row 2: terrain-aware speed planner (surrogate grip -> v_ref) ----------
+    "planner"  : (-0.75, Y_ROW2, 2.0, 0.95,
+                  "g-g Speed\nPlanner",                                                 CTRL_EDGE,  CTRL_FILL),
     # ---------- row 2: command sources ----------
     "nmpc"     : ( 3.0, Y_ROW2, 3.0, 0.95,
                   "acados NMPC",                                                        CTRL_EDGE,  CTRL_FILL),
@@ -173,8 +176,8 @@ def _arrow(ax, p_from, p_to, *, label=None, label_xy=None,
 
 
 def main():
-    fig, ax = plt.subplots(figsize=(11.5, 6.6))
-    ax.set_xlim(-0.5, 12.4)
+    fig, ax = plt.subplots(figsize=(12.8, 6.6))
+    ax.set_xlim(-2.0, 12.4)
     ax.set_ylim(-0.2, 6.9)
     ax.set_aspect("equal")
     ax.axis("off")
@@ -197,6 +200,14 @@ def main():
     _arrow(ax, _port("tire", "B"), _port("nmpc", "T"),
            label="Fx,Fy", linestyle=":")
 
+    # Tire surrogate grip limits (at ñ) → g-g speed planner → NMPC speed
+    # reference. The planner sits to the left of the NMPC at the same row.
+    _arrow(ax, _port("tire", "B", -0.46), _port("planner", "T", 0.25),
+           label="grip(ñ)", linestyle=":", label_fs=8.5,
+           connectionstyle="arc3,rad=0.12")
+    _arrow(ax, _port("planner", "R"), _port("nmpc", "L"),
+           label="v_ref", label_fs=8.5)
+
     # Tire surrogate → Collision warning: brake-decel a_b(n̂) table.
     # Starts at tire's bottom-RIGHT (so it leaves to the right of
     # Fx,Fy on the same edge) and ends at Collision warning's
@@ -212,7 +223,7 @@ def main():
     # tire and filter when you draw a straight line from centre-to-
     # centre).
     _arrow(ax, _port("tire", "B", -0.45), _port("filter", "T", -0.45),
-           label="Fx,Fy", linestyle=":",
+           label="Fx,Fy", linestyle=":", label_xy=(0.15, 3.45),
            connectionstyle="arc3,rad=0.15")
 
     # ============================================================

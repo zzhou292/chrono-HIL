@@ -548,11 +548,11 @@ oracle and the estimator-on variant on the same matrix
 (clay$+$sand $\times$ sinusoidal $\times$ $v\in\{5,7\}\,\mathrm{m/s}$
 $\times$ $2$ seeds, $8$ runs per variant).
 Table~\ref{tab:wrong_prior} reports the result. On clay the wrong
-dirt prior gives RMS CTE $1.62\,\mathrm{m}$, the estimator-on variant
+dirt prior gives RMS CTE $1.54\,\mathrm{m}$, the estimator-on variant
 (the deployed Fused-UKF, Sec.~\ref{sec:ukf}) adapts from the same dirt
-initialisation and recovers to $0.48\,\mathrm{m}$, and the
-matched-prior oracle gives $0.42\,\mathrm{m}$ -- the estimator closes
-$\approx 95\,\%$ of the prior-mismatch gap on the harder terrain.
+initialisation and recovers to $0.72\,\mathrm{m}$, on par with the
+matched-prior oracle ($0.75\,\mathrm{m}$) -- the estimator closes
+essentially the entire prior-mismatch gap on the harder terrain.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
@@ -573,9 +573,9 @@ $\approx 95\,\%$ of the prior-mismatch gap on the harder terrain.
     \toprule
     \textbf{Variant} & \textbf{Clay} & \textbf{Sand} & \textbf{Mean}\\
     \midrule
-    Matched static prior (oracle) & $0.417$ & $0.062$ & $0.239$\\
-    Wrong (dirt) static prior     & $1.620$ & $0.057$ & $0.838$\\
-    \textbf{Estimator-on (dirt $\to$ adapt)} & $\mathbf{0.475}$ & $\mathbf{0.060}$ & $\mathbf{0.268}$\\
+    Matched static prior (oracle) & $0.751$ & $0.059$ & $0.405$\\
+    Wrong (dirt) static prior     & $1.538$ & $0.064$ & $0.801$\\
+    \textbf{Estimator-on (dirt $\to$ adapt)} & $\mathbf{0.723}$ & $\mathbf{0.058}$ & $\mathbf{0.391}$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1477,10 +1477,11 @@ sand) genuinely over-predicts speed
 prediction \emph{under}-predicts and on clay it is accurate, so the
 calibrated feedforward is effectively sand-specific. Second, a
 head-to-head over clay/dirt/sand (Table~\ref{tab:ffdrag}) shows the
-feedforward term helps where calibrated (sand speed ratio
-$0.60\!\to\!0.64$, dirt $0.82\!\to\!0.85$) and is correctly inert on
-clay, but it \emph{cannot replace} the observer: the DOB is higher on
-every terrain (clay $0.70$ vs.\ $0.54$, sand $0.67$ vs.\ $0.64$) because
+feedforward term gives only a marginal gain on the calibrated firm
+sand (sand speed ratio $0.60\!\to\!0.61$), is inert on clay, and is
+mildly adverse on dirt ($0.77\!\to\!0.76$, which under-predicts rather
+than over-predicts), but it \emph{cannot replace} the observer: the DOB
+is higher on every terrain (clay $0.64$ vs.\ $0.51$, sand $0.65$ vs.\ $0.61$) because
 clay's deficit is a traction limit, not a drag, which only integral
 feedback closes. Combining the two does not raise speed and inflates
 tracking error. A terrain-dependent, sign-varying bias is exactly the
@@ -1496,13 +1497,13 @@ n$ (clay/dirt ${\approx}0.24$, sand ${\approx}0.07$). Baking the
 converged offset in as a static held bias $d_\mathrm{ff}(\hat n)$ and
 removing the integral (a 48-run clay/dirt/sand ablation) again fails to
 replace the observer: it recovers part of the clay deficit
-($3.20\!\to\!3.39$ vs.\ DOB $3.79\,$m/s) but \emph{over}-throttles
-firmer dirt ($5.01\!\to\!4.80$, below even no compensation) and raises
+($2.98\!\to\!3.13$ vs.\ DOB $3.41\,$m/s) but \emph{over}-throttles
+firmer dirt ($4.55\!\to\!4.43$, below even no compensation) and raises
 tracking error, because the required offset is not a static function of
 $\hat n$ alone --- it varies with instantaneous speed, curvature, and
 load transfer, which the integral tracks online and a terrain-indexed
 map cannot. Stacking feedforward and integral matches the DOB's speed
-but inflates clay CTE ($0.20\!\to\!0.35\,$m). The longitudinal
+but inflates clay CTE ($0.06\!\to\!0.11\,$m). The longitudinal
 disturbance-rejection burden is therefore genuinely adaptive: the DOB is
 not a tunable patch over a poor model but a necessary closed-loop
 element.
@@ -1522,9 +1523,9 @@ element.
     \toprule
     \textbf{Terrain} & \textbf{off} & \textbf{ffdrag} & \textbf{DOB}\\
     \midrule
-    clay & $0.53$ & $0.54$ & $\mathbf{0.70}$\\
-    dirt & $0.82$ & $0.85$ & $\mathbf{0.88}$\\
-    sand & $0.60$ & $0.64$ & $\mathbf{0.67}$\\
+    clay & $0.50$ & $0.51$ & $\mathbf{0.64}$\\
+    dirt & $0.77$ & $0.76$ & $\mathbf{0.80}$\\
+    sand & $0.60$ & $0.61$ & $\mathbf{0.65}$\\
     \bottomrule
   \end{tabular}
 \end{table}
