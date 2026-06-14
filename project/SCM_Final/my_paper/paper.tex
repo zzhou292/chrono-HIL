@@ -70,7 +70,7 @@ soil-conditioned braking budget and advise the operator without
 overriding commands. Chrono::Vehicle inside Chrono::HIL provides the
 plant; a learned 5G profile drives the configurable command and
 camera delays. A multi-seed evaluation shows the terrain-aware neural
-stack cuts median RMS crosstrack error by $35$--$43\,\%$ over
+stack cuts median RMS crosstrack error by $37$--$38\,\%$ over
 SCM-calibrated Pacejka and TMeasy baselines in the live-estimator regime
 (recovering near-oracle tracking with no prior terrain knowledge), the disturbance observer
 recovers part of the soft-soil speed gap at a small tracking cost, both
@@ -142,6 +142,11 @@ Concretely, this work contributes:
         ($94\,\%$ of soils within $\pm 20\,\%$) --- the best of four
         backends, and well ahead of the force-only UKFs, which
         saturate on firm soils once closed-loop slip is small.
+  \item A terrain-aware speed planner (Section~\ref{sec:speedplan})
+        that turns the surrogate's grip limits at the live $\hat n$ into
+        a friction-circle (g--g) speed profile, cutting closed-loop
+        tracking error by $49\,\%$ over a curvature-only reference by
+        slowing only where the soil cannot support the corner.
   \item An asymmetric throttle disturbance observer
         (Section~\ref{sec:throttledob}) that closes the residual
         soft-soil speed gap left by the open-loop longitudinal
@@ -422,14 +427,17 @@ mode at dirt/sinusoidal and dirt/right-left visible at a glance.
     per model), against \emph{SCM-calibrated} analytical baselines
     (single global $\mu\!=\!0.42$, Sec.~\ref{sec:tires_static}). The
     deployed vehicle NN rate-MLP attains the lowest mean RMS CTE,
-    $42$--$47\,\%$ below the analytical baselines; the per-model
-    \emph{medians} are close ($0.13$--$0.15\,\mathrm{m}$), so the NN's
+    $46$--$48\,\%$ below the analytical baselines; the per-model
+    \emph{medians} are close ($0.12$--$0.15\,\mathrm{m}$), so the NN's
     gain is in the tail --- the Pacejka and TMeasy rows carry large
-    right-skewed standard deviations ($0.42$--$0.46$ vs.\ $0.19$) from
+    right-skewed standard deviations ($0.44$--$0.45$ vs.\ $0.17$) from
     off-nominal dirt scenarios (Fig.~\ref{fig:tires_static_heatmap})
-    that the NN suppresses. All models retain similar speed because the
-    curvature-derived speed profile, not the tire force model, is the
-    binding speed constraint in this regime. The NN's higher solve time
+    that the NN suppresses. All models retain similar speed because
+    this controlled comparison fixes the speed reference to the
+    geometric curvature profile across every tire model (the deployed
+    terrain-aware speed planner of Sec.~\ref{sec:speedplan} is held out
+    so the comparison isolates the tracking tire model), so the
+    reference, not the tire force model, binds speed here. The NN's higher solve time
     reflects the embedded surrogate evaluation.}
   \label{tab:tires_static}
   \centering
@@ -438,9 +446,9 @@ mode at dirt/sinusoidal and dirt/right-left visible at a glance.
     \textbf{Tire model} & \textbf{RMS CTE (m)} & \textbf{Speed} & \textbf{Solve}\\
                          &                       & \textbf{ratio} & \textbf{(ms)}\\
     \midrule
-    Pacejka                       & $0.36 \pm 0.46$ & $0.66$ & $4.2$\\
-    TMeasy                        & $0.33 \pm 0.42$ & $0.66$ & $4.6$\\
-    \textbf{Vehicle NN rate-MLP}  & $\mathbf{0.19 \pm 0.19}$ & $0.66$ & $14.0$\\
+    Pacejka                       & $0.35 \pm 0.45$ & $0.66$ & $4.2$\\
+    TMeasy                        & $0.34 \pm 0.44$ & $0.65$ & $4.6$\\
+    \textbf{Vehicle NN rate-MLP}  & $\mathbf{0.18 \pm 0.17}$ & $0.67$ & $14.0$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -488,11 +496,11 @@ matched terrain preset and therefore behaves as a near-oracle
 reference, whereas the \texttt{+estimator} row must recover the soil
 parameters online from inertial and wheel-speed signals alone. The
 estimator variant nearly matches that near-oracle row
-(median $0.17$ vs.\ $0.15\,\mathrm{m}$, an $18\,\mathrm{mm}$ gap whose
-$95\,\%$ bootstrap confidence intervals, $[0.14,0.18]$ and
-$[0.13,0.18]\,\mathrm{m}$, overlap --- statistically indistinguishable)
+(median $0.177$ vs.\ $0.174\,\mathrm{m}$, a $3\,\mathrm{mm}$ gap whose
+$95\,\%$ bootstrap confidence intervals, $[0.150,0.191]$ and
+$[0.142,0.191]\,\mathrm{m}$, overlap --- statistically indistinguishable)
 while requiring no prior terrain knowledge, and both NN rows reduce
-median RMS CTE by $35$--$43\,\%$ relative to the SCM-calibrated Pacejka
+median RMS CTE by $37$--$38\,\%$ relative to the SCM-calibrated Pacejka
 and TMeasy baselines. The deployable claim is therefore that the
 estimator recovers most of the oracle-prior benefit without that prior,
 not that it improves on a correct prior. Second, the per-row distributions are
@@ -513,9 +521,9 @@ variant so the median and tail behaviour are both visible.
     conditioned on the matched terrain preset (near-oracle); the
     \texttt{+estimator} row runs the deployed force+proprioceptive
     Fused-UKF (Sec.~\ref{sec:ukf}) online and nearly matches the oracle
-    (median $0.17$ vs.\ $0.15\,\mathrm{m}$, an $18\,\mathrm{mm}$ gap with
+    (median $0.177$ vs.\ $0.174\,\mathrm{m}$, a $3\,\mathrm{mm}$ gap with
     overlapping $95\,\%$ bootstrap CIs). Both NN rows reduce median RMS
-    CTE by $35$--$43\,\%$ relative to the \emph{SCM-calibrated}
+    CTE by $37$--$38\,\%$ relative to the \emph{SCM-calibrated}
     analytical baselines (single global $\mu\!=\!0.42$).}
   \label{tab:tires_estimator}
   \centering
@@ -524,10 +532,10 @@ variant so the median and tail behaviour are both visible.
     \toprule
     \textbf{Variant} & \textbf{CTE (m)} & \textbf{vs.\ Pacejka} & \textbf{vs.\ TMeasy}\\
     \midrule
-    Pacejka (static)            & $0.26$ & ---       & ---\\
-    TMeasy (static)             & $0.27$ & ---       & ---\\
-    NN rate-MLP (static)        & $0.15$ & $-42\,\%$ & $-43\,\%$\\
-    \textbf{NN rate-MLP $+$ estimator} & $\mathbf{0.17}$ & $\mathbf{-35\,\%}$ & $\mathbf{-37\,\%}$\\
+    Pacejka (static)            & $0.28$ & ---       & ---\\
+    TMeasy (static)             & $0.28$ & ---       & ---\\
+    NN rate-MLP (static)        & $0.17$ & $-38\,\%$ & $-38\,\%$\\
+    \textbf{NN rate-MLP $+$ estimator} & $\mathbf{0.18}$ & $\mathbf{-37\,\%}$ & $\mathbf{-37\,\%}$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1319,6 +1327,76 @@ deployed Fused-UKF leads every metric (Fig.~\ref{fig:estimator_overall}).
 \end{figure*}
 
 %======================================================================
+\section{Terrain-Aware Speed Planning}
+\label{sec:speedplan}
+%======================================================================
+
+The reference-tracking NMPC follows a speed reference $v_{\mathrm{ref}}(s)$
+along the path. A purely geometric curvature-limited profile
+($v_{\mathrm{ref}}=\sqrt{a_{y,\max}/|\kappa(s)|}$ at a fixed $a_{y,\max}$)
+is blind to the soil: on soft terrain it commands cornering speeds the
+available grip cannot support, so the vehicle understeers off the line.
+The failure is most visible on the high-speed sinusoid, exactly where the
+analytical baselines of Sec.~\ref{sec:tires_static} pile up
+(Fig.~\ref{fig:tires_static_heatmap}).
+
+We replace it with a terrain-aware, quasi-steady-state time-optimal
+profile over a friction-circle (g--g) budget. At each control step the
+deployed tyre surrogate is queried at the live estimate $\hat n$ and the
+per-axle vertical load for the available lateral force
+($\!\to a_{y,\max}$) and tractive/braking force
+($\!\to a_{x,\max},\,a_{x,\mathrm{brake}}$); a forward--backward pass then
+returns the fastest $v_{\mathrm{ref}}(s)$ that keeps the combined demand
+inside the circle,
+\begin{equation}
+  \Big(\tfrac{a_x}{a_{x,\max}}\Big)^{2}
+  + \Big(\tfrac{v^{2}\,\kappa(s)}{a_{y,\max}}\Big)^{2} \le 1,
+\end{equation}
+with a grip-safety margin that de-rates the surrogate's peak-force query
+to leave transient headroom. The curvature $\kappa(s)$ is read from the
+analytic arc-length spline of the path rather than finite-differenced
+over the horizon, whose node spacing varies with speed and otherwise
+spikes $\kappa$ into spurious $v_{\mathrm{ref}}$ craters (``slowing for no
+reason''). This is a third use of the differentiable surrogate, alongside
+in-horizon force prediction and the traction-budget constraint: the same
+model that lets the NMPC track also tells the planner how fast the soil
+will let it corner.
+
+A closed-loop A/B against the geometric reference (clay/dirt/sand
+$\times$ \{sinusoid, double lane change\} $\times\,\{5,7\}\,\mathrm{m/s}$,
+two seeds; Fig.~\ref{fig:speedplan}) cuts mean RMS CTE by $49\,\%$
+($0.146\!\to\!0.075\,\mathrm{m}$) for a $7\,\%$ reduction in mean speed.
+The gain concentrates on exactly the cells the curvature heuristic
+over-drives --- the high-speed sinusoid on soft soil, where CTE falls by
+$75$--$81\,\%$ (dirt $0.544\!\to\!0.135$, clay
+$0.469\!\to\!0.088\,\mathrm{m}$) --- and is neutral on the already-benign
+cells. The trade is grip-limited rather than tunable: raising the safety
+margin to recover the lost speed buys little (on dirt at
+$7\,\mathrm{m/s}$, $+0.3\,\mathrm{m/s}$) while tripling CTE
+($0.10\!\to\!0.28\,\mathrm{m}$), so the operating point sits at the knee
+of the speed/accuracy frontier. Because the profile reads its grip limits
+from whichever tyre model the controller carries, the tire-model
+comparison of Sec.~\ref{sec:tires_static} holds it fixed at the geometric
+reference to isolate the tracking model; the system-level closed-loop
+sweeps elsewhere in the paper run the deployed g--g profile.
+
+\begin{figure*}[!t]
+  \centering
+  \includegraphics[width=\textwidth]{speed_profile_gg.png}
+  \caption{Terrain-aware g--g speed profile vs.\ the geometric
+    curvature reference, closed loop. \textbf{(a)} Per-cell RMS CTE: the
+    two soft-soil high-speed cells (far right) drop to the trackable
+    cluster, while benign cells are unchanged (a few sand cells sit
+    marginally above the diagonal, the profile being slightly
+    conservative there). \textbf{(b)} Speed/accuracy trade: open markers
+    are the curvature reference, filled the g--g profile; arrows show
+    each cell trading a little mean speed for a large CTE reduction. The
+    grip limits come live from the tyre surrogate at $\hat n$
+    (Sec.~\ref{sec:tires}).}
+  \label{fig:speedplan}
+\end{figure*}
+
+%======================================================================
 \section{Asymmetric Throttle Disturbance Observer}
 \label{sec:throttledob}
 %======================================================================
@@ -1344,20 +1422,20 @@ is $\tau\!=\!\tau_{\mathrm{NMPC}}\!+\!d$. The ablation zeros both
 gains ($K_i\!=\!0$, $d_{\max}\!=\!0$), keeping the structural hook
 but suppressing all integral action so the comparison is
 apples-to-apples. Table~\ref{tab:throttledob} and
-Fig.~\ref{fig:throttledob} report the result over 64 closed-loop
+Fig.~\ref{fig:throttledob} report the result over 405 closed-loop
 runs per variant.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.15}
   \caption{Asymmetric throttle disturbance observer ablation.
-    64 runs per variant. Speed ratio is reported against the
-    \emph{curvature-limited reference profile} (mean
-    $u_\mathrm{meas}/\mathrm{mean}\,v_\mathrm{ref}(s)$) rather than the
+    405 runs per variant. Speed ratio is reported against the
+    \emph{terrain-aware g-g speed profile} (Sec.~\ref{sec:speedplan};
+    mean $u_\mathrm{meas}/\mathrm{mean}\,v_\mathrm{ref}(s)$) rather than the
     CLI cruise target, because on curvature-heavy paths the profile
     itself caps below the cruise target -- the cruise target is the
     \emph{intent}, the profile is what the controller is actually
     asked to track. The observer increases achieved speed by approximately
-    $5\,\%$ at a small ($\sim$3\,cm) increase in tracking error.}
+    $5\,\%$ at a negligible ($\sim$3\,mm) increase in tracking error.}
   \label{tab:throttledob}
   \centering
   \setlength{\tabcolsep}{4pt}
@@ -1365,8 +1443,8 @@ runs per variant.
     \toprule
     \textbf{Variant} & \textbf{RMS CTE (m)} & \textbf{Speed/profile} & \textbf{$\bar u$ (m/s)}\\
     \midrule
-    DOB off & $0.153 \pm 0.131$ & $0.63$ & $4.24$\\
-    DOB on  & $0.184 \pm 0.166$ & $\mathbf{0.66}$ & $\mathbf{4.42}$\\
+    DOB off & $0.096 \pm 0.044$ & $0.61$ & $4.06$\\
+    DOB on  & $0.099 \pm 0.053$ & $\mathbf{0.64}$ & $\mathbf{4.26}$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1615,10 +1693,10 @@ per-step deviation, not with worse tracking.
     \toprule
     \textbf{Filter} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{CTE (m)}\\
     \midrule
-    None         & $3.06$ & $-1.82$ & --- & $0.29$\\
-    \textbf{DOB-CBF} & $0.51$ & $+0.21$ & $\mathbf{52}$ & $2.54$\\
-    \textbf{MPPI}    & $\mathbf{0.08}$ & $\mathbf{+2.27}$ & $89$ & $1.13$\\
-    NMPC (SLSQP) & $0.52$ & $+1.19$ & $83$ & $7.38$\\
+    None         & $3.05$ & $-1.83$ & --- & $0.25$\\
+    \textbf{DOB-CBF} & $0.46$ & $+0.26$ & $\mathbf{52}$ & $2.29$\\
+    \textbf{MPPI}    & $\mathbf{0.10}$ & $\mathbf{+2.17}$ & $88$ & $1.13$\\
+    NMPC (SLSQP) & $0.45$ & $+1.13$ & $84$ & $7.26$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1644,15 +1722,15 @@ evaluated. Table~\ref{tab:safety_aware} reports 3240 runs total
 across all four safety-filter variants under both planner-aware and
 planner-blind modes.
 Barriers alone (no-filter, planner-aware) cut collisions by approximately
-$5.6\times$ relative to the planner-blind baseline ($3.06\to0.55$ per
+$6\times$ relative to the planner-blind baseline ($3.01\to0.49$ per
 run), and combining the barrier with the DOB-CBF or MPPI filter drives
-collisions to near zero ($0.17$ and $0.07$ per run, respectively).
+collisions to near zero ($0.20$ and $0.04$ per run, respectively).
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
   \caption{Planner-aware vs.\ planner-blind safety sweep. 3240 runs.
     The two-layer stack (barrier $+$ safety filter) drives collisions to near
-    zero ($\le 0.17$/run) for both DOB-CBF and MPPI filters.}
+    zero ($\le 0.20$/run) for both DOB-CBF and MPPI filters.}
   \label{tab:safety_aware}
   \centering
   \setlength{\tabcolsep}{4pt}
@@ -1660,14 +1738,14 @@ collisions to near zero ($0.17$ and $0.07$ per run, respectively).
     \toprule
     \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{CTE (m)}\\
     \midrule
-    None, blind          & $3.11$ & $-1.83$ & --- & $0.33$\\
-    None, aware          & $0.55$ & $+0.36$ & --- & $2.48$\\
-    DOB-CBF, blind       & $0.46$ & $+0.30$ & $52$ & $2.52$\\
-    \textbf{DOB-CBF, aware} & $\mathbf{0.17}$ & $+1.31$ & $33$ & $2.97$\\
-    MPPI, blind          & $0.09$ & $+2.07$ & $89$ & $1.34$\\
-    \textbf{MPPI, aware}    & $\mathbf{0.07}$ & $+1.91$ & $85$ & $2.85$\\
-    NMPC, blind          & $0.50$ & $+1.17$ & $84$ & $6.90$\\
-    NMPC, aware          & $0.28$ & $+1.44$ & $80$ & $7.70$\\
+    None, blind          & $3.01$ & $-1.83$ & --- & $0.25$\\
+    None, aware          & $0.49$ & $+0.39$ & --- & $2.44$\\
+    DOB-CBF, blind       & $0.50$ & $+0.22$ & $52$ & $2.43$\\
+    \textbf{DOB-CBF, aware} & $\mathbf{0.20}$ & $+1.24$ & $35$ & $2.74$\\
+    MPPI, blind          & $0.07$ & $+2.23$ & $88$ & $1.24$\\
+    \textbf{MPPI, aware}    & $\mathbf{0.04}$ & $+2.07$ & $84$ & $2.69$\\
+    NMPC, blind          & $0.51$ & $+1.11$ & $84$ & $6.95$\\
+    NMPC, aware          & $0.26$ & $+1.35$ & $80$ & $7.58$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1696,9 +1774,9 @@ two variants over 1215 closed-loop trials.
     \toprule
     \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{CTE (m)}\\
     \midrule
-    No filter        & $3.11$ & $-1.83$ & --- & $0.35$\\
-    DOB-CBF, no NN   & $0.86$ & $-0.22$ & $46$ & $2.00$\\
-    \textbf{DOB-CBF, with NN} & $\mathbf{0.54}$ & $\mathbf{+0.06}$ & $51$ & $2.29$\\
+    No filter        & $3.05$ & $-1.83$ & --- & $0.27$\\
+    DOB-CBF, no NN   & $0.81$ & $-0.21$ & $46$ & $1.92$\\
+    \textbf{DOB-CBF, with NN} & $\mathbf{0.48}$ & $\mathbf{+0.12}$ & $50$ & $2.20$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1719,7 +1797,7 @@ quantified by disabling the seed-injection logic and forcing the
 safety filter to rely solely on Gaussian sampling around the operator
 command. Table~\ref{tab:mppi_seeds} and Fig.~\ref{fig:mppi_seeds}
 report the result over 810 closed-loop trials. Removing the seeds
-increases the collision rate by approximately 30$\times$ and drives
+increases the collision rate by approximately 27$\times$ and drives
 the minimum clearance into the obstacle footprint.
 
 \begin{table}[!t]
@@ -1732,8 +1810,8 @@ the minimum clearance into the obstacle footprint.
     \toprule
     \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{CTE (m)}\\
     \midrule
-    MPPI, no seeds   & $2.19$ & $-1.12$ & $87$ & $1.26$\\
-    \textbf{MPPI, with seeds} & $\mathbf{0.07}$ & $\mathbf{+2.06}$ & $89$ & $1.10$\\
+    MPPI, no seeds   & $2.18$ & $-1.05$ & $86$ & $0.98$\\
+    \textbf{MPPI, with seeds} & $\mathbf{0.08}$ & $\mathbf{+2.03}$ & $88$ & $1.03$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1826,7 +1904,7 @@ profile with three filter configurations:
 Table~\ref{tab:latency_comp} and Fig.~\ref{fig:latency_comp}
 report the result over 1215 trials. Both safety filter variants reduce
 collisions by more than 90\,\% relative to the no-filter
-baseline (DOB-CBF by $99.7\,\%$, MPPI by $96\,\%$).
+baseline (DOB-CBF by $99.6\,\%$, MPPI by $96\,\%$).
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
@@ -1838,9 +1916,9 @@ baseline (DOB-CBF by $99.7\,\%$, MPPI by $96\,\%$).
     \toprule
     \textbf{Filter} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)}\\
     \midrule
-    None      & $2.43$ & $-1.40$ & ---\\
-    DOB-CBF   & $\mathbf{0.01}$ & $+2.51$ & $53$\\
-    MPPI      & $0.09$ & $\mathbf{+3.26}$ & $86$\\
+    None      & $2.47$ & $-1.42$ & ---\\
+    DOB-CBF   & $\mathbf{0.01}$ & $+2.53$ & $54$\\
+    MPPI      & $0.10$ & $\mathbf{+3.28}$ & $86$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -2076,16 +2154,16 @@ The empirical evidence supports each architectural choice. The
 whole-vehicle neural tire surrogate solves in
 ${\sim}14\,\mathrm{ms}$ (well within the $100\,\mathrm{ms}$ MPC step)
 and reduces median RMS crosstrack error against the
-\emph{SCM-calibrated} analytical baselines by $35$--$43\,\%$ in the
+\emph{SCM-calibrated} analytical baselines by $37$--$38\,\%$ in the
 live-estimator regime (Table~\ref{tab:tires_estimator}), separating
 clearly from them in the tail across the full terrain matrix
 (Table~\ref{tab:tires_static}), where even the calibrated baselines
 diverge on off-nominal dirt. The asymmetric
 throttle disturbance observer increases achieved speed by approximately
-$5\,\%$ ($4.24\!\to\!4.42\,\mathrm{m/s}$, $0.63\!\to\!0.66$ of the
-curvature-limited profile) at a small (${\sim}3\,\mathrm{cm}$) tracking
+$5\,\%$ ($4.06\!\to\!4.26\,\mathrm{m/s}$, $0.61\!\to\!0.64$ of the
+g--g profile) at a negligible (${\sim}3\,\mathrm{mm}$) tracking
 cost. The two-layer planner-aware stack drives collisions to near zero
-($\le 0.17$/run) when paired with either DOB-CBF or MPPI as the
+($\le 0.20$/run) when paired with either DOB-CBF or MPPI as the
 downstream safety filter, the MPPI seed trajectories are essential rather
 than auxiliary, the DOB-CBF filter benefits substantially from
 re-using the neural surrogate, and both safety filters cut collisions by
@@ -2166,7 +2244,7 @@ advisory warning share one plant, one messaging substrate, and one
 benchmarking harness, so every architectural choice is measured on the
 same matrix. Empirically, the surrogate-plus-estimator recovers
 near-oracle tracking with no prior terrain knowledge --- within
-$\approx\!20\,\mathrm{mm}$ median RMS crosstrack error of the
+$\approx\!3\,\mathrm{mm}$ median RMS crosstrack error of the
 matched-prior oracle and well below SCM-calibrated analytical baselines;
 the deployed proprioceptive-fused UKF tracks $n$ across the deployable
 range at $4.5\,\%$ median error; both safety filters cut collisions by

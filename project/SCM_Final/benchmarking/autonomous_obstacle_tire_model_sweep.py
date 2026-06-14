@@ -254,6 +254,9 @@ def main() -> None:
             "--speed-weight", str(args.speed_weight),
             "--speed-cost-mode", args.speed_cost_mode,
             "--obstacle-weight", str(args.obstacle_weight),
+            # Controlled tire-model comparison: fix the speed reference across
+            # tire models -- the g-g planner's grip limits differ per model. Sec. III.
+            "--legacy-speed-ref",
         ] + safety_extra + list(spec["extra"])
         for terrain in args.terrains:
             for path in args.paths:

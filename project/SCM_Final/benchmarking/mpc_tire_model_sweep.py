@@ -219,6 +219,13 @@ def _run_one(task: _Task) -> RunResult:
         run_dir=Path(task.run_dir_str),
         sim_port=task.sim_port, ctrl_port=task.ctrl_port,
         sim_time=task.sim_time, timeout=task.timeout,
+        # Controlled tire-model comparison: hold the speed reference fixed (the
+        # geometric curvature profile) across all tire models so the tracking
+        # comparison is not confounded by the terrain-aware g-g speed planner --
+        # its grip limits come from the tire model (NN surrogate for the neural
+        # row, a Coulomb mu*g fallback for the analytical rows), which would make
+        # the commanded speed differ per model. See paper Sec. III.
+        extra_args=["--legacy-speed-ref"],
         rocks=0, lead_in=task.lead_in,
     )
 

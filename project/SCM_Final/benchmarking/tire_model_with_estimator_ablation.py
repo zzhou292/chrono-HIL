@@ -247,7 +247,10 @@ def main() -> None:
     idx = 0
     for variant in args.variants:
         spec = VARIANTS[variant]
-        extra = []
+        # Controlled comparison: fix the speed reference across tire models so the
+        # tracking comparison is not confounded by the g-g planner (its grip limits
+        # differ per tire model: NN surrogate vs analytical Coulomb fallback). Sec. III.
+        extra = ["--legacy-speed-ref"]
         if spec["estimator"]:
             extra += ["--terrain-estimator", "--terrain-estimator-mode", spec.get("mode", "n")]
         if "controller_prior" in spec:

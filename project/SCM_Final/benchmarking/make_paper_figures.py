@@ -67,6 +67,8 @@ STEPS = [
     ("compact per-scenario heatmaps (page-fit)",
                                  [PY, "-u", str(HERE / "plot_compact_heatmaps.py")]),
     ("cte_master_heatmap",       [PY, "-u", str(HERE / "make_fig_cte_master_heatmap.py")]),
+    ("speed_profile_gg (terrain-aware speed planning)",
+                                 [PY, "-u", str(HERE / "make_fig_speed_profile.py")]),
     ("tire_model_with_estimator_rms_cte_heatmap",
                                  [PY, "-u", str(HERE / "make_fig_tire_estimator_box.py")]),
     ("sys_arch",                 [PY, "-u", str(HERE / "make_fig_sys_arch.py")]),
