@@ -415,7 +415,8 @@ def run_sim_node(args):
     # Setup vehicle
     # ------------------------------------------------------------------
     system, vehicle = setup_chrono_vehicle(
-        any_vis, payload_mass=getattr(args, "payload_mass", 0.0))
+        any_vis, payload_mass=getattr(args, "payload_mass", 0.0),
+        simple_powertrain=getattr(args, "simple_powertrain", False))
 
     # ------------------------------------------------------------------
     # Setup terrain
@@ -1499,6 +1500,11 @@ def main():
                         "controller keeps the nominal empty-vehicle mass, so a "
                         "non-zero value creates a persistent plant/model "
                         "mismatch for the online-learning experiments.")
+    p.add_argument("--simple-powertrain", action="store_true",
+                   help="Near-direct drive: linear EngineSimple + CVT (no engine "
+                        "RPM map, no gear shifts) so throttle->wheel-torque is "
+                        "~linear/soil-independent -- the clean actuation map the "
+                        "force-balance NMPC needs.")
     p.add_argument("--rocks", type=int, default=0,
                    help="Number of rock obstacles (0 = none)")
     p.add_argument("--rock-zone-x", type=float, nargs=2, default=[-15.0, 50.0])

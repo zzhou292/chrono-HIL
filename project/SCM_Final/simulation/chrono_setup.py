@@ -29,7 +29,7 @@ def _viz_type(name: str):
     )
 
 
-def setup_chrono_vehicle(visualize=True, payload_mass=0.0):
+def setup_chrono_vehicle(visualize=True, payload_mass=0.0, simple_powertrain=False):
     """Setup PyChrono HMMWV vehicle.
 
     ``payload_mass`` (kg) adds an unmodelled cargo mass to the chassis
@@ -59,8 +59,17 @@ def setup_chrono_vehicle(visualize=True, payload_mass=0.0):
         chrono.ChVector3d(0, 0, 1.5),
         chrono.ChQuaterniond(1, 0, 0, 0)
     ))
-    vehicle.SetEngineType(veh.EngineModelType_SHAFTS)
-    vehicle.SetTransmissionType(veh.TransmissionModelType_AUTOMATIC_SHAFTS)
+    if simple_powertrain:
+        # Near-direct drive: linear torque engine (Te ~ throttle·T_max, no RPM
+        # map) + CVT (no gear-shift discontinuities), so throttle->wheel-torque
+        # is ~linear and soil-independent. The soil-dependence stays in the tyre
+        # Fx(κ), which is unchanged. This makes throttle an effective torque
+        # command -- the actuation map the force-balance NMPC needs.
+        vehicle.SetEngineType(veh.EngineModelType_SIMPLE)
+        vehicle.SetTransmissionType(veh.TransmissionModelType_AUTOMATIC_SIMPLE_CVT)
+    else:
+        vehicle.SetEngineType(veh.EngineModelType_SHAFTS)
+        vehicle.SetTransmissionType(veh.TransmissionModelType_AUTOMATIC_SHAFTS)
     vehicle.SetDriveType(veh.DrivelineTypeWV_AWD)
     vehicle.SetTireType(veh.TireModelType_RIGID)
     vehicle.Initialize()

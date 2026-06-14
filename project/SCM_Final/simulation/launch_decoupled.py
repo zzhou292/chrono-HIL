@@ -209,6 +209,9 @@ Examples:
     p.add_argument("--payload-mass", type=float, default=0.0,
                    help="Unmodelled cargo mass (kg) added to the chassis; "
                         "the controller keeps the nominal empty-vehicle mass.")
+    p.add_argument("--simple-powertrain", action="store_true",
+                   help="Plant drives via near-direct linear EngineSimple + CVT "
+                        "(clean throttle->torque actuation map for force balance)")
 
     # Rock obstacles
     p.add_argument("--rocks", type=int, default=0,
@@ -382,6 +385,8 @@ Examples:
         "--irrlicht-window-size", str(args.irrlicht_window_size[0]),
         str(args.irrlicht_window_size[1]),
     ]
+    if getattr(args, "simple_powertrain", False):
+        sim_cmd.append("--simple-powertrain")
     if args.terrain_transition:
         sim_cmd.append("--terrain-transition")
         if args.terrain_start:
