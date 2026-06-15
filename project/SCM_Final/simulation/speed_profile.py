@@ -23,7 +23,7 @@ profile is feasible for the vehicle to follow.
 This is a decoupled trajectory-generation layer: it produces v_ref(s) that the
 tracking NMPC then follows, the standard architecture in time-optimal driving
 (speed-profile optimisation + tracking control). Pure NumPy, no Chrono/CasADi
-dependency, so it is cheap enough to recompute every control step.
+dependency, so it is inexpensive enough to recompute every control step.
 """
 from __future__ import annotations
 
@@ -93,9 +93,9 @@ def gg_speed_profile(
 
     ds, kappa = horizon_curvature(x_ref, y_ref, psi_ref)  # length N
     # Prefer analytic (spline) curvature when supplied -- robust to the horizon
-    # spacing collapsing/varying with speed, which makes the finite-difference
-    # kappa spike and craters v_ref (spurious "slowing for no reason"). ds
-    # (segment lengths) still come from the actual horizon for the passes.
+    # spacing varying with speed, which makes the finite-difference kappa spike
+    # and produce spurious collapses in v_ref. ds (segment lengths) still come
+    # from the actual horizon for the passes.
     if kappa_override is not None and len(kappa_override) == len(kappa):
         abs_k = np.abs(np.asarray(kappa_override, dtype=float))
     else:

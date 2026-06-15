@@ -393,8 +393,9 @@ its own excitation envelope.
 \subsection{Static-terrain benchmark}
 \label{sec:tires_static}
 
-The standard MPC is swept over the three deployable tire models
-(Pacejka, TMeasy, and the deployed vehicle NN rate-MLP) across all
+The standard MPC is swept over its three deployable tire-force models
+(the analytical Pacejka and TMeasy, and the deployed vehicle NN rate-MLP
+surrogate) across all
 three terrains (clay, dirt, sand), three reference paths (sinusoidal,
 lane-change, right-left), three reference speeds
 $v_{\mathrm{ref}}\in\{5,7,9\}\,\mathrm{m/s}$, three bumpiness levels,
@@ -476,7 +477,7 @@ mode at dirt/sinusoidal and dirt/right-left visible at a glance.
 
 The stronger claim, that the neural surrogate combined with the
 online terrain estimator improves tracking over Pacejka and TMeasy,
-requires the estimator to actually update the soil parameters that
+requires the estimator to update the soil parameters that
 the surrogate consumes. The same model set is therefore re-evaluated
 with the online estimator enabled, using a 20-second simulation
 window with key performance indicators (KPIs) computed after an
@@ -691,7 +692,7 @@ for the rig.
 \paragraph{Force-RMSE vs control-RMS-CTE picture is not the same metric.}
 The CTE numbers in Table~\ref{tab:tires_rig_vs_vehicle} are within
 1\,cm of each other across the four mid-size variants. To unpack what
-each surrogate is actually doing during those runs, we replay all
+each surrogate is doing during those runs, we replay all
 four surrogates on twelve logged trajectories (one of which is shown
 in Fig.~\ref{fig:rig_vs_vehicle_4way}), computing per-tick front-axle
 $|\Delta F_y|$ against the Chrono ground truth without re-running the
@@ -801,7 +802,7 @@ complete smoothness aggregation -- is omitted here for space.
 \label{sec:pred_validation}
 The closed-loop CTE results establish that the surrogate is accurate
 enough to control with, but not whether the NMPC's internal predictions
-match the plant --- the property an MPC actually relies on. We validate
+match the plant --- the property an MPC relies on. We validate
 this directly: the controller logs its full predicted horizon trajectory
 ($4\,$s at $0.1\,$s stages) at every solve, and we compare the predicted
 state at each horizon stage against the actual Chrono trajectory that
@@ -1093,10 +1094,10 @@ under quasi-static longitudinal and lateral transfer driven by measured
 $a_x$, $a_y$, the steering input, and the body-frame yaw rate.
 
 \paragraph{Whole-vehicle lateral-force surrogate.} Earlier iterations
-trained the UKF's NN on a single-tyre rig (paper118 protocol) and
+trained the UKF's NN on a single-tire rig (paper118 protocol) and
 wrapped it in a hand-tuned rig-to-vehicle gain
 ($1.15\times$ on $F_y$) to close the $\approx 15\,\%$ gap between
-single-tyre rig forces and full-suspension HMMWV forces. The
+single-tire rig forces and full-suspension HMMWV forces. The
 calibration was acceptable at the two soft-soil presets paper118
 reported but did not generalise to a broad LHS sweep, so we replaced
 it with a surrogate that natively predicts what the *whole vehicle*
@@ -1343,7 +1344,7 @@ analytical baselines of Sec.~\ref{sec:tires_static} pile up
 
 We replace it with a terrain-aware, quasi-steady-state time-optimal
 profile over a friction-circle (g--g) budget. At each control step the
-deployed tyre surrogate is queried at the live estimate $\hat n$ and the
+deployed tire surrogate is queried at the live estimate $\hat n$ and the
 per-axle vertical load for the available lateral force
 ($\!\to a_{y,\max}$) and tractive/braking force
 ($\!\to a_{x,\max},\,a_{x,\mathrm{brake}}$); a forward--backward pass then
@@ -1357,26 +1358,26 @@ with a grip-safety margin that de-rates the surrogate's peak-force query
 to leave transient headroom. The curvature $\kappa(s)$ is read from the
 analytic arc-length spline of the path rather than finite-differenced
 over the horizon, whose node spacing varies with speed and otherwise
-spikes $\kappa$ into spurious $v_{\mathrm{ref}}$ craters (``slowing for no
-reason''). This is a third use of the differentiable surrogate, alongside
-in-horizon force prediction and the traction-budget constraint: the same
-model that lets the NMPC track also tells the planner how fast the soil
-will let it corner.
+produces spurious $\kappa$ spikes that collapse $v_{\mathrm{ref}}$. This
+is a third use of the differentiable surrogate, alongside in-horizon
+force prediction and the traction-budget constraint: the same model used
+for tracking also determines the cornering speed the soil can support.
 
 A closed-loop A/B against the geometric reference (clay/dirt/sand
 $\times$ \{sinusoid, double lane change\} $\times\,\{5,7\}\,\mathrm{m/s}$,
 two seeds; Fig.~\ref{fig:speedplan}) cuts mean RMS CTE by $49\,\%$
 ($0.146\!\to\!0.075\,\mathrm{m}$) for a $7\,\%$ reduction in mean speed.
-The gain concentrates on exactly the cells the curvature heuristic
-over-drives --- the high-speed sinusoid on soft soil, where CTE falls by
-$75$--$81\,\%$ (dirt $0.544\!\to\!0.135$, clay
-$0.469\!\to\!0.088\,\mathrm{m}$) --- and is neutral on the already-benign
-cells. The trade is grip-limited rather than tunable: raising the safety
-margin to recover the lost speed buys little (on dirt at
-$7\,\mathrm{m/s}$, $+0.3\,\mathrm{m/s}$) while tripling CTE
-($0.10\!\to\!0.28\,\mathrm{m}$), so the operating point sits at the knee
-of the speed/accuracy frontier. Because the profile reads its grip limits
-from whichever tyre model the controller carries, the tire-model
+The gain concentrates on exactly the cells where the curvature heuristic
+commands cornering speeds the soil cannot support --- the high-speed
+sinusoid on soft soil, where CTE falls by $75$--$81\,\%$ (dirt
+$0.544\!\to\!0.135$, clay $0.469\!\to\!0.088\,\mathrm{m}$) --- and is
+neutral on the already-benign cells. The trade-off is grip-limited rather
+than tunable: raising the safety margin to recover the lost speed yields
+little additional speed (on dirt at $7\,\mathrm{m/s}$,
+$+0.3\,\mathrm{m/s}$) while tripling CTE ($0.10\!\to\!0.28\,\mathrm{m}$),
+so the chosen operating point is near the best achievable speed/accuracy
+trade-off. Because the profile reads its grip limits
+from whichever tire model the controller carries, the tire-model
 comparison of Sec.~\ref{sec:tires_static} holds it fixed at the geometric
 reference to isolate the tracking model; the system-level closed-loop
 sweeps elsewhere in the paper run the deployed g--g profile.
@@ -1392,7 +1393,7 @@ sweeps elsewhere in the paper run the deployed g--g profile.
     conservative there). \textbf{(b)} Speed/accuracy trade: open markers
     are the curvature reference, filled the g--g profile; arrows show
     each cell trading a little mean speed for a large CTE reduction. The
-    grip limits come live from the tyre surrogate at $\hat n$
+    grip limits come live from the tire surrogate at $\hat n$
     (Sec.~\ref{sec:tires}).}
   \label{fig:speedplan}
 \end{figure*}
@@ -1434,7 +1435,7 @@ runs per variant.
     mean $u_\mathrm{meas}/\mathrm{mean}\,v_\mathrm{ref}(s)$) rather than the
     CLI cruise target, because on curvature-heavy paths the profile
     itself caps below the cruise target -- the cruise target is the
-    \emph{intent}, the profile is what the controller is actually
+    \emph{intent}, the profile is what the controller is
     asked to track. The observer increases achieved speed by approximately
     $5\,\%$ at a negligible ($\sim$3\,mm) increase in tracking error.}
   \label{tab:throttledob}
@@ -1891,9 +1892,9 @@ channels.
   \includegraphics[width=\columnwidth]{latency_profile_histogram.png}
   \caption{Learned N-HiTS 5G uplink profile applied to the camera and
     control channels (log-$x$ histogram; dashed lines are channel
-    means). The profile is bimodal: a low-latency good-window bulk
+    means). The profile is bimodal: a low-latency bulk
     (control around $10$--$25\,\mathrm{ms}$, camera around
-    $30$--$50\,\mathrm{ms}$), a poor-window cluster near
+    $30$--$50\,\mathrm{ms}$), a higher-latency cluster near
     $100$--$200\,\mathrm{ms}$, and discrete outage spikes at
     $450\,\mathrm{ms}$ (control) and $660\,\mathrm{ms}$ (camera). Mean
     one-way latency is approximately $57\,\mathrm{ms}$ (control) and
