@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import zmq  # noqa: E402
 from hil_messages import parse_message  # noqa: E402
 
-WHEEL_LOCK_DEG = 120.0
+WHEEL_LOCK_DEG = 450.0   # display rotation at |steer|=1; match the G29 range/2
 APPLIED = (40, 199, 111)
 GHOST = (154, 166, 178)
 PANEL_BG = (17, 22, 28)
@@ -87,6 +87,7 @@ def _wheel(surf, pg, cx, cy, r, steer, color, lw, ghost=False):
 
 
 def main():
+    global WHEEL_LOCK_DEG
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--sim-port", type=int, required=True, help="vehicle_state PUB port (sim)")
     p.add_argument("--ctrl-port", type=int, default=0,
@@ -97,8 +98,13 @@ def main():
                    help="Screen corner to dock the overlay into.")
     p.add_argument("--margin", type=int, default=24, help="Gap from the screen edge (px).")
     p.add_argument("--fps", type=int, default=30)
+    p.add_argument("--wheel-lock-deg", type=float, default=WHEEL_LOCK_DEG,
+                   help="HUD wheel rotation at full steer (|steer|=1). Set to half "
+                        "your G29's configured lock-to-lock range so the on-screen "
+                        "wheel matches the physical one (default 450 = 900deg G29).")
     p.add_argument("--smoke", action="store_true", help="headless self-test (SDL dummy), then exit")
     args = p.parse_args()
+    WHEEL_LOCK_DEG = args.wheel_lock_deg
 
     if args.smoke:
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")

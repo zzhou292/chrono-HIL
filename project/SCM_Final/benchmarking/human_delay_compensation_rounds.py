@@ -86,6 +86,9 @@ def parse_args() -> argparse.Namespace:
                         "filter takeover is visible live while driving.")
     p.add_argument("--hud-corner", choices=["br", "bl", "tr", "tl"], default="br",
                    help="Screen corner to dock the live HUD overlay into.")
+    p.add_argument("--hud-wheel-lock", type=float, default=450.0,
+                   help="HUD wheel rotation at full steer; set to half the G29's "
+                        "lock-to-lock range to match the physical wheel (default 450).")
     # Real-time tuning for interactive driving (defaults favour real-time over
     # the autonomous-sweep fidelity, since a human must drive these live).
     p.add_argument("--cam-width", type=int, default=1920,
@@ -257,7 +260,7 @@ def _maybe_launch_hud(args: argparse.Namespace, idx: int, run_dir: Path):
     proc = subprocess.Popen(
         [sys.executable, str(SIM_DIR / "hil_hud.py"),
          "--sim-port", str(sim_port), "--ctrl-port", str(ctrl_port),
-         "--corner", args.hud_corner],
+         "--corner", args.hud_corner, "--wheel-lock-deg", str(args.hud_wheel_lock)],
         cwd=str(PROJECT_ROOT), stdout=hud_log, stderr=subprocess.STDOUT,
         env=dict(**os.environ),
     )
