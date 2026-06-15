@@ -135,6 +135,14 @@ python benchmarking/human_delay_compensation_rounds.py \
   a throttle bar — so the operator and spectators see the filter takeover
   *live* while driving. It only subscribes, so it cannot perturb the
   real-time loop; it is torn down automatically at the end of each round.
+- **Real-time / resolution.** The driver POV defaults to a single 1080p
+  screen (`--cam-width 1920 --cam-height 1080`, `--cam-fov 1.05`; use
+  `--cam-height 1200` for a 16:10 monitor). The old 5760×1080 triple-monitor
+  camera was the only thing breaking real-time — SCM physics already runs at
+  ~1.0× with headroom (≈25% of the wall budget), so the camera resolution is
+  the real-time lever, not the mesh. Watch the sim's `RT=…x` / `[TIMING]`
+  line: if it still drops below 1.0× on a weak GPU, lower `--cam-width` (e.g.
+  1280) or, last resort, coarsen `--mesh-resolution 0.12`.
 - Drop `--auto-start` so the script pauses between rounds; that gives the
   operator (and you) a reset/breath between runs and is where you read out
   "round k, filter X, delay Y."

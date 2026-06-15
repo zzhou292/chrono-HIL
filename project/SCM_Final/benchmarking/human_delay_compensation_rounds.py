@@ -87,6 +87,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--hud-max-steer", type=float, default=0.60,
                    help="Road-wheel angle (rad) at full steer, for the live HUD "
                         "applied-wheel normalisation.")
+    # Real-time tuning for interactive driving (defaults favour real-time over
+    # the autonomous-sweep fidelity, since a human must drive these live).
+    p.add_argument("--cam-width", type=int, default=1920,
+                   help="Driver POV window width (px).")
+    p.add_argument("--cam-height", type=int, default=1080,
+                   help="Driver POV window height (px). Use 1200 for 16:10.")
+    p.add_argument("--cam-fov", type=float, default=1.05,
+                   help="Driver POV camera horizontal FOV (rad, ~1.05=60deg).")
+    p.add_argument("--mesh-resolution", type=float, default=None,
+                   help="SCM mesh spacing (m). Default 0.08 (same as the "
+                        "autonomous sweeps); physics already runs real-time, so "
+                        "the camera resolution is the real-time lever. Set 0.12 "
+                        "only if a weak GPU still can't hit real-time.")
     p.add_argument("--terrains", nargs="+", default=["clay", "sand"], choices=list(TERRAINS))
     p.add_argument("--paths", nargs="+", default=["sinusoidal", "lane_change"])
     p.add_argument("--speeds", nargs="+", type=float, default=[4.0])
@@ -136,7 +149,12 @@ def command_for_round(args: argparse.Namespace, run_dir: Path, idx: int, filter_
         "--manual-honor-time",
         "--sim-diag-csv", str(run_dir / "sim_diag.csv"),
         "--nn-model", DEFAULT_NN_MODEL,
+        "--cam-width", str(args.cam_width),
+        "--cam-height", str(args.cam_height),
+        "--cam-fov", str(args.cam_fov),
     ]
+    if args.mesh_resolution is not None:
+        cmd += ["--mesh-resolution", str(args.mesh_resolution)]
     if args.latency_profile_json:
         # 5G profile drives all channels: control/manual = command uplink,
         # camera = asymmetric video downlink. Supersedes the constant delays.

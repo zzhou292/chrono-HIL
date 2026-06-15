@@ -300,6 +300,15 @@ Examples:
     p.add_argument("--camera-input-delay", type=float, default=0.0,
                    help="Apply a fixed lag to the driver POV camera feed (models "
                         "downlink video latency to the operator).")
+    # Visualization sizing + SCM mesh (forwarded to the sim for real-time tuning).
+    p.add_argument("--cam-width", type=int, default=1920,
+                   help="Driver POV camera / window width (px).")
+    p.add_argument("--cam-height", type=int, default=1080,
+                   help="Driver POV camera / window height (px). Use 1200 for 16:10.")
+    p.add_argument("--cam-fov", type=float, default=1.05,
+                   help="Driver POV camera horizontal FOV (rad, ~1.05=60deg).")
+    p.add_argument("--mesh-resolution", type=float, default=None,
+                   help="SCM mesh spacing (m). Default 0.08; 0.12 for real-time HIL.")
 
     # Terrain classifier
     p.add_argument("--terrain-classifier", action="store_true",
@@ -405,6 +414,11 @@ Examples:
         sim_cmd.extend(["--latency-profile-json", args.latency_profile_json])
     if args.latency_profile_log:
         sim_cmd.extend(["--latency-profile-log", args.latency_profile_log])
+    sim_cmd.extend(["--cam-width", str(args.cam_width),
+                    "--cam-height", str(args.cam_height),
+                    "--cam-fov", str(args.cam_fov)])
+    if args.mesh_resolution is not None:
+        sim_cmd.extend(["--mesh-resolution", str(args.mesh_resolution)])
     if args.manual:
         sim_cmd.append("--manual")
     if args.wasd:

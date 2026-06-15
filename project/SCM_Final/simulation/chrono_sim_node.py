@@ -447,6 +447,7 @@ def run_sim_node(args):
         system, vehicle=vehicle, visualize=any_vis,
         terrain_preset=base_preset, terrain_config=terrain_config,
         bumpiness=args.bumpiness, spatial_spec=spatial_spec,
+        mesh_resolution=args.mesh_resolution,
     )
 
     if any_vis:
@@ -661,7 +662,7 @@ def run_sim_node(args):
         try:
             vis = veh.ChWheeledVehicleVisualSystemIrrlicht()
             vis.SetWindowTitle("Chrono Sim Node (decoupled)")
-            vis.SetWindowSize(5760, 720)
+            vis.SetWindowSize(args.cam_width, args.cam_height)
             set_z_up_if_available(vis)
             vis.Initialize()
             vis.AddLogo(chrono.GetChronoDataFile("logo_chrono_alpha.png"))
@@ -711,14 +712,14 @@ def run_sim_node(args):
                 vehicle.GetChassisBody(),  # attached body
                 30,                        # update rate (Hz) — matches C++ SCM teleop
                 cam_offset,                # offset pose
-                5760,                      # image width
-                1080,                      # image height
-                1.92,                      # horizontal FOV (~110° ultrawide)
+                args.cam_width,            # image width
+                args.cam_height,           # image height
+                args.cam_fov,              # horizontal FOV (rad)
             )
             driver_cam.SetName("DriverPOV")
             driver_cam.SetLag(latency_profile.delay(0.0, "camera") if latency_profile is not None else 0.0)
             driver_cam.PushFilter(sens.ChFilterVisualize(
-                5760, 1080, "Driver POV", False
+                args.cam_width, args.cam_height, "Driver POV", False
             ))
             sensor_manager.AddSensor(driver_cam)
             print("  Chrono Sensor: driver POV camera active")
@@ -1396,6 +1397,19 @@ def main():
     # Simulation
     p.add_argument("--time", type=float, default=15.0, help="Simulation duration (s)")
     p.add_argument("--step-size", type=float, default=3e-3, help="Physics step (s)")
+    # Visualization sizing (driver POV camera + Irrlicht window). Defaults are a
+    # single 1080p screen; the legacy 5760x1080 was a triple-monitor rig and is
+    # far too many ray-traced pixels for real-time. Use 1200 height for 16:10.
+    p.add_argument("--cam-width", type=int, default=1920,
+                   help="Driver POV camera / window width (px).")
+    p.add_argument("--cam-height", type=int, default=1080,
+                   help="Driver POV camera / window height (px). Use 1200 for 16:10.")
+    p.add_argument("--cam-fov", type=float, default=1.05,
+                   help="Driver POV camera horizontal FOV (rad). ~1.05 = 60 deg "
+                        "for a single screen (the ultrawide rig used 1.92).")
+    p.add_argument("--mesh-resolution", type=float, default=None,
+                   help="SCM mesh spacing (m). Default 0.08 (paper fidelity); "
+                        "0.12 is the real-time value for interactive/HIL runs.")
     p.add_argument("--vis-mode", default="irrlicht",
                    choices=["irrlicht", "sensor", "both", "none"],
                    help="Visualization mode: irrlicht, sensor (driver POV), both, or none")
