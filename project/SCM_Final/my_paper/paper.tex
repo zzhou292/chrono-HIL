@@ -632,10 +632,11 @@ rig-trained advantage narrows substantially:
 
 \begin{itemize}
 \item Static MLPs: the rig surrogate remains decisively better
-  ($0.085\,\mathrm{m}$ vs $0.112\,\mathrm{m}$, 24\,\%).
-\item Rate MLPs (32-16): rig and vehicle match at $0.090\,\mathrm{m}$.
+  ($0.095\,\mathrm{m}$ vs $0.118\,\mathrm{m}$, 20\,\%).
+\item Rate MLPs (32-16): rig and vehicle match
+  ($0.099$ vs $0.096\,\mathrm{m}$).
 \item Rate MLPs (64-32): tied within noise
-  ($0.097$ vs $0.099\,\mathrm{m}$).
+  ($0.103$ vs $0.106\,\mathrm{m}$).
 \end{itemize}
 
 Per-tick force-prediction smoothness explains the shrinking gap:
@@ -663,12 +664,12 @@ for the rig.
     \textbf{Surrogate (32-16 / 64-32 paired)} & \textbf{RMS CTE} & \textbf{Speed} & \textbf{Solve}\\
                                               & \textbf{(m)} & \textbf{ratio} & \textbf{(ms)}\\
     \midrule
-    Rig static (32-16)        & $\mathbf{0.085}$ & $0.73$ & $8.0$\\
-    Vehicle static (32-16)    & $0.112$          & $0.73$ & $8.1$\\
-    Rig rate (32-16)          & $0.090$          & $0.73$ & $10.1$\\
-    Vehicle rate (32-16)      & $0.090$          & $0.72$ & $10.3$\\
-    Rig rate (64-32)          & $0.097$          & $0.73$ & $12.6$\\
-    Vehicle rate (64-32)      & $0.099$          & $0.72$ & $13.0$\\
+    Rig static (32-16)        & $\mathbf{0.095}$ & $0.73$ & $10.5$\\
+    Vehicle static (32-16)    & $0.118$          & $0.73$ & $10.7$\\
+    Rig rate (32-16)          & $0.099$          & $0.73$ & $12.5$\\
+    Vehicle rate (32-16)      & $0.096$          & $0.72$ & $12.5$\\
+    Rig rate (64-32)          & $0.103$          & $0.73$ & $16.7$\\
+    Vehicle rate (64-32)      & $0.106$          & $0.73$ & $15.6$\\
     \bottomrule
   \end{tabular}
 \end{table}

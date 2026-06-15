@@ -45,13 +45,19 @@ from common import (  # noqa: E402
 
 
 MODEL_SPECS = {
-    "rig_rate":     dict(nn_model="rig_rate_64_32",
-                         generation="rig",     signature="rate"),
-    "vehicle_rate": dict(nn_model="vehicle_rate_64_32_lhs",
-                         generation="vehicle", signature="rate"),
+    # Six surrogates: three architecture/signature-matched rig-vs-vehicle pairs.
+    # The static pair exposes the rig-training advantage; both rate pairs show it
+    # vanishing (the "static-only effect" of Sec. III-D / tab:tires_rig_vs_vehicle).
+    "rig_static":     dict(nn_model="rig_static_32_16",         generation="rig",     signature="static (32-16)"),
+    "vehicle_static": dict(nn_model="vehicle_static_32_16_lhs", generation="vehicle", signature="static (32-16)"),
+    "rig_rate32":     dict(nn_model="rig_rate_32_16",           generation="rig",     signature="rate (32-16)"),
+    "vehicle_rate32": dict(nn_model="vehicle_rate_32_16_lhs",   generation="vehicle", signature="rate (32-16)"),
+    "rig_rate":       dict(nn_model="rig_rate_64_32",           generation="rig",     signature="rate (64-32)"),
+    "vehicle_rate":   dict(nn_model="vehicle_rate_64_32_lhs",   generation="vehicle", signature="rate (64-32)"),
 }
 
-DEFAULT_MODELS = ["rig_rate", "vehicle_rate"]
+DEFAULT_MODELS = ["rig_static", "vehicle_static", "rig_rate32", "vehicle_rate32",
+                  "rig_rate", "vehicle_rate"]
 DEFAULT_TERRAIN = ["clay", "dirt", "sand"]
 DEFAULT_PATHS   = ["sinusoidal", "lane_change", "right_left"]
 DEFAULT_SPEEDS  = [5.0, 7.0]
@@ -123,6 +129,11 @@ def _run_one(task: _Task) -> RunResult:
         run_dir=Path(task.run_dir_str),
         sim_port=task.sim_port, ctrl_port=task.ctrl_port,
         sim_time=task.sim_time, timeout=task.timeout,
+        # Tire-model comparison: hold the speed reference fixed (geometric
+        # curvature) so the g-g planner's per-surrogate grip limits do not
+        # confound the tracking comparison -- isolates the tracking tire model
+        # (same rationale as the Sec. III tire-model sweeps).
+        extra_args=["--legacy-speed-ref"],
         lead_in=task.lead_in,
     )
 
@@ -165,7 +176,9 @@ def plot_paired_bars(ok: pd.DataFrame, out_dir: Path, caption: str) -> None:
         ("solve_ms",   "solve_ms_std",   "MPC solve time (ms)",  "Runtime"),
     ]
     fig, axes = plt.subplots(2, 2, figsize=(11, 8.0))
-    signatures = sorted(summary["signature"].unique())
+    _sig_order = ["static (32-16)", "rate (32-16)", "rate (64-32)"]
+    _present = set(summary["signature"].unique())
+    signatures = [s for s in _sig_order if s in _present] or sorted(_present)
     x = np.arange(len(signatures))
     width = 0.36
     for ax, (mean_k, std_k, ylabel, title) in zip(axes.flat, specs):

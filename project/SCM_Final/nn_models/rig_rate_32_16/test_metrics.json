@@ -1,0 +1,40 @@
+{
+  "architecture": {
+    "architecture_type": "mlp",
+    "hidden_sizes": [
+      32,
+      16
+    ],
+    "temporal_K": 1,
+    "rate_augmented": true,
+    "mode": "rate",
+    "feature_cols": [
+      "slip_ratio",
+      "slip_angle",
+      "velocity",
+      "vertical_load",
+      "steering_rate",
+      "d_slip_ratio",
+      "d_slip_angle",
+      "d_velocity",
+      "bekker_Kphi",
+      "bekker_Kc",
+      "bekker_n",
+      "mohr_cohesion",
+      "mohr_friction",
+      "janosi_shear"
+    ],
+    "offline_only": false,
+    "split_by_scenario": false,
+    "torch_seed": 42,
+    "n_params": 1042
+  },
+  "test": {
+    "r2_fx": 0.9974961125296362,
+    "r2_fy": 0.9969992502780556,
+    "rmse_fx": 89.10512149072794,
+    "rmse_fy": 59.348331525575865,
+    "mae_fx": 60.47035683159279,
+    "mae_fy": 37.07764631299451
+  }
+}
