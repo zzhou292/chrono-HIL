@@ -113,6 +113,52 @@ class ExternalDriver(veh.ChDriver):
         return self.m_braking
 
 
+class ReplayDriver(veh.ChDriver):
+    """Replays a recorded operator command trace for counterfactual replay.
+
+    Reads a trace CSV (e.g. a prior run's sim_diag.csv) and, at each sim time,
+    provides the recorded *operator raw* command (steering_op/throttle_op/
+    braking_op, falling back to the applied columns). The sim's safety-filter
+    path then screens this identical intent, so the same operator trace can be
+    replayed filter-off vs each filter and every outcome difference is the
+    filter's effect (the sim is bit-for-bit deterministic given the inputs).
+    """
+
+    def __init__(self, vehicle, csv_path):
+        super().__init__(vehicle.GetVehicle())
+        import pandas as pd
+        d = pd.read_csv(csv_path)
+        sc = "steering_op" if "steering_op" in d.columns else "steering"
+        tc = "throttle_op" if "throttle_op" in d.columns else "throttle"
+        bc = "braking_op" if "braking_op" in d.columns else "braking"
+        self._t = pd.to_numeric(d["time"], errors="coerce").to_numpy()
+        self._s = pd.to_numeric(d[sc], errors="coerce").to_numpy()
+        self._th = pd.to_numeric(d[tc], errors="coerce").to_numpy()
+        self._b = pd.to_numeric(d[bc], errors="coerce").to_numpy()
+        self.m_steering = 0.0
+        self.m_throttle = 0.0
+        self.m_braking = 0.0
+        print(f"  Replay driver: {len(self._t)} command samples "
+              f"({self._t[0]:.2f}-{self._t[-1]:.2f}s) from {os.path.basename(csv_path)} [{sc}]")
+
+    def Synchronize(self, time):
+        self.m_steering = float(np.clip(np.interp(time, self._t, self._s), -1.0, 1.0))
+        self.m_throttle = float(np.clip(np.interp(time, self._t, self._th), 0.0, 1.0))
+        self.m_braking = float(np.clip(np.interp(time, self._t, self._b), 0.0, 1.0))
+
+    def Advance(self, step):
+        pass
+
+    def GetSteering(self):
+        return self.m_steering
+
+    def GetThrottle(self):
+        return self.m_throttle
+
+    def GetBraking(self):
+        return self.m_braking
+
+
 def get_driver_camera_view(vehicle):
     """Return Irrlicht eye and look-at points matching the sensor driver POV."""
     chassis = vehicle.GetChassisBody()
@@ -656,7 +702,10 @@ def run_sim_node(args):
     # ------------------------------------------------------------------
     # Driver (external commands or manual G29)
     # ------------------------------------------------------------------
-    if args.wasd:
+    if args.replay_cmds:
+        print(f"  Replay mode: re-driving from command trace {args.replay_cmds}")
+        driver = ReplayDriver(vehicle, args.replay_cmds)
+    elif args.wasd:
         print("  Manual mode: using WASD keyboard (via Irrlicht window)")
         driver = veh.ChInteractiveDriver(vehicle.GetVehicle())
         driver.SetSteeringDelta(1.0 / 50)
@@ -829,7 +878,7 @@ def run_sim_node(args):
     # ------------------------------------------------------------------
     # ZMQ transport (skipped in manual mode)
     # ------------------------------------------------------------------
-    _manual_mode = args.manual or args.wasd
+    _manual_mode = args.manual or args.wasd or bool(args.replay_cmds)
     state_pub = None
     ctrl_sub = None
     # Always publish vehicle_state: the live HUD, terrain classifier, and
@@ -947,6 +996,7 @@ def run_sim_node(args):
             "time", "x", "y", "z", "speed", "vx_local", "vy_local", "omega_z",
             "steering", "throttle", "braking", "collisions", "near_misses",
             "nearest_clearance_m", "latency_control_s", "latency_manual_s", "latency_camera_s",
+            "steering_op", "throttle_op", "braking_op",
         ])
         print(f"  Sim diagnostic CSV: {diag_path}")
 
@@ -998,7 +1048,7 @@ def run_sim_node(args):
         if safety_filter is not None:
             safety_filter.set_teleop_delay(control_delay_s)
 
-        if (not _manual_mode or args.manual_honor_time) and time_chrono >= args.time:
+        if (not _manual_mode or args.manual_honor_time or args.replay_cmds) and time_chrono >= args.time:
             break
         if vis is not None and not vis.Run():
             break
@@ -1322,13 +1372,17 @@ def run_sim_node(args):
             pos = chassis.GetPos()
             rot = chassis.GetRot()
             vel_loc = rot.RotateBack(chassis.GetPosDt())
-            nearest_clearance = math.nan
+            _clear = []
             if args.rocks > 0 and rocks:
                 _rpos = get_rock_positions(rocks)
                 _rrad = get_rock_radii(rocks)
                 if len(_rpos):
                     _d = np.sqrt((_rpos[:, 0] - pos.x) ** 2 + (_rpos[:, 1] - pos.y) ** 2)
-                    nearest_clearance = float(np.min(_d - _rrad - 1.5))
+                    _clear.append(float(np.min(_d - _rrad - 1.5)))
+            if traffic_mgr is not None:
+                for ox, oy, orad in traffic_mgr.obstacles():
+                    _clear.append(math.hypot(ox - pos.x, oy - pos.y) - orad - 1.5)
+            nearest_clearance = min(_clear) if _clear else math.nan
             sim_diag_writer.writerow([
                 f"{time_chrono:.6f}",
                 f"{pos.x:.6f}", f"{pos.y:.6f}", f"{pos.z:.6f}",
@@ -1344,6 +1398,7 @@ def run_sim_node(args):
                 f"{control_delay_s:.6f}",
                 f"{manual_delay_s:.6f}",
                 f"{camera_delay_s:.6f}",
+                f"{op_io[0]:.6f}", f"{op_io[1]:.6f}", f"{op_io[2]:.6f}",
             ])
             last_sim_diag_time = time_chrono
 
@@ -1466,6 +1521,13 @@ def main():
                         "scenario (lead_brake/cut_in/stalled/swerver/convoy/platoon/"
                         "oncoming/double_cut/stop_and_go/jam/overtake/gauntlet). The "
                         "ego must avoid them; they appear as dynamic obstacles.")
+    p.add_argument("--replay-cmds", type=str, default="",
+                   help="Counterfactual replay: re-drive the ego from a recorded "
+                        "operator command trace CSV (steering_op/throttle_op/"
+                        "braking_op, e.g. a prior run's sim_diag.csv) instead of a "
+                        "live driver. The safety filter still screens the replayed "
+                        "intent, so the same trace can be run filter-off vs each "
+                        "filter for a causal harm-prevented comparison.")
     p.add_argument("--traffic-detail", choices=["auto", "mesh", "primitives"],
                    default="mesh",
                    help="Traffic vehicle render detail. 'mesh' (default, full HMMWV "
