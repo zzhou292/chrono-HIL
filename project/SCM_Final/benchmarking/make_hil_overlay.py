@@ -40,7 +40,7 @@ GHOST   = "#9aa6b2"      # operator's raw command
 
 def _wheel(ax, cx, cy, r, steer, color, lw, alpha=1.0, ghost=False):
     """Draw a steering wheel centred at (cx,cy), rotated by the steer input."""
-    rot = np.deg2rad(-steer * WHEEL_LOCK_DEG)   # +steer (right) -> clockwise
+    rot = np.deg2rad(steer * WHEEL_LOCK_DEG)   # Chrono steering: + = left turn
     ax.add_patch(Circle((cx, cy), r, fill=False, ec=color, lw=lw, alpha=alpha,
                         ls="--" if ghost else "-"))
     ax.add_patch(Circle((cx, cy), r * 0.16, fc=color, ec="none", alpha=alpha))

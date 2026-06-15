@@ -75,7 +75,7 @@ def _set_always_on_top(pg):
 
 
 def _wheel(surf, pg, cx, cy, r, steer, color, lw, ghost=False):
-    rot = math.radians(-steer * WHEEL_LOCK_DEG)
+    rot = math.radians(steer * WHEEL_LOCK_DEG)
     pg.draw.circle(surf, color, (cx, cy), r, max(1, lw if not ghost else lw - 1))
     pg.draw.circle(surf, color, (cx, cy), max(3, r // 6))
     for a0 in (90, 210, 330):
