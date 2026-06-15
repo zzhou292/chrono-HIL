@@ -238,7 +238,7 @@ arriving between estimator ticks.
     Command source     & \texttt{next\_command}  & NMPC, G29, WASD\\
     Safety filter      & \texttt{filter}         & DOB-CBF, MPPI, NMPC, none\\
     Collision warning  & \texttt{evaluate}       & TTC\\
-    Tire model         & \texttt{predict}        & rate-MLP, axle-rate-MLP,\\
+    Tire-force model   & \texttt{predict}        & rate-MLP, axle-rate-MLP,\\
                        &                         & Pacejka, TMeasy\\
     Terrain estimator  & \texttt{observe/estimate} & force+proprioceptive UKF,\\
                        &                         & window-MLP, Bekker/NN-UKF\\
@@ -350,8 +350,9 @@ operating point $(\kappa, \alpha, F_z, u)$ at each stage.
 
 The two \emph{learned terrain estimators} are trained on deliberately
 different data, and the distinction matters for reading their results.
-The deployed sliding-window MLP (\texttt{terrain\_window\_mlp},
-Sec.~\ref{sec:estimator}) regresses the Bekker exponent $n$ from a
+The sliding-window MLP (\texttt{terrain\_window\_mlp},
+Sec.~\ref{sec:estimator}) --- the proprioceptive channel of the deployed
+Fused-UKF (Sec.~\ref{sec:ukf}) --- regresses the Bekker exponent $n$ from a
 4\,s window of proprioceptive statistics; it is trained on 180 LHS soil
 cells $\times$ 20 scenarios, split between closed-loop NMPC tracking
 (sinusoidal / lane-change / right-left at $\{4,6,8\}\,\mathrm{m/s}$) and
@@ -384,7 +385,7 @@ its own excitation envelope.
     \midrule
     \texttt{rig\_rate} (rig tire baseline) & open-loop single-tire rig, scripted $\kappa/\alpha$ & --- (fixed rig) & --- & LHS around clay/dirt/sand\\
     \texttt{vehicle\_rate} (deployed NMPC tire) & closed-loop NMPC, 4 paths & NMPC cruise, $[3,7]\,\mathrm{m/s}$ & $\{0,2,4\}$ & full Bekker--Mohr LHS box\\
-    \texttt{terrain\_window\_mlp} (deployed estimator) & closed-loop NMPC $+$ scripted open-loop & NMPC $+$ cruise-bias & $\{0,4\}$ & $n\in[0.40,1.30]$, 180 LHS cells\\
+    \texttt{terrain\_window\_mlp} (window-MLP channel of deployed Fused-UKF) & closed-loop NMPC $+$ scripted open-loop & NMPC $+$ cruise-bias & $\{0,4\}$ & $n\in[0.40,1.30]$, 180 LHS cells\\
     \texttt{vehicle\_fy} (NN-UKF tire, Sec.~\ref{sec:ukf}) & scripted sinusoidal steer, no controller & half const.\ OL / half PI-cruise & $0$ & widened $n\in[0.35,1.35]$\\
     \bottomrule
   \end{tabularx}
@@ -439,7 +440,9 @@ mode at dirt/sinusoidal and dirt/right-left visible at a glance.
     terrain-aware speed planner of Sec.~\ref{sec:speedplan} is held out
     so the comparison isolates the tracking tire model), so the
     reference, not the tire force model, binds speed here. The NN's higher solve time
-    reflects the embedded surrogate evaluation.}
+    reflects the embedded surrogate evaluation; the reported solve times are
+    representative single-controller timings (absolute values rise under the
+    parallel sweep).}
   \label{tab:tires_static}
   \centering
   \begin{tabular}{lccc}
@@ -1048,9 +1051,9 @@ the estimator reports near-firm soil on the softest terrain. This is a
 genuine out-of-distribution failure on the bumpiness axis, not a
 low-$n$ failure per se --- clay is estimated accurately
 ($|\Delta n|\!\approx\!0.09$) at bumpiness $\le 4$. It is a limitation
-of the deployed window-MLP, not of the framework: the state-augmented
-NN-UKF of Sec.~\ref{sec:ukf} infers $n$ through a physics-based bicycle
-model and does not show this bumpiness sensitivity. Extending the
+of the window-MLP channel alone, not of the deployed Fused-UKF: its
+state-augmented force channel (Sec.~\ref{sec:ukf}) infers $n$ through a
+physics-based bicycle model and does not show this bumpiness sensitivity. Extending the
 estimator's training set to higher bumpiness, or gating the
 vertical-dynamics features on an online road-roughness estimate, would
 close the gap; we report the in-envelope result here and flag the
@@ -1673,12 +1676,12 @@ re-evaluated with the planner's in-horizon barriers re-enabled in
 Sec.~\ref{sec:safety_aware} for a total of 3240 runs.
 Table~\ref{tab:safety_blind} and Fig.~\ref{fig:safety_blind} report the
 safety-filter-only outcome. Because the planner's reference here is
-deliberately routed through the obstacles, the crosstrack-error (CTE)
-column does not measure tracking quality: it measures how far an active
-safety filter must pull the vehicle off that obstacle-blind reference to stay
-safe, and therefore reads as an intrusiveness proxy. A larger CTE for
-DOB-CBF and NMPC than for MPPI is consistent with their higher
-per-step deviation, not with worse tracking.
+deliberately routed through the obstacles, the deviation column (the
+crosstrack error from that obstacle-blind reference) does not measure
+tracking quality: it measures how far an active safety filter must pull
+the vehicle off the reference to stay safe, and therefore reads as an
+intrusiveness proxy. A larger deviation for DOB-CBF and NMPC than for MPPI
+is consistent with their higher per-step deviation, not with worse tracking.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
@@ -1694,7 +1697,7 @@ per-step deviation, not with worse tracking.
   \setlength{\tabcolsep}{4pt}
   \begin{tabular}{lcccc}
     \toprule
-    \textbf{Filter} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{CTE (m)}\\
+    \textbf{Filter} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{Deviation (m)}\\
     \midrule
     None         & $3.05$ & $-1.83$ & --- & $0.25$\\
     \textbf{DOB-CBF} & $0.46$ & $+0.26$ & $\mathbf{52}$ & $2.29$\\
@@ -1739,7 +1742,7 @@ collisions to near zero ($0.20$ and $0.04$ per run, respectively).
   \setlength{\tabcolsep}{4pt}
   \begin{tabular}{lcccc}
     \toprule
-    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{CTE (m)}\\
+    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{Deviation (m)}\\
     \midrule
     None, blind          & $3.01$ & $-1.83$ & --- & $0.25$\\
     None, aware          & $0.49$ & $+0.39$ & --- & $2.44$\\
@@ -1775,7 +1778,7 @@ two variants over 1215 closed-loop trials.
   \setlength{\tabcolsep}{3pt}
   \begin{tabular}{lcccc}
     \toprule
-    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{CTE (m)}\\
+    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{Deviation (m)}\\
     \midrule
     No filter        & $3.05$ & $-1.83$ & --- & $0.27$\\
     DOB-CBF, no NN   & $0.81$ & $-0.21$ & $46$ & $1.92$\\
@@ -1811,7 +1814,7 @@ the minimum clearance into the obstacle footprint.
   \setlength{\tabcolsep}{4pt}
   \begin{tabular}{lcccc}
     \toprule
-    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{CTE (m)}\\
+    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{Deviation (m)}\\
     \midrule
     MPPI, no seeds   & $2.18$ & $-1.05$ & $86$ & $0.98$\\
     \textbf{MPPI, with seeds} & $\mathbf{0.08}$ & $\mathbf{+2.03}$ & $88$ & $1.03$\\
@@ -1907,7 +1910,10 @@ profile with three filter configurations:
 Table~\ref{tab:latency_comp} and Fig.~\ref{fig:latency_comp}
 report the result over 1215 trials. Both safety filter variants reduce
 collisions by more than 90\,\% relative to the no-filter
-baseline (DOB-CBF by $91.4\,\%$, MPPI by $96.8\,\%$).
+baseline (DOB-CBF by $91.4\,\%$, MPPI by $96.8\,\%$). MPPI is the more
+effective shield against the latency outages, whereas DOB-CBF trades some
+of that margin for the minimum-deviation, intent-preserving behaviour that
+suits the human-in-the-loop case (Sec.~\ref{sec:safety}).
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
