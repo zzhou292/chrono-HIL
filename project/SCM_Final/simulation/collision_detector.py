@@ -105,7 +105,7 @@ class CollisionLogger:
         print(f"  [COLLISION] Log: {csv_path}")
 
     def check(self, sim_time: float, veh_x: float, veh_y: float,
-              veh_speed: float = 0.0) -> dict:
+              veh_speed: float = 0.0, extra_obstacles=None) -> dict:
         """Check proximity to all rocks and update logs.
 
         Args:
@@ -132,15 +132,15 @@ class CollisionLogger:
             'closest_rock_id': None,
         }
 
-        if self.n_rocks == 0:
+        if self.n_rocks == 0 and not extra_obstacles:
             return result
 
-        dx = self._rock_x - veh_x
-        dy = self._rock_y - veh_y
-        dists = np.sqrt(dx ** 2 + dy ** 2)
-
-        result['min_dist'] = float(dists.min())
-        result['closest_rock_id'] = int(dists.argmin())
+        if self.n_rocks > 0:
+            dx = self._rock_x - veh_x
+            dy = self._rock_y - veh_y
+            dists = np.sqrt(dx ** 2 + dy ** 2)
+            result['min_dist'] = float(dists.min())
+            result['closest_rock_id'] = int(dists.argmin())
 
         for i in range(self.n_rocks):
             d = float(dists[i])
@@ -181,6 +181,36 @@ class CollisionLogger:
                     f'{hard_margin:.3f}', f'{near_margin:.3f}',
                     int(is_collision), int(is_near_miss),
                 ])
+
+        # Dynamic obstacles (e.g. moving traffic vehicles): (x, y, radius).
+        # Logged with rock_id sentinel 1000+j so they're distinguishable.
+        if extra_obstacles:
+            for j, obs in enumerate(extra_obstacles):
+                ox, oy, orad = float(obs[0]), float(obs[1]), float(obs[2])
+                d = float(np.hypot(ox - veh_x, oy - veh_y))
+                result['min_dist'] = min(result['min_dist'], d)
+                hard_margin = orad + self.vehicle_radius
+                near_margin = hard_margin + self.near_miss_margin
+                is_collision = d < hard_margin
+                is_near_miss = d < near_margin and not is_collision
+                if is_collision:
+                    result['any_collision'] = True
+                    result['n_collisions'] += 1
+                    self.total_collisions += 1
+                    if self.first_collision_time is None:
+                        self.first_collision_time = sim_time
+                        print(f"\n  !!! COLLISION (traffic #{j}) t={sim_time:.3f}s "
+                              f"d={d:.2f}m < margin={hard_margin:.2f}m v={veh_speed:.1f} m/s !!!")
+                if is_near_miss:
+                    result['any_near_miss'] = True
+                    result['n_near_misses'] += 1
+                    self.total_near_misses += 1
+                if is_collision or is_near_miss or self.log_all:
+                    self._csv_writer.writerow([
+                        f'{sim_time:.4f}', f'{veh_x:.4f}', f'{veh_y:.4f}', f'{veh_speed:.3f}',
+                        1000 + j, f'{ox:.3f}', f'{oy:.3f}', f'{orad:.3f}', f'{d:.4f}',
+                        f'{hard_margin:.3f}', f'{near_margin:.3f}', int(is_collision), int(is_near_miss),
+                    ])
 
         # Flush periodically (every ~5 s at 200 Hz = 1000 steps)
         if self._steps % 1000 == 0:

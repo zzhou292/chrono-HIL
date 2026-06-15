@@ -311,6 +311,9 @@ Examples:
                    help="Driver POV camera render rate (Hz); real-time lever.")
     p.add_argument("--cam-fullscreen", action="store_true",
                    help="Display the driver POV fullscreen (renders at cam W x H).")
+    p.add_argument("--convoy", type=str, default="",
+                   help="Spawn PID-driven traffic for a convoy safety scenario "
+                        "(lead_brake/cut_in/stalled/swerver/convoy).")
     p.add_argument("--mesh-resolution", type=float, default=None,
                    help="SCM mesh spacing (m). Default 0.08; 0.12 for real-time HIL.")
 
@@ -424,6 +427,8 @@ Examples:
                     "--cam-rate", str(args.cam_rate)])
     if args.cam_fullscreen:
         sim_cmd.append("--cam-fullscreen")
+    if args.convoy:
+        sim_cmd.extend(["--convoy", args.convoy])
     if args.mesh_resolution is not None:
         sim_cmd.extend(["--mesh-resolution", str(args.mesh_resolution)])
     if args.manual:

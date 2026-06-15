@@ -69,6 +69,7 @@ from g29_controller import ManualDriver
 from sensors.obstacles import add_rock_obstacles, get_rock_positions, get_rock_radii
 from safety import make_safety_filter
 from collision_detector import CollisionLogger
+from traffic import TrafficManager
 from latency_profile import LatencyProfile
 
 # NN tire model for terrain-aware CBF traction limits
@@ -475,7 +476,14 @@ def run_sim_node(args):
         )
         print(f"  Placed {len(rocks)} rock obstacles")
 
-    # --- Collision detector (always active when rocks present) ---
+    # --- Convoy traffic vehicles (PID-driven, shared system) ---
+    traffic_mgr = None
+    if args.convoy:
+        traffic_mgr = TrafficManager.from_preset(args.convoy, ego_lane_y=0.0)
+        traffic_mgr.build(system, terrain)
+        print(f"  Convoy '{args.convoy}': {len(traffic_mgr.vehicles)} traffic vehicles")
+
+    # --- Collision detector (active when rocks OR traffic present) ---
     # Parallel sweeps set HIL_RUN_LOG_DIR to a unique per-run directory so the
     # collision / shield / warning logs are NOT shared across concurrent
     # workers (a shared global ``logs/`` races on truncation and cross-
@@ -483,7 +491,7 @@ def run_sim_node(args):
     # env unset and keep the historical global ``logs/`` location.
     _log_dir = os.environ.get('HIL_RUN_LOG_DIR') or os.path.join(
         os.path.dirname(__file__), '..', 'logs')
-    collision_logger = CollisionLogger(rocks, run_dir=_log_dir) if rocks else None
+    collision_logger = CollisionLogger(rocks, run_dir=_log_dir) if (rocks or traffic_mgr) else None
 
     # ------------------------------------------------------------------
     # CBF safety filter
@@ -1113,6 +1121,10 @@ def run_sim_node(args):
                                    (rock_pos[i, 1] - veh_pos.y)**2)
                     if dist < 30.0:
                         all_obstacles.append((rock_pos[i, 0], rock_pos[i, 1], rock_rad[i]))
+            if traffic_mgr is not None:
+                for ox, oy, orad in traffic_mgr.obstacles():
+                    if (ox - veh_pos.x) ** 2 + (oy - veh_pos.y) ** 2 < 30.0 ** 2:
+                        all_obstacles.append((ox, oy, orad))
 
             veh_state = {
                 'x': veh_pos.x, 'y': veh_pos.y, 'psi': veh_psi,
@@ -1148,6 +1160,8 @@ def run_sim_node(args):
 
         _tw = wall_time.time()
         vehicle.Synchronize(time_chrono, driver_inputs, terrain)
+        if traffic_mgr is not None:
+            traffic_mgr.synchronize(time_chrono, terrain)
         _t_veh_sync += wall_time.time() - _tw
 
         if vis is not None:
@@ -1163,7 +1177,9 @@ def run_sim_node(args):
         _t_terrain_adv += wall_time.time() - _tw
 
         _tw = wall_time.time()
-        vehicle.Advance(step_size)
+        vehicle.Advance(step_size)        # ego owns the system -> steps it once
+        if traffic_mgr is not None:
+            traffic_mgr.advance(step_size)
         _t_veh_adv += wall_time.time() - _tw
 
         if vis is not None:
@@ -1200,19 +1216,24 @@ def run_sim_node(args):
         # --- Publish vehicle state at decimated rate ---
         if state_pub is not None and time_chrono - last_state_pub_time >= state_pub_interval:
             _tw = wall_time.time()
-            # Nearest N_OBS rocks within 40m → flat list for MPC horizon planning.
+            # Nearest 3 obstacles (rocks + traffic) within 40m → flat list for
+            # MPC horizon planning. Traffic poses are dynamic, refreshed here.
             _obs_flat_msg = []
+            _vpos_now = vehicle.GetChassisBody().GetPos()
+            _vx, _vy = _vpos_now.x, _vpos_now.y
+            _cands = []  # (dist, x, y, r)
             if args.rocks > 0:
                 _rpos = get_rock_positions(rocks)
                 _rrad = get_rock_radii(rocks)
-                _vpos_now = vehicle.GetChassisBody().GetPos()
-                _vx, _vy = _vpos_now.x, _vpos_now.y
-                _dists = np.sqrt((_rpos[:, 0] - _vx)**2 + (_rpos[:, 1] - _vy)**2)
-                _nearby_idx = np.where(_dists < 40.0)[0]
-                _sorted_idx = _nearby_idx[np.argsort(_dists[_nearby_idx])][:3]
-                for _i in _sorted_idx:
-                    _obs_flat_msg += [float(_rpos[_i, 0]), float(_rpos[_i, 1]),
-                                      float(_rrad[_i])]
+                for _i in range(len(_rpos)):
+                    _cands.append((math.hypot(_rpos[_i, 0] - _vx, _rpos[_i, 1] - _vy),
+                                   float(_rpos[_i, 0]), float(_rpos[_i, 1]), float(_rrad[_i])))
+            if traffic_mgr is not None:
+                for ox, oy, orad in traffic_mgr.obstacles():
+                    _cands.append((math.hypot(ox - _vx, oy - _vy), ox, oy, orad))
+            _cands = sorted((c for c in _cands if c[0] < 40.0), key=lambda c: c[0])
+            for _d, ox, oy, orad in _cands[:3]:
+                _obs_flat_msg += [ox, oy, orad]
 
             state_msg = extract_vehicle_state(
                 vehicle, time_chrono,
@@ -1243,7 +1264,9 @@ def run_sim_node(args):
         if collision_logger is not None:
             _veh_cg = vehicle.GetChassisBody().GetPos()
             _veh_spd = vehicle.GetVehicle().GetSpeed()
-            collision_logger.check(time_chrono, _veh_cg.x, _veh_cg.y, _veh_spd)
+            _traffic_obs = traffic_mgr.obstacles() if traffic_mgr is not None else None
+            collision_logger.check(time_chrono, _veh_cg.x, _veh_cg.y, _veh_spd,
+                                   extra_obstacles=_traffic_obs)
 
         # ----- Collision warning evaluation -----
         if warning_system is not None and args.rocks > 0 and rocks:
@@ -1433,6 +1456,10 @@ def main():
     p.add_argument("--cam-fullscreen", action="store_true",
                    help="Display the driver POV fullscreen (renders at "
                         "--cam-width x --cam-height, scaled to the screen).")
+    p.add_argument("--convoy", type=str, default="",
+                   help="Spawn PID-driven traffic vehicles for a convoy safety "
+                        "scenario (lead_brake/cut_in/stalled/swerver/convoy). The "
+                        "ego must avoid them; they appear as dynamic obstacles.")
     p.add_argument("--mesh-resolution", type=float, default=None,
                    help="SCM mesh spacing (m). Default 0.08 (paper fidelity); "
                         "0.12 is the real-time value for interactive/HIL runs.")
