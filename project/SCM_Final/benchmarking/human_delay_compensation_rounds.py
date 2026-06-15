@@ -127,6 +127,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--base-seed", type=int, default=910)
     p.add_argument("--time", type=float, default=25.0)
     p.add_argument("--lead-in", type=float, default=5.0)
+    p.add_argument("--goal-distance", type=float, default=50.0,
+                   help="Forward distance (m) the ego must cover for the round to "
+                        "count as reaching the goal. Guards against the trivial "
+                        "'sit still -> 0 collisions' result: a round is a clean "
+                        "success only if it is collision-free AND reaches the goal.")
     p.add_argument("--rocks", type=int, default=5)
     p.add_argument("--manual-mode", choices=["g29", "wasd"], default="g29")
     p.add_argument("--vis-mode", choices=["irrlicht", "sensor", "both", "none"], default="irrlicht",
@@ -442,14 +447,13 @@ def brief_round(args: argparse.Namespace, i: int, total: int, filter_name: str,
     if not args.convoy and args.rocks == 0:
         print(f"             Open course, no obstacles.")
     # --- goal ---
-    print(f"  GOAL     : drive FORWARD down the course (straight ahead from your")
-    print(f"             start) and cover as much ground as you can in the "
-          f"{args.time:.0f}s run,")
-    print(f"             WITHOUT hitting any vehicle or rock. Keep moving at a "
-          f"steady")
-    print(f"             pace (~{speed:g} m/s); weave around hazards freely -- "
-          f"there is no")
-    print(f"             line to follow.")
+    print(f"  GOAL     : drive FORWARD and reach the far end (~{args.goal_distance:.0f} m "
+          f"ahead) within")
+    print(f"             the {args.time:.0f}s run WITHOUT hitting any vehicle or rock. "
+          f"You must")
+    print(f"             keep moving (a round that stops short does NOT count, even")
+    print(f"             with no collision). Steady pace ~{speed:g} m/s; weave around")
+    print(f"             hazards freely -- there is no line to follow.")
     # --- safety filter ---
     if filter_name == "none":
         print(f"  FILTER   : NONE -- your commands go straight to the vehicle "
@@ -575,11 +579,19 @@ def main() -> None:
         row.update(parse_sim_diag(run_dir / "sim_diag.csv", path, speed, args.lead_in))
         row.update(parse_collision_csv(Path(collision_csv) if collision_csv else None))
         row.update(parse_shield_csv(Path(shield_csv) if shield_csv else None))
+        # Anti-gaming: a round only counts as a clean success if it both avoids
+        # collisions AND reaches the goal distance (sitting still -> 0 collisions
+        # but 0 progress -> not reached -> not a success).
+        _prog = row.get("progress_m", math.nan)
+        row["goal_distance_m"] = args.goal_distance
+        row["reached_goal"] = int(math.isfinite(_prog) and _prog >= args.goal_distance)
+        row["clean_success"] = int(row["reached_goal"] and row.get("collisions", 0) == 0)
         rows.append(row)
         pd.DataFrame(rows).to_csv(out_dir / "results.csv", index=False)
         print(f"    {row['status']}: collisions={row.get('collisions', 0)} "
-              f"rms_cte={row.get('rms_cte_m', math.nan):.3f} "
-              f"speed_ratio={row.get('speed_ratio', math.nan):.2f}")
+              f"progress={_prog:.0f}/{args.goal_distance:.0f}m "
+              f"{'REACHED' if row['reached_goal'] else 'DID-NOT-REACH'}"
+              f"{' [clean success]' if row['clean_success'] else ''}")
 
     results_csv = out_dir / "results.csv"
     results_df = pd.DataFrame(rows)

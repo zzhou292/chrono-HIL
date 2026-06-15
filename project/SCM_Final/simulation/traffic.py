@@ -287,6 +287,13 @@ def _overtake(ego_y: float) -> list[TrafficSpec]:
                                  Hazard(6.5, 3.0, "brake")])]
 
 
+def _rear_approach(ego_y: float) -> list[TrafficSpec]:
+    # A fast vehicle closing from BEHIND -- a rear-end threat the ego can only
+    # escape by accelerating or moving aside, not by braking. Tests whether a
+    # forward-collision filter helps (or hurts) against a threat from the rear.
+    return [TrafficSpec(init_x=-12.0, init_y=ego_y, speed=8.0)]
+
+
 def _gauntlet(ego_y: float) -> list[TrafficSpec]:
     # Mixed 5-vehicle stress scene: lead brake + cut-in + stalled + swerver +
     # oncoming. The hardest combined avoidance test.
@@ -319,10 +326,12 @@ CONVOY_PRESETS = {
     "jam": _jam,
     "overtake": _overtake,
     "gauntlet": _gauntlet,
+    "rear_approach": _rear_approach,
 }
 
 # One-line, operator-facing descriptions for the pre-round briefing.
 CONVOY_DESCRIPTIONS = {
+    "rear_approach": "a fast vehicle is closing from BEHIND -- a rear-end threat",
     "lead_brake": "a lead vehicle ahead in your lane SLAMS ITS BRAKES partway through",
     "cut_in": "a vehicle in the next lane suddenly CUTS INTO your lane",
     "stalled": "a STALLED vehicle is blocking your lane ahead",
