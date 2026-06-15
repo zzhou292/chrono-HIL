@@ -1677,12 +1677,18 @@ re-evaluated with the planner's in-horizon barriers re-enabled in
 Sec.~\ref{sec:safety_aware} for a total of 3240 runs.
 Table~\ref{tab:safety_blind} and Fig.~\ref{fig:safety_blind} report the
 safety-filter-only outcome. Because the planner's reference here is
-deliberately routed through the obstacles, the deviation column (the
-crosstrack error from that obstacle-blind reference) does not measure
-tracking quality: it measures how far an active safety filter must pull
-the vehicle off the reference to stay safe, and therefore reads as an
-intrusiveness proxy. A larger deviation for DOB-CBF and NMPC than for MPPI
-is consistent with their higher per-step deviation, not with worse tracking.
+deliberately routed through the obstacles, crosstrack error would conflate
+the beneficial avoidance manoeuvre with poor tracking and is therefore not
+reported; intrusiveness is instead measured \emph{directly}, by how often a
+filter overrides the planner (intervention rate) and how hard it corrects
+the command (mean absolute steering and throttle correction,
+$|\Delta\mathrm{steer}|$, $|\Delta\mathrm{thr}|$) --- the intent-preservation
+cost a teleoperator would feel. MPPI is the safest (fewest collisions,
+largest clearance) but the most intrusive: it intervenes on $88\,\%$ of
+steps and applies the largest throttle correction as it brakes hardest.
+DOB-CBF intervenes least often ($52\,\%$) with the smallest throttle
+correction --- the minimum-deviation, intent-preserving behaviour that
+motivates it as the default HIL filter.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
@@ -1695,15 +1701,16 @@ is consistent with their higher per-step deviation, not with worse tracking.
     Sec.~\ref{sec:safety_hil}.}
   \label{tab:safety_blind}
   \centering
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{lcccc}
+  \setlength{\tabcolsep}{2.5pt}
+  \small
+  \begin{tabular}{lccccc}
     \toprule
-    \textbf{Filter} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{Deviation (m)}\\
+    \textbf{Filter} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{$|\Delta$steer$|$} & \textbf{$|\Delta$thr$|$}\\
     \midrule
-    None         & $3.05$ & $-1.83$ & --- & $0.25$\\
-    \textbf{DOB-CBF} & $0.46$ & $+0.26$ & $\mathbf{52}$ & $2.29$\\
-    \textbf{MPPI}    & $\mathbf{0.10}$ & $\mathbf{+2.17}$ & $88$ & $1.13$\\
-    NMPC (SLSQP) & $0.45$ & $+1.13$ & $84$ & $7.26$\\
+    None         & $3.05$ & $-1.83$ & --- & --- & ---\\
+    \textbf{DOB-CBF} & $0.46$ & $+0.26$ & $\mathbf{52}$ & $0.68$ & $\mathbf{0.27}$\\
+    \textbf{MPPI}    & $\mathbf{0.10}$ & $\mathbf{+2.17}$ & $88$ & $0.53$ & $0.66$\\
+    NMPC (SLSQP) & $0.45$ & $+1.13$ & $84$ & $0.88$ & $0.42$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1740,19 +1747,20 @@ collisions to near zero ($0.20$ and $0.04$ per run, respectively).
     zero ($\le 0.20$/run) for both DOB-CBF and MPPI filters.}
   \label{tab:safety_aware}
   \centering
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{lcccc}
+  \setlength{\tabcolsep}{2.5pt}
+  \small
+  \begin{tabular}{lccccc}
     \toprule
-    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{Deviation (m)}\\
+    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{$|\Delta$steer$|$} & \textbf{$|\Delta$thr$|$}\\
     \midrule
-    None, blind          & $3.01$ & $-1.83$ & --- & $0.25$\\
-    None, aware          & $0.49$ & $+0.39$ & --- & $2.44$\\
-    DOB-CBF, blind       & $0.50$ & $+0.22$ & $52$ & $2.43$\\
-    \textbf{DOB-CBF, aware} & $\mathbf{0.20}$ & $+1.24$ & $35$ & $2.74$\\
-    MPPI, blind          & $0.07$ & $+2.23$ & $88$ & $1.24$\\
-    \textbf{MPPI, aware}    & $\mathbf{0.04}$ & $+2.07$ & $84$ & $2.69$\\
-    NMPC, blind          & $0.51$ & $+1.11$ & $84$ & $6.95$\\
-    NMPC, aware          & $0.26$ & $+1.35$ & $80$ & $7.58$\\
+    None, blind          & $3.01$ & $-1.83$ & --- & --- & ---\\
+    None, aware          & $0.49$ & $+0.39$ & --- & --- & ---\\
+    DOB-CBF, blind       & $0.50$ & $+0.22$ & $52$ & $0.69$ & $0.27$\\
+    \textbf{DOB-CBF, aware} & $\mathbf{0.20}$ & $+1.24$ & $35$ & $0.35$ & $0.24$\\
+    MPPI, blind          & $0.07$ & $+2.23$ & $88$ & $0.50$ & $0.65$\\
+    \textbf{MPPI, aware}    & $\mathbf{0.04}$ & $+2.07$ & $84$ & $0.31$ & $0.54$\\
+    NMPC, blind          & $0.51$ & $+1.11$ & $84$ & $0.91$ & $0.41$\\
+    NMPC, aware          & $0.26$ & $+1.35$ & $80$ & $0.64$ & $0.34$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1776,14 +1784,15 @@ two variants over 1215 closed-loop trials.
   \caption{DOB-CBF neural-surrogate ablation. 1215 runs.}
   \label{tab:dobcbf_nn}
   \centering
-  \setlength{\tabcolsep}{3pt}
-  \begin{tabular}{lcccc}
+  \setlength{\tabcolsep}{2.5pt}
+  \small
+  \begin{tabular}{lccccc}
     \toprule
-    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{Deviation (m)}\\
+    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{$|\Delta$steer$|$} & \textbf{$|\Delta$thr$|$}\\
     \midrule
-    No filter        & $3.05$ & $-1.83$ & --- & $0.27$\\
-    DOB-CBF, no NN   & $0.81$ & $-0.21$ & $46$ & $1.92$\\
-    \textbf{DOB-CBF, with NN} & $\mathbf{0.48}$ & $\mathbf{+0.12}$ & $50$ & $2.20$\\
+    No filter        & $3.05$ & $-1.83$ & --- & --- & ---\\
+    DOB-CBF, no NN   & $0.81$ & $-0.21$ & $46$ & $0.71$ & $0.26$\\
+    \textbf{DOB-CBF, with NN} & $\mathbf{0.48}$ & $\mathbf{+0.12}$ & $50$ & $0.69$ & $0.26$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1812,13 +1821,14 @@ the minimum clearance into the obstacle footprint.
   \caption{MPPI seed-trajectory ablation. 810 runs.}
   \label{tab:mppi_seeds}
   \centering
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{lcccc}
+  \setlength{\tabcolsep}{2.5pt}
+  \small
+  \begin{tabular}{lccccc}
     \toprule
-    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{Deviation (m)}\\
+    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{$|\Delta$steer$|$} & \textbf{$|\Delta$thr$|$}\\
     \midrule
-    MPPI, no seeds   & $2.18$ & $-1.05$ & $86$ & $0.98$\\
-    \textbf{MPPI, with seeds} & $\mathbf{0.08}$ & $\mathbf{+2.03}$ & $88$ & $1.03$\\
+    MPPI, no seeds   & $2.18$ & $-1.05$ & $86$ & $0.22$ & $0.25$\\
+    \textbf{MPPI, with seeds} & $\mathbf{0.08}$ & $\mathbf{+2.03}$ & $88$ & $0.46$ & $0.61$\\
     \bottomrule
   \end{tabular}
 \end{table}
