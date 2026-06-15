@@ -366,6 +366,13 @@ class CBFSafetyFilter:
         self._beta = 0.0  # road wheel angle (rad)
         self._alpha = 0.0  # last throttle command
 
+        # Rear-approach avoidance: when a vehicle closes from behind, never let
+        # the driver slow down (braking raises rear-end risk), and accelerate to
+        # try to escape when the path ahead is clear -- including from a standstill.
+        self._rear_threat_dist = 12.0    # m: a closing rear obstacle within this is a threat
+        self._rear_half_w = 2.5          # m: lateral half-width counted as "same lane"
+        self._prev_rear_dist = float('inf')
+
         # State for logging
         self._last_result = None
         self._filter_count = 0
@@ -1121,6 +1128,36 @@ class CBFSafetyFilter:
         else:
             safe_throttle = 0.0
             safe_brake = min(abs(safe_alpha), 1.0)
+
+        # --- Rear-approach avoidance ---
+        # A vehicle closing from behind cannot always be avoided, but the worst
+        # response is to slow down. Find the nearest obstacle BEHIND us (in our
+        # lane) and, if it is closing inside the threat distance, refuse any
+        # deceleration and -- if the path ahead is clear -- accelerate to escape
+        # (ramping with proximity), even from a standstill.
+        rear_dist = float('inf')
+        fwd_dist = float('inf')
+        cps, sps = np.cos(psi), np.sin(psi)
+        for (obs_x, obs_y, obs_r) in obstacles:
+            rx, ry = obs_x - x, obs_y - y
+            lon = rx * cps + ry * sps            # +forward in body frame
+            lat = -rx * sps + ry * cps
+            d = float(np.hypot(rx, ry)) - obs_r
+            if abs(lat) < self._rear_half_w:
+                if lon < -1.0:
+                    rear_dist = min(rear_dist, d)
+                elif lon > 0.0:
+                    fwd_dist = min(fwd_dist, d)
+        rear_closing = rear_dist < self._prev_rear_dist - 0.02
+        self._prev_rear_dist = rear_dist if np.isfinite(rear_dist) else float('inf')
+        if rear_dist < self._rear_threat_dist and rear_closing:
+            safe_brake = 0.0                     # never brake into a rear approach
+            if fwd_dist > self._rear_threat_dist:  # path ahead clear -> accelerate away
+                escape = float(np.clip(1.2 - rear_dist / self._rear_threat_dist, 0.4, 1.0))
+                safe_throttle = max(safe_throttle, desired_throttle, escape)
+            else:                                  # blocked ahead -> at least don't slow
+                safe_throttle = max(safe_throttle, desired_throttle)
+            was_modified = True
 
         solve_time = (time.time() - t_start) * 1000
 
