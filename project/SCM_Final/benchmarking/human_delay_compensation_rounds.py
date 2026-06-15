@@ -95,11 +95,13 @@ def parse_args() -> argparse.Namespace:
                    help="Driver POV window height (px). Use 1200 for 16:10.")
     p.add_argument("--cam-fov", type=float, default=1.05,
                    help="Driver POV camera horizontal FOV (rad, ~1.05=60deg).")
-    p.add_argument("--mesh-resolution", type=float, default=None,
-                   help="SCM mesh spacing (m). Default 0.08 (same as the "
-                        "autonomous sweeps); physics already runs real-time, so "
-                        "the camera resolution is the real-time lever. Set 0.12 "
-                        "only if a weak GPU still can't hit real-time.")
+    p.add_argument("--cam-rate", type=float, default=30.0,
+                   help="Driver POV camera render rate (Hz).")
+    p.add_argument("--mesh-resolution", type=float, default=0.12,
+                   help="SCM mesh spacing (m). Default 0.12 = real-time for HIL: "
+                        "the terrain triangle count dominates the camera render "
+                        "cost (1080p@30Hz is RT at 0.12 but ~0.55x at 0.08). The "
+                        "autonomous sweeps use 0.08 for force fidelity.")
     p.add_argument("--terrains", nargs="+", default=["clay", "sand"], choices=list(TERRAINS))
     p.add_argument("--paths", nargs="+", default=["sinusoidal", "lane_change"])
     p.add_argument("--speeds", nargs="+", type=float, default=[4.0])
@@ -152,6 +154,7 @@ def command_for_round(args: argparse.Namespace, run_dir: Path, idx: int, filter_
         "--cam-width", str(args.cam_width),
         "--cam-height", str(args.cam_height),
         "--cam-fov", str(args.cam_fov),
+        "--cam-rate", str(args.cam_rate),
     ]
     if args.mesh_resolution is not None:
         cmd += ["--mesh-resolution", str(args.mesh_resolution)]

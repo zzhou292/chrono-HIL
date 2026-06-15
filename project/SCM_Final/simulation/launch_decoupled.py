@@ -307,6 +307,8 @@ Examples:
                    help="Driver POV camera / window height (px). Use 1200 for 16:10.")
     p.add_argument("--cam-fov", type=float, default=1.05,
                    help="Driver POV camera horizontal FOV (rad, ~1.05=60deg).")
+    p.add_argument("--cam-rate", type=float, default=30.0,
+                   help="Driver POV camera render rate (Hz); real-time lever.")
     p.add_argument("--mesh-resolution", type=float, default=None,
                    help="SCM mesh spacing (m). Default 0.08; 0.12 for real-time HIL.")
 
@@ -416,7 +418,8 @@ Examples:
         sim_cmd.extend(["--latency-profile-log", args.latency_profile_log])
     sim_cmd.extend(["--cam-width", str(args.cam_width),
                     "--cam-height", str(args.cam_height),
-                    "--cam-fov", str(args.cam_fov)])
+                    "--cam-fov", str(args.cam_fov),
+                    "--cam-rate", str(args.cam_rate)])
     if args.mesh_resolution is not None:
         sim_cmd.extend(["--mesh-resolution", str(args.mesh_resolution)])
     if args.manual:

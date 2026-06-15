@@ -130,19 +130,29 @@ python benchmarking/human_delay_compensation_rounds.py \
   *separate session* from the constant 0/0.15/0.30 s sweep (don't mix the
   two delay regimes in one paired comparison).
 - **Live HMI overlay (optional).** Add `--live-hud` to pop the Tesla-style
-  overlay (`simulation/hil_hud.py`) on each round's ZMQ ports — a virtual
-  steering wheel (operator command = ghost, applied road-wheel = solid) and
-  a throttle bar — so the operator and spectators see the filter takeover
-  *live* while driving. It only subscribes, so it cannot perturb the
-  real-time loop; it is torn down automatically at the end of each round.
+  overlay (`simulation/hil_hud.py`) on each round — a virtual steering wheel
+  (operator command = dashed ghost, applied = solid) and an accel/brake bar.
+  It reads the driver inputs the sim publishes on `vehicle_state`
+  (`steering_op/app`, `throttle_op/app`, `braking_app`), so it updates live
+  even in manual mode where there is no controller — and when a filter takes
+  over, the solid wheel/bar diverges from the ghost. The window is
+  borderless, docks into a screen corner (`--corner br`), and is set
+  always-on-top (via `wmctrl`) so it sits over the sim instead of being a
+  separate window you raise by hand. Subscribe-only, torn down per round.
 - **Real-time / resolution.** The driver POV defaults to a single 1080p
-  screen (`--cam-width 1920 --cam-height 1080`, `--cam-fov 1.05`; use
-  `--cam-height 1200` for a 16:10 monitor). The old 5760×1080 triple-monitor
-  camera was the only thing breaking real-time — SCM physics already runs at
-  ~1.0× with headroom (≈25% of the wall budget), so the camera resolution is
-  the real-time lever, not the mesh. Watch the sim's `RT=…x` / `[TIMING]`
-  line: if it still drops below 1.0× on a weak GPU, lower `--cam-width` (e.g.
-  1280) or, last resort, coarsen `--mesh-resolution 0.12`.
+  screen at 30 Hz (`--cam-width 1920 --cam-height 1080 --cam-rate 30`,
+  `--cam-fov 1.05`; use `--cam-height 1200` for a 16:10 monitor). Two things
+  broke real-time on the old setup: the 5760×1080 triple-monitor camera, and
+  — measured to be the dominant cost — the **deformable SCM terrain mesh
+  triangle count**, which the camera ray-traces (BVH rebuild) every frame.
+  Profiling on an RTX 5090: 1080p@30Hz is **0.55×** at the fine `0.08` mesh
+  but **1.00×** at `0.12` (per-frame render 4.5 ms → 0.9 ms). So the HIL path
+  defaults to `--mesh-resolution 0.12` (the autonomous sweeps keep `0.08` for
+  force fidelity, but they render headless so it costs them nothing). SCM
+  *physics* is mesh-insensitive (~0.7 ms/step either way); the mesh only
+  matters because the camera renders it. Watch the sim's `RT=…x` /
+  `[TIMING] sensor=…` line: if it still dips, lower `--cam-rate` or
+  `--cam-width` before touching the mesh further.
 - Drop `--auto-start` so the script pauses between rounds; that gives the
   operator (and you) a reset/breath between runs and is where you read out
   "round k, filter X, delay Y."

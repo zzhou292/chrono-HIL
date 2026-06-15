@@ -237,7 +237,8 @@ def extract_vehicle_state(vehicle, sim_time: float, terrain=None,
                           noise: dict = None,
                           imu_acc_sensor=None,
                           imu_gyro_sensor=None,
-                          obstacles_flat: list = None) -> VehicleState:
+                          obstacles_flat: list = None,
+                          driver_io: tuple = None) -> VehicleState:
     """Read Chrono vehicle and pack into a VehicleState message.
 
     Args:
@@ -377,6 +378,12 @@ def extract_vehicle_state(vehicle, sim_time: float, terrain=None,
         wheel_omega_rl=wheel_omega_rl,
         wheel_omega_rr=wheel_omega_rr,
         steering_angle=steer_angle,
+        steering_op=float(driver_io[0]) if driver_io else 0.0,
+        throttle_op=float(driver_io[1]) if driver_io else 0.0,
+        braking_op=float(driver_io[2]) if driver_io else 0.0,
+        steering_app=float(driver_io[3]) if driver_io else 0.0,
+        throttle_app=float(driver_io[4]) if driver_io else 0.0,
+        braking_app=float(driver_io[5]) if driver_io else 0.0,
         tire_forces=tf,
         obstacles=obstacles_flat,
     )
@@ -710,7 +717,7 @@ def run_sim_node(args):
             )
             driver_cam = sens.ChCameraSensor(
                 vehicle.GetChassisBody(),  # attached body
-                30,                        # update rate (Hz) — matches C++ SCM teleop
+                args.cam_rate,             # render rate (Hz) — real-time lever
                 cam_offset,                # offset pose
                 args.cam_width,            # image width
                 args.cam_height,           # image height
@@ -1064,6 +1071,9 @@ def run_sim_node(args):
         driver_inputs.m_steering = driver.GetSteering()
         driver_inputs.m_throttle = driver.GetThrottle()
         driver_inputs.m_braking = driver.GetBraking()
+        # Operator's raw command (pre-delay, pre-safety-filter) for the HMI ghost.
+        op_io = (driver_inputs.m_steering, driver_inputs.m_throttle,
+                 driver_inputs.m_braking)
         if _manual_mode and manual_delay_s > 0:
             manual_cmd_buffer.append((
                 wall_time.time() + manual_delay_s,
@@ -1124,6 +1134,11 @@ def run_sim_node(args):
                 driver_inputs.m_steering = cached.steering
                 driver_inputs.m_throttle = cached.throttle
                 driver_inputs.m_braking = cached.braking
+
+        # Applied command (post delay + safety filter) for the HMI solid trace.
+        app_io = (driver_inputs.m_steering, driver_inputs.m_throttle,
+                  driver_inputs.m_braking)
+        driver_io = op_io + app_io
 
         _tw = wall_time.time()
         terrain.Synchronize(time_chrono)
@@ -1204,6 +1219,7 @@ def run_sim_node(args):
                 imu_acc_sensor=imu_acc_sensor,
                 imu_gyro_sensor=imu_gyro_sensor,
                 obstacles_flat=_obs_flat_msg if _obs_flat_msg else None,
+                driver_io=driver_io,
             )
             state_pub.send(state_msg)
             _t_state_extract += wall_time.time() - _tw
@@ -1407,6 +1423,11 @@ def main():
     p.add_argument("--cam-fov", type=float, default=1.05,
                    help="Driver POV camera horizontal FOV (rad). ~1.05 = 60 deg "
                         "for a single screen (the ultrawide rig used 1.92).")
+    p.add_argument("--cam-rate", type=float, default=30.0,
+                   help="Driver POV camera render rate (Hz). Each render ray-traces "
+                        "the deformable terrain; combined with --mesh-resolution "
+                        "this sets the real-time budget (1080p@30Hz is real-time "
+                        "at mesh 0.12, but only ~0.55x at the fine 0.08 mesh).")
     p.add_argument("--mesh-resolution", type=float, default=None,
                    help="SCM mesh spacing (m). Default 0.08 (paper fidelity); "
                         "0.12 is the real-time value for interactive/HIL runs.")

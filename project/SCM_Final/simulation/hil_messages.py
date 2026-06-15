@@ -82,6 +82,15 @@ class VehicleState:
     wheel_omega_rr: float = 0.0
     # Road-wheel steering angle (steering sensor, rad)
     steering_angle: float = 0.0
+    # Driver-input telemetry for the live HMI overlay (normalized units).
+    # "op" = operator's raw command (pre-safety-filter); "app" = what the
+    # vehicle actually applied (post-filter). Their divergence is the takeover.
+    steering_op: float = 0.0     # operator steering [-1, 1]
+    throttle_op: float = 0.0     # operator throttle [0, 1]
+    braking_op: float = 0.0      # operator brake [0, 1]
+    steering_app: float = 0.0    # applied steering [-1, 1]
+    throttle_app: float = 0.0    # applied throttle [0, 1]
+    braking_app: float = 0.0     # applied brake [0, 1]
     # Tire info (optional, for diagnostics)
     tire_forces: Optional[Dict[str, float]] = None
     # Nearby obstacles for MPC planning: flat list [x0,y0,r0, x1,y1,r1, ...]
