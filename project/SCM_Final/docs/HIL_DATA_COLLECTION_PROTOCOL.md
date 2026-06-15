@@ -177,7 +177,15 @@ The script already records, per run, the only quantities you report:
 | `min_clearance_m` | safety margin | mean ± sd |
 | `intervention_rate_pct` | how often the filter overrode the human | the *cost* side of the trade-off |
 | `mean_abs_dsteer`, `mean_abs_dthrottle` | how *hard* it overrode | intrusiveness magnitude |
-| `rms_cte_m`, `speed_ratio` | task progress / how much the filter slowed the human | secondary |
+| `speed_ratio` | task progress / how much the filter slowed the human | secondary |
+
+The operator is **avoiding obstacles toward a goal, not tracking a reference
+path**, so `rms_cte_m` is *not* a reported HIL metric — crosstrack from the
+nominal path would penalise the very avoidance manoeuvre the filter is there
+to enable. It is still logged for debugging, but the safety/intrusiveness
+metrics above, plus the counterfactual harm-prevented comparison
+(`convoy_counterfactual_eval.py`: same operator trace replayed filter-off vs
+each filter), are what the paper reports.
 
 That CSV **is** the publishable HIL dataset. None of it needs video.
 

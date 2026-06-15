@@ -1371,6 +1371,10 @@ $\times$ \{sinusoid, double lane change\} $\times\,\{5,7\}\,\mathrm{m/s}$,
 five seeds; Fig.~\ref{fig:speedplan}) cuts mean RMS CTE by $51\,\%$
 ($0.156\!\to\!0.077\,\mathrm{m}$) for a $6\,\%$ reduction in mean speed,
 and collapses the across-scenario spread (std $0.19\!\to\!0.03\,\mathrm{m}$).
+Here RMS CTE is read as a \emph{controllability} outcome --- whether the
+vehicle can hold the planned line under the available grip, rather than a
+path-tracking accuracy target --- since a profile that ignores the soil
+commands cornering speeds that slide the vehicle off the line.
 The gain concentrates on exactly the cells where the curvature heuristic
 commands cornering speeds the soil cannot support --- the high-speed
 sinusoid on soft soil, where CTE falls by $70$--$84\,\%$ (dirt
@@ -1604,7 +1608,13 @@ safety filters, and metric pipeline as the autonomous evaluation.
 Table~\ref{tab:hil} and Figs.~\ref{fig:hil_summary}--\ref{fig:hil_heatmap}
 report the human-driven rounds; the autonomous protocol of the following
 section complements them with a large, fully repeatable multi-seed matrix
-that removes inter-operator variance.
+that removes inter-operator variance. Because the simulator is
+deterministic, the recorded operator command trace can additionally be
+replayed with the filter off and through each filter on the identical
+scenario, yielding a per-operator \emph{counterfactual} harm-prevented
+measurement --- the collisions averted and clearance recovered on the
+operator's own intent --- with no inter-operator variance to average out
+and no crosstrack-tracking proxy.
 
 \paragraph{Human-in-the-loop results.}
 \emph{[Placeholder --- to be completed after the HIL rounds are run; sims
@@ -1648,7 +1658,9 @@ Sec.~\ref{sec:safety_blind}.
     safety-filter metrics versus operator/link latency
     $\Delta_\mathrm{cmd}\!\in\!\{0,0.15,0.30\}\,$s, one curve per filter
     (none / DOB-CBF / MPPI / NMPC): collisions, minimum clearance,
-    intervention rate, mean throttle/steering correction, and RMS CTE. To
+    intervention rate, mean throttle/steering correction, and speed
+    retention. The operator is avoiding obstacles toward a goal, not
+    tracking a reference path, so crosstrack error is not reported. To
     be generated from the HIL rounds
     (\texttt{human\_delay\_compensation\_rounds.py}).}
   \label{fig:hil_summary}
@@ -1698,14 +1710,15 @@ motivates it as the default HIL filter.
     lowest mean collisions \emph{and} the largest clearance margin;
     DOB-CBF is the least intrusive safety filter (lowest intervention rate),
     the natural intent-preserving filter for the HIL case in
-    Sec.~\ref{sec:safety_hil}.}
+    Sec.~\ref{sec:safety_hil}. $|\Delta\delta|$, $|\Delta\tau|$ are the mean
+    absolute steering and throttle command corrections the filter applies.}
   \label{tab:safety_blind}
   \centering
-  \setlength{\tabcolsep}{2.5pt}
-  \small
+  \setlength{\tabcolsep}{3pt}
+  \footnotesize
   \begin{tabular}{lccccc}
     \toprule
-    \textbf{Filter} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{$|\Delta$steer$|$} & \textbf{$|\Delta$thr$|$}\\
+    \textbf{Filter} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
     \midrule
     None         & $3.05$ & $-1.83$ & --- & --- & ---\\
     \textbf{DOB-CBF} & $0.46$ & $+0.26$ & $\mathbf{52}$ & $0.68$ & $\mathbf{0.27}$\\
@@ -1747,11 +1760,11 @@ collisions to near zero ($0.20$ and $0.04$ per run, respectively).
     zero ($\le 0.20$/run) for both DOB-CBF and MPPI filters.}
   \label{tab:safety_aware}
   \centering
-  \setlength{\tabcolsep}{2.5pt}
-  \small
+  \setlength{\tabcolsep}{3pt}
+  \footnotesize
   \begin{tabular}{lccccc}
     \toprule
-    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{$|\Delta$steer$|$} & \textbf{$|\Delta$thr$|$}\\
+    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
     \midrule
     None, blind          & $3.01$ & $-1.83$ & --- & --- & ---\\
     None, aware          & $0.49$ & $+0.39$ & --- & --- & ---\\
@@ -1784,15 +1797,15 @@ two variants over 1215 closed-loop trials.
   \caption{DOB-CBF neural-surrogate ablation. 1215 runs.}
   \label{tab:dobcbf_nn}
   \centering
-  \setlength{\tabcolsep}{2.5pt}
-  \small
+  \setlength{\tabcolsep}{3pt}
+  \footnotesize
   \begin{tabular}{lccccc}
     \toprule
-    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{$|\Delta$steer$|$} & \textbf{$|\Delta$thr$|$}\\
+    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
     \midrule
-    No filter        & $3.05$ & $-1.83$ & --- & --- & ---\\
+    None (no filter) & $3.05$ & $-1.83$ & --- & --- & ---\\
     DOB-CBF, no NN   & $0.81$ & $-0.21$ & $46$ & $0.71$ & $0.26$\\
-    \textbf{DOB-CBF, with NN} & $\mathbf{0.48}$ & $\mathbf{+0.12}$ & $50$ & $0.69$ & $0.26$\\
+    \textbf{DOB-CBF, NN} & $\mathbf{0.48}$ & $\mathbf{+0.12}$ & $50$ & $0.69$ & $0.26$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1821,11 +1834,11 @@ the minimum clearance into the obstacle footprint.
   \caption{MPPI seed-trajectory ablation. 810 runs.}
   \label{tab:mppi_seeds}
   \centering
-  \setlength{\tabcolsep}{2.5pt}
-  \small
+  \setlength{\tabcolsep}{3pt}
+  \footnotesize
   \begin{tabular}{lccccc}
     \toprule
-    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & \textbf{$|\Delta$steer$|$} & \textbf{$|\Delta$thr$|$}\\
+    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
     \midrule
     MPPI, no seeds   & $2.18$ & $-1.05$ & $86$ & $0.22$ & $0.25$\\
     \textbf{MPPI, with seeds} & $\mathbf{0.08}$ & $\mathbf{+2.03}$ & $88$ & $0.46$ & $0.61$\\

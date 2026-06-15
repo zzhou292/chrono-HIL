@@ -378,14 +378,14 @@ def plot_figures(results_csv: Path, out_dir: Path) -> None:
         axes[0, 2].plot(sub["delay_s"], sub["intervention"], marker="o", label=filter_name)
         axes[1, 0].plot(sub["delay_s"], sub["dsteer"], marker="o", label=filter_name)
         axes[1, 1].plot(sub["delay_s"], sub["dthrottle"], marker="o", label=filter_name)
-        axes[1, 2].plot(sub["delay_s"], sub["rms_cte"], marker="o", label=filter_name)
+        axes[1, 2].plot(sub["delay_s"], sub["speed_ratio"], marker="o", label=filter_name)
     labels = [
         ("Unique obstacles hit (lower better)", "Safety"),
         ("Minimum clearance (m, higher better)", "Safety margin"),
         ("Intervention rate (%)", "Intrusiveness: how often"),
         ("Mean |Δ steer| (filtered − operator)", "Intrusiveness: how much"),
         ("Mean |Δ throttle| (filtered − operator)", "Intrusiveness: how much"),
-        ("RMS CTE (m, post-shield trajectory)", "Tracking under shield"),
+        ("Speed retention (achieved / target)", "Task progress"),
     ]
     for ax, (label, title) in zip(axes.flat, labels):
         ax.set_xlabel("Operator command delay (s)")
