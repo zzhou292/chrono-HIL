@@ -36,6 +36,7 @@ SPEEDS = (5.0, 7.0, 9.0)
 BUMPS = (0, 4, 8)
 
 PATH_ROCK_ZONES: dict[str, dict[str, tuple[float, float]]] = {
+    "straight": {"x": (12.0, 70.0), "y": (-3.0, 3.0)},
     "sinusoidal": {"x": (12.0, 50.0), "y": (-3.0, 3.0)},
     "lane_change": {"x": (15.0, 50.0), "y": (-1.0, 4.0)},
     "double_lane_change": {"x": (15.0, 60.0), "y": (-1.0, 4.0)},

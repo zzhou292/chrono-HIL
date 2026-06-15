@@ -116,7 +116,10 @@ def parse_args() -> argparse.Namespace:
                         "cost (1080p@30Hz is RT at 0.12 but ~0.55x at 0.08). The "
                         "autonomous sweeps use 0.08 for force fidelity.")
     p.add_argument("--terrains", nargs="+", default=["clay", "sand"], choices=list(TERRAINS))
-    p.add_argument("--paths", nargs="+", default=["sinusoidal", "lane_change"])
+    p.add_argument("--paths", nargs="+", default=["straight"],
+                   help="Course shape. 'straight' (default) is the forward "
+                        "corridor for the human drive-and-avoid task; the weaving "
+                        "paths (sinusoidal/lane_change) are for autonomous tracking.")
     p.add_argument("--speeds", nargs="+", type=float, default=[4.0])
     p.add_argument("--bumpiness", nargs="+", type=int, default=[0, 4])
     p.add_argument("--rounds", type=int, default=1,
@@ -429,19 +432,24 @@ def brief_round(args: argparse.Namespace, i: int, total: int, filter_name: str,
     print("-" * 64)
     # --- scenario ---
     extras = f", bumpiness {bump}" if bump else ""
-    print(f"  SCENARIO : {terrain} terrain, {path} route at {speed:g} m/s{extras}.")
+    print(f"  SCENARIO : {terrain} terrain, straight forward course, "
+          f"{args.time:.0f}s run{extras}.")
     if args.convoy:
         desc = CONVOY_DESCRIPTIONS.get(args.convoy, args.convoy)
         print(f"             Traffic: {desc}.")
     if args.rocks > 0:
-        print(f"             Plus {args.rocks} rocks scattered along the route.")
+        print(f"             Plus {args.rocks} rocks scattered along the course.")
     if not args.convoy and args.rocks == 0:
         print(f"             Open course, no obstacles.")
     # --- goal ---
-    print(f"  GOAL     : drive the route to the far end WITHOUT hitting any "
-          f"vehicle or rock.")
-    print(f"             Steer naturally toward the goal -- you do NOT need to "
-          f"hug a line.")
+    print(f"  GOAL     : drive FORWARD down the course (straight ahead from your")
+    print(f"             start) and cover as much ground as you can in the "
+          f"{args.time:.0f}s run,")
+    print(f"             WITHOUT hitting any vehicle or rock. Keep moving at a "
+          f"steady")
+    print(f"             pace (~{speed:g} m/s); weave around hazards freely -- "
+          f"there is no")
+    print(f"             line to follow.")
     # --- safety filter ---
     if filter_name == "none":
         print(f"  FILTER   : NONE -- your commands go straight to the vehicle "

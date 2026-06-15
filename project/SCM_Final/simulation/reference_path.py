@@ -59,6 +59,8 @@ def generate_path_waypoints(path_type, lead_in=0.0, lane_offset=3.0,
             total_length = 48.0 + lead_in + 40.0
         elif path_type == 'sinusoidal':
             total_length = lead_in + 5 * sine_wavelength
+        elif path_type == 'straight':
+            total_length = lead_in + 90.0   # forward corridor for HIL drives
         else:
             total_length = 200.0
 

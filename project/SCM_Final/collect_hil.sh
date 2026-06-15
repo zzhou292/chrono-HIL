@@ -40,7 +40,7 @@ exec python benchmarking/human_delay_compensation_rounds.py \
     --filters none dob_cbf mppi \
     --delays 0.15 \
     --terrains clay \
-    --paths sinusoidal \
+    --paths straight \
     --speeds 4 \
     --bumpiness 0 \
     --rounds 2 \
