@@ -316,7 +316,7 @@ Examples:
                         "(lead_brake/cut_in/stalled/swerver/convoy/platoon/oncoming/"
                         "double_cut/stop_and_go/jam/overtake/gauntlet).")
     p.add_argument("--traffic-detail", choices=["auto", "mesh", "primitives"],
-                   default="auto", help="Traffic render detail (auto stays real-time).")
+                   default="mesh", help="Traffic render detail (mesh|auto|primitives).")
     p.add_argument("--mesh-resolution", type=float, default=None,
                    help="SCM mesh spacing (m). Default 0.08; 0.12 for real-time HIL.")
 

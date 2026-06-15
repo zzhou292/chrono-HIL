@@ -108,7 +108,7 @@ def parse_args() -> argparse.Namespace:
                         "operator must avoid (lead_brake/cut_in/stalled/swerver/convoy/"
                         "platoon/oncoming/double_cut/stop_and_go/jam/overtake/gauntlet).")
     p.add_argument("--traffic-detail", choices=["auto", "mesh", "primitives"],
-                   default="auto", help="Traffic render detail (auto stays real-time).")
+                   default="mesh", help="Traffic render detail (mesh|auto|primitives).")
     p.add_argument("--mesh-resolution", type=float, default=0.12,
                    help="SCM mesh spacing (m). Default 0.12 = real-time for HIL: "
                         "the terrain triangle count dominates the camera render "
@@ -125,7 +125,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lead-in", type=float, default=5.0)
     p.add_argument("--rocks", type=int, default=5)
     p.add_argument("--manual-mode", choices=["g29", "wasd"], default="g29")
-    p.add_argument("--vis-mode", choices=["irrlicht", "sensor", "both", "none"], default="sensor")
+    p.add_argument("--vis-mode", choices=["irrlicht", "sensor", "both", "none"], default="irrlicht",
+                   help="Driver view. 'irrlicht' (default) rasterizes the fixed "
+                        "driver POV -- faster than the ray-traced 'sensor' camera on "
+                        "a large deformable terrain, so it allows more traffic at "
+                        "real-time. 'sensor' adds modelled camera (downlink) latency.")
     p.add_argument("--shield-horizon", type=int, default=12)
     p.add_argument("--mppi-samples", type=int, default=384)
     p.add_argument("--nmpc-iter", type=int, default=6)

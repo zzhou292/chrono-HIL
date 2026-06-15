@@ -144,7 +144,7 @@ def load_terrain_config(config_path):
 def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand',
                       terrain_config=None, mesh_resolution=None,
                       bumpiness=0, bump_seed=12345, texture=True,
-                      spatial_spec=None):
+                      spatial_spec=None, terrain_length=None, terrain_width=None):
     """Setup SCM deformable terrain
 
     Args:
@@ -238,7 +238,11 @@ def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand
         print(f"  Mesh: {delta}m")
     
     # Terrain dimensions: large visual area (moving patch keeps computation local)
-    length, width = 200.0, 80.0  # Large terrain for visualization
+    # for physics, but the camera ray-traces the WHOLE deformable mesh every
+    # frame (BVH rebuild), so a smaller terrain is a strong real-time lever for
+    # multi-vehicle camera scenes. Defaults stay 200x80 for the legacy sweeps.
+    length = float(terrain_length) if terrain_length else 200.0
+    width = float(terrain_width) if terrain_width else 80.0
     
     # Initialize terrain - flat or bumpy
     if bump_amplitude > 0:

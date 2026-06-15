@@ -156,7 +156,7 @@ class TrafficVehicle:
         rot = v.GetRot()
         psi = math.atan2(2 * (rot.e0 * rot.e3 + rot.e1 * rot.e2),
                          1 - 2 * (rot.e2 * rot.e2 + rot.e3 * rot.e3))
-        return {"x": p.x, "y": p.y, "psi": psi, "speed": v.GetSpeed(), "r": TRAFFIC_RADIUS}
+        return {"x": p.x, "y": p.y, "z": p.z, "psi": psi, "speed": v.GetSpeed(), "r": TRAFFIC_RADIUS}
 
 
 class TrafficManager:

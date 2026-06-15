@@ -1368,6 +1368,10 @@ def run_sim_node(args):
                             f"  near_misses={collision_logger.total_near_misses}")
             print(f"  t={time_chrono:.1f}s  pos=({pos.x:.1f},{pos.y:.1f})  "
                   f"RT={rt:.2f}x  cmds_recv={cmd_count}{_col_str}")
+            if traffic_mgr is not None:
+                _tz = [round(s['x'], 0) for s in traffic_mgr.states()]
+                _zz = [round(s.get('z', 0.0), 2) for s in traffic_mgr.states()]
+                print(f"    [TRAFFIC] x={_tz}  z={_zz}")
             # --- Timing breakdown (per 2s window) ---
             n = max(_t_report_steps, 1)
             accounted = (_t_terrain_sync + _t_terrain_adv + _t_veh_sync + _t_veh_adv +
@@ -1463,10 +1467,11 @@ def main():
                         "oncoming/double_cut/stop_and_go/jam/overtake/gauntlet). The "
                         "ego must avoid them; they appear as dynamic obstacles.")
     p.add_argument("--traffic-detail", choices=["auto", "mesh", "primitives"],
-                   default="auto",
-                   help="Traffic vehicle render detail. 'auto' (default) uses mesh "
-                        "for <=3 vehicles, primitives for bigger scenes to stay "
-                        "real-time with the camera. Ignored when headless.")
+                   default="mesh",
+                   help="Traffic vehicle render detail. 'mesh' (default, full HMMWV "
+                        "mesh) is real-time for ~3 vehicles on a large terrain; "
+                        "'auto' downgrades big scenes to primitive boxes; 'primitives' "
+                        "forces boxes. Ignored when headless (no visual assets).")
     p.add_argument("--mesh-resolution", type=float, default=None,
                    help="SCM mesh spacing (m). Default 0.08 (paper fidelity); "
                         "0.12 is the real-time value for interactive/HIL runs.")
