@@ -60,6 +60,7 @@ from common import (  # noqa: E402
 SIM_DIR = PROJECT_ROOT / "simulation"
 sys.path.insert(0, str(SIM_DIR))
 from reference_path import ReferencePath, generate_path_waypoints  # noqa: E402
+from traffic import CONVOY_DESCRIPTIONS  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -419,6 +420,53 @@ def plot_figures(results_csv: Path, out_dir: Path) -> None:
     plt.close(fig)
 
 
+def brief_round(args: argparse.Namespace, i: int, total: int, filter_name: str,
+                delay: float, terrain: str, path: str, speed: float, bump: int) -> None:
+    """Print an operator-facing briefing: scenario, goal, filter, and latency."""
+    bar = "=" * 64
+    print(f"\n{bar}")
+    print(f"  ROUND {i + 1} of {total}")
+    print("-" * 64)
+    # --- scenario ---
+    extras = f", bumpiness {bump}" if bump else ""
+    print(f"  SCENARIO : {terrain} terrain, {path} route at {speed:g} m/s{extras}.")
+    if args.convoy:
+        desc = CONVOY_DESCRIPTIONS.get(args.convoy, args.convoy)
+        print(f"             Traffic: {desc}.")
+    if args.rocks > 0:
+        print(f"             Plus {args.rocks} rocks scattered along the route.")
+    if not args.convoy and args.rocks == 0:
+        print(f"             Open course, no obstacles.")
+    # --- goal ---
+    print(f"  GOAL     : drive the route to the far end WITHOUT hitting any "
+          f"vehicle or rock.")
+    print(f"             Steer naturally toward the goal -- you do NOT need to "
+          f"hug a line.")
+    # --- safety filter ---
+    if filter_name == "none":
+        print(f"  FILTER   : NONE -- your commands go straight to the vehicle "
+              f"(no safety net).")
+    else:
+        print(f"  FILTER   : {filter_name.upper()} -- screens your commands and may "
+              f"override")
+        print(f"             steering/throttle to avoid a collision.")
+    # --- latency ---
+    if args.latency_profile_json:
+        import os
+        print(f"  LATENCY  : time-varying 5G link ({os.path.basename(args.latency_profile_json)}).")
+        print(f"             Command + camera delay fluctuate, with bursts/outages "
+              f"up to ~0.45 s.")
+    elif delay > 0:
+        cam = delay * args.camera_delay_scale
+        print(f"  LATENCY  : CONSTANT -- {delay * 1000:.0f} ms on your commands "
+              f"(uplink),")
+        print(f"             {cam * 1000:.0f} ms on the camera feed (downlink). "
+              f"Inputs and view will lag.")
+    else:
+        print(f"  LATENCY  : none (0 ms) -- real-time control and view.")
+    print(bar)
+
+
 def main() -> None:
     args = parse_args()
     if args.quick:
@@ -484,11 +532,10 @@ def main() -> None:
             p = LOGS_DIR / name
             if p.exists():
                 p.unlink()
-        print(f"\n[{i + 1}/{total}] filter={filter_name} delay={delay:.2f}s "
-              f"{terrain}/{path} v={speed:g} b={bump}")
-        print(f"Raw output: {run_dir}")
+        brief_round(args, i, total, filter_name, delay, terrain, path, speed, bump)
+        print(f"  (raw output -> {run_dir})")
         if not args.auto_start:
-            input("Press Enter when the driver is ready for this round...")
+            input("\n  Press Enter when you're ready to drive this round...")
         hud_proc = _maybe_launch_hud(args, i, run_dir)
         created_after = time.time()
         try:

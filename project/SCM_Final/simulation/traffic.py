@@ -320,3 +320,19 @@ CONVOY_PRESETS = {
     "overtake": _overtake,
     "gauntlet": _gauntlet,
 }
+
+# One-line, operator-facing descriptions for the pre-round briefing.
+CONVOY_DESCRIPTIONS = {
+    "lead_brake": "a lead vehicle ahead in your lane SLAMS ITS BRAKES partway through",
+    "cut_in": "a vehicle in the next lane suddenly CUTS INTO your lane",
+    "stalled": "a STALLED vehicle is blocking your lane ahead",
+    "swerver": "an erratic lead vehicle SWERVES unpredictably within the lane",
+    "overtake": "a faster vehicle OVERTAKES you, cuts in, then brakes",
+    "convoy": "a 3-vehicle convoy ahead -- the lead brakes and one cuts in",
+    "platoon": "a 5-vehicle platoon ahead -- a braking shockwave ripples back",
+    "oncoming": "two vehicles approach in the ONCOMING lane",
+    "double_cut": "vehicles CUT IN from BOTH sides into your lane",
+    "stop_and_go": "a convoy ahead does repeated STOP-AND-GO",
+    "jam": "dense, mostly-stopped TRAFFIC JAM across the lanes to thread through",
+    "gauntlet": "a GAUNTLET: lead brake + cut-in + stalled + swerver + oncoming",
+}
