@@ -145,7 +145,7 @@ Concretely, this work contributes:
   \item A terrain-aware speed planner (Section~\ref{sec:speedplan})
         that turns the surrogate's grip limits at the live $\hat n$ into
         a friction-circle (g--g) speed profile, cutting closed-loop
-        tracking error by $49\,\%$ over a curvature-only reference by
+        tracking error by $51\,\%$ over a curvature-only reference by
         slowing only where the soil cannot support the corner.
   \item An asymmetric throttle disturbance observer
         (Section~\ref{sec:throttledob}) that closes the residual
@@ -550,20 +550,20 @@ regardless of the plant terrain gives the
 wrong-prior baseline, comparable directly against the matched-prior
 oracle and the estimator-on variant on the same matrix
 (clay$+$sand $\times$ sinusoidal $\times$ $v\in\{5,7\}\,\mathrm{m/s}$
-$\times$ $2$ seeds, $8$ runs per variant).
+$\times$ $5$ seeds, $20$ runs per variant).
 Table~\ref{tab:wrong_prior} reports the result. On clay the wrong
-dirt prior gives RMS CTE $1.54\,\mathrm{m}$, the estimator-on variant
+dirt prior gives RMS CTE $1.56\,\mathrm{m}$, the estimator-on variant
 (the deployed Fused-UKF, Sec.~\ref{sec:ukf}) adapts from the same dirt
-initialisation and recovers to $0.72\,\mathrm{m}$, on par with the
-matched-prior oracle ($0.75\,\mathrm{m}$) -- the estimator closes
-essentially the entire prior-mismatch gap on the harder terrain.
+initialisation and recovers to $0.68\,\mathrm{m}$, close to the
+matched-prior oracle ($0.64\,\mathrm{m}$) -- the estimator closes
+$\approx 95\,\%$ of the prior-mismatch gap on the harder terrain.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
   \caption{Wrong-prior ablation: RMS CTE (m) when the controller's
     static terrain prior is fixed to dirt regardless of plant terrain,
     compared against the matched-prior near-oracle and the estimator-on
-    variant. $24$ runs total ($8$ per variant). The matrix excludes
+    variant. $60$ runs total ($20$ per variant). The matrix excludes
     dirt (where the dirt-prior is by construction matched) and the
     other paths/bumpiness levels of Table~\ref{tab:tires_estimator};
     absolute numbers are therefore not comparable across the two
@@ -577,9 +577,9 @@ essentially the entire prior-mismatch gap on the harder terrain.
     \toprule
     \textbf{Variant} & \textbf{Clay} & \textbf{Sand} & \textbf{Mean}\\
     \midrule
-    Matched static prior (oracle) & $0.751$ & $0.059$ & $0.405$\\
-    Wrong (dirt) static prior     & $1.538$ & $0.064$ & $0.801$\\
-    \textbf{Estimator-on (dirt $\to$ adapt)} & $\mathbf{0.723}$ & $\mathbf{0.058}$ & $\mathbf{0.391}$\\
+    Matched static prior (oracle) & $0.641$ & $0.056$ & $0.348$\\
+    Wrong (dirt) static prior     & $1.562$ & $0.063$ & $0.813$\\
+    \textbf{Estimator-on (dirt $\to$ adapt)} & $\mathbf{0.684}$ & $\mathbf{0.062}$ & $\mathbf{0.373}$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1368,12 +1368,13 @@ for tracking also determines the cornering speed the soil can support.
 
 A closed-loop A/B against the geometric reference (clay/dirt/sand
 $\times$ \{sinusoid, double lane change\} $\times\,\{5,7\}\,\mathrm{m/s}$,
-two seeds; Fig.~\ref{fig:speedplan}) cuts mean RMS CTE by $49\,\%$
-($0.146\!\to\!0.075\,\mathrm{m}$) for a $7\,\%$ reduction in mean speed.
+five seeds; Fig.~\ref{fig:speedplan}) cuts mean RMS CTE by $51\,\%$
+($0.156\!\to\!0.077\,\mathrm{m}$) for a $6\,\%$ reduction in mean speed,
+and collapses the across-scenario spread (std $0.19\!\to\!0.03\,\mathrm{m}$).
 The gain concentrates on exactly the cells where the curvature heuristic
 commands cornering speeds the soil cannot support --- the high-speed
-sinusoid on soft soil, where CTE falls by $75$--$81\,\%$ (dirt
-$0.544\!\to\!0.135$, clay $0.469\!\to\!0.088\,\mathrm{m}$) --- and is
+sinusoid on soft soil, where CTE falls by $70$--$84\,\%$ (dirt
+$0.561\!\to\!0.168$, clay $0.567\!\to\!0.090\,\mathrm{m}$) --- and is
 neutral on the already-benign cells. The trade-off is grip-limited rather
 than tunable: raising the safety margin to recover the lost speed yields
 little additional speed (on dirt at $7\,\mathrm{m/s}$,
