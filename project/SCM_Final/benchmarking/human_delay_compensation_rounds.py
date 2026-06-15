@@ -10,6 +10,14 @@ camera delay models the downlink of the teleoperation link.  Camera delay
 is ``--camera-delay-scale`` times the command delay (default 1.0,
 symmetric link).
 
+Alternatively, ``--latency-profile-json`` runs every round under a
+time-varying 5G-like latency profile (the ``control``/``manual`` channels
+drive the command uplink and the ``camera`` channel the asymmetric video
+downlink), superseding the fixed-delay sweep.  ``--live-hud`` launches the
+Tesla-style HMI overlay (``simulation/hil_hud.py``) on each round's ZMQ
+ports so the operator sees the live wheel/throttle (and the filter takeover)
+while driving.
+
 The script orchestrates one round at a time, writes raw sim diagnostics,
 and summarizes tracking, speed, collision, clearance, and intervention
 metrics per (filter, delay) cell.
@@ -64,6 +72,21 @@ def parse_args() -> argparse.Namespace:
                    help="Camera (downlink) delay as a multiple of the command "
                         "delay. 1.0 = symmetric link; >1 models a heavier video "
                         "downlink (the learned 5G profile is approx 1.6).")
+    p.add_argument("--latency-profile-json", default="",
+                   help="Run every round under a time-varying 5G-like latency "
+                        "profile JSON (uplink = control/manual channels, "
+                        "asymmetric downlink = camera channel) instead of the "
+                        "fixed --delays sweep. Supersedes the constant uplink/"
+                        "downlink/teleop delays; collapses to one 5G condition "
+                        "per cell.")
+    p.add_argument("--live-hud", action="store_true",
+                   help="Launch the live HMI overlay (simulation/hil_hud.py) on "
+                        "each round's ZMQ ports: a virtual steering wheel "
+                        "(commanded ghost vs applied) + throttle bar, so the "
+                        "filter takeover is visible live while driving.")
+    p.add_argument("--hud-max-steer", type=float, default=0.60,
+                   help="Road-wheel angle (rad) at full steer, for the live HUD "
+                        "applied-wheel normalisation.")
     p.add_argument("--terrains", nargs="+", default=["clay", "sand"], choices=list(TERRAINS))
     p.add_argument("--paths", nargs="+", default=["sinusoidal", "lane_change"])
     p.add_argument("--speeds", nargs="+", type=float, default=[4.0])
@@ -111,11 +134,17 @@ def command_for_round(args: argparse.Namespace, run_dir: Path, idx: int, filter_
         "--ctrl-port", str(ctrl_port),
         "--vis-mode", args.vis_mode,
         "--manual-honor-time",
-        "--manual-input-delay", str(delay),
-        "--camera-input-delay", str(camera_delay),
         "--sim-diag-csv", str(run_dir / "sim_diag.csv"),
         "--nn-model", DEFAULT_NN_MODEL,
     ]
+    if args.latency_profile_json:
+        # 5G profile drives all channels: control/manual = command uplink,
+        # camera = asymmetric video downlink. Supersedes the constant delays.
+        cmd += ["--latency-profile-json", args.latency_profile_json,
+                "--latency-profile-log", str(run_dir / "latency_profile.csv")]
+    else:
+        cmd += ["--manual-input-delay", str(delay),
+                "--camera-input-delay", str(camera_delay)]
     cmd.append("--wasd" if args.manual_mode == "wasd" else "--manual")
     if args.rocks > 0:
         zone = PATH_ROCK_ZONES.get(path, PATH_ROCK_ZONES["sinusoidal"])
@@ -130,8 +159,11 @@ def command_for_round(args: argparse.Namespace, run_dir: Path, idx: int, filter_
             "--safety-flavor", filter_name,
             "--safety-buffer", str(args.safety_buffer),
             "--shield-horizon", str(args.shield_horizon),
-            "--teleop-delay", str(delay),
         ]
+        if not args.latency_profile_json:
+            # In profile mode the sim samples the control channel and feeds
+            # the sim-side filter; a fixed --teleop-delay would override it.
+            cmd += ["--teleop-delay", str(delay)]
         if filter_name == "mppi":
             cmd += ["--mppi-samples", str(args.mppi_samples)]
         if filter_name == "nmpc":
@@ -182,6 +214,42 @@ def parse_sim_diag(path: Path, ref_path_name: str, speed: float, lead_in: float,
         "final_y_m": float(y[good_xy][-1]) if np.count_nonzero(good_xy) else math.nan,
         "min_clearance_m": float(np.nanmin(clearance_m)) if len(clearance_m) and np.isfinite(clearance_m).any() else math.nan,
     }
+
+
+def _maybe_launch_hud(args: argparse.Namespace, idx: int, run_dir: Path):
+    """Launch the live HMI overlay on this round's ZMQ ports (or return None).
+
+    The HUD only subscribes, so it cannot perturb the sim/controller loops; it
+    CONNECTs (late binder is fine) and starts updating once the sim binds.
+    """
+    if not args.live_hud:
+        return None
+    run_dir.mkdir(parents=True, exist_ok=True)
+    sim_port = args.base_port + 2 * idx
+    ctrl_port = sim_port + 1
+    hud_log = (run_dir / "hud.log").open("w")
+    proc = subprocess.Popen(
+        [sys.executable, str(SIM_DIR / "hil_hud.py"),
+         "--sim-port", str(sim_port), "--ctrl-port", str(ctrl_port),
+         "--max-steer", str(args.hud_max_steer)],
+        cwd=str(PROJECT_ROOT), stdout=hud_log, stderr=subprocess.STDOUT,
+        env=dict(**os.environ),
+    )
+    proc._hud_log = hud_log  # keep the handle so we can close it on teardown
+    return proc
+
+
+def _stop_hud(proc) -> None:
+    if proc is None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    log = getattr(proc, "_hud_log", None)
+    if log is not None:
+        log.close()
 
 
 def run_round(cmd: list[str], run_dir: Path, timeout: float) -> tuple[int, float, str]:
@@ -305,6 +373,16 @@ def main() -> None:
         args.time = min(args.time, 8.0)
         args.manual_mode = "wasd"
 
+    prof_tag = ""
+    if args.latency_profile_json:
+        args.latency_profile_json = str(
+            Path(args.latency_profile_json).expanduser().resolve())
+        prof_tag = Path(args.latency_profile_json).stem
+        if args.delays != [0.0]:
+            print(f"[5G] latency profile '{prof_tag}' supersedes the --delays "
+                  "sweep; collapsing to one 5G condition per cell.")
+        args.delays = [0.0]
+
     out_dir = timestamped_result_dir("human_delay_compensation_rounds")
     write_manifest(out_dir, args, "Human-in-the-loop manual delay compensation rounds.")
     print(f"Output: {out_dir}")
@@ -319,8 +397,9 @@ def main() -> None:
                         for bump in args.bumpiness:
                             for rep in range(args.rounds):
                                 seed = args.base_seed + rep
+                                cell = prof_tag if prof_tag else f"delay{delay:.2f}"
                                 run_dir = out_dir / "raw" / (
-                                    f"{idx:04d}_{filter_name}_delay{delay:.2f}_{terrain}_{path}_v{speed:g}_b{bump}_r{rep}"
+                                    f"{idx:04d}_{filter_name}_{cell}_{terrain}_{path}_v{speed:g}_b{bump}_r{rep}"
                                 )
                                 cmd = command_for_round(args, run_dir, idx, filter_name, delay, terrain, path, speed, bump, seed)
                                 planned.append((idx, filter_name, delay, terrain, path, speed, bump, seed, run_dir, cmd))
@@ -351,8 +430,12 @@ def main() -> None:
         print(f"Raw output: {run_dir}")
         if not args.auto_start:
             input("Press Enter when the driver is ready for this round...")
+        hud_proc = _maybe_launch_hud(args, i, run_dir)
         created_after = time.time()
-        rc, wall_s, text = run_round(cmd, run_dir, args.timeout)
+        try:
+            rc, wall_s, text = run_round(cmd, run_dir, args.timeout)
+        finally:
+            _stop_hud(hud_proc)
         collision_csv, shield_csv = collect_global_logs(run_dir, created_after)
         row = {
             "experiment": "human_delay_compensation_rounds",
@@ -360,6 +443,7 @@ def main() -> None:
             "variant": f"{filter_name}_delay{delay:.2f}",
             "delay_s": delay,
             "camera_delay_s": delay * args.camera_delay_scale,
+            "latency_profile": prof_tag,
             "terrain": terrain,
             "path": path,
             "speed_mps": speed,
@@ -421,12 +505,19 @@ def main() -> None:
         summary,
         [
             "Noise policy: sensor noise enabled in every run.",
-            "Delay policy: each round delays both the operator command path "
-            "(`--manual-input-delay`, plus `--teleop-delay` so the predictive "
-            "filter horizon is delay-aware) and the driver POV camera feed "
-            "(`--camera-input-delay`).",
+            (f"Delay policy: time-varying 5G latency profile `{prof_tag}` on "
+             "every round -- control/manual channels = command uplink, camera "
+             "channel = asymmetric video downlink (supersedes fixed delays).")
+            if prof_tag else
+            ("Delay policy: each round delays both the operator command path "
+             "(`--manual-input-delay`, plus `--teleop-delay` so the predictive "
+             "filter horizon is delay-aware) and the driver POV camera feed "
+             "(`--camera-input-delay`)."),
             f"Camera delay = {args.camera_delay_scale:g} x command delay "
-            "(--camera-delay-scale; 1.0 = symmetric link).",
+            "(--camera-delay-scale; 1.0 = symmetric link)."
+            if not prof_tag else
+            "Live HMI overlay (hil_hud.py) attached per round."
+            if args.live_hud else "Constant-delay sweep mode.",
         ],
     )
     plot_figures(results_csv, out_dir)

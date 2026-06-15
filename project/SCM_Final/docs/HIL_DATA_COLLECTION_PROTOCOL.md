@@ -119,6 +119,22 @@ python benchmarking/human_delay_compensation_rounds.py \
   (what they drive on). Use `--vis-mode both` only for the clips (Sec 7),
   not the bulk — the third-person window is for spectators, and rendering
   it can perturb timing.
+- **5G link (optional, more realistic).** Instead of the fixed `--delays`
+  sweep, add `--latency-profile-json config/latency_profiles/<profile>.json`
+  to drive every round under a *time-varying* 5G-like link: the
+  `control`/`manual` channels are the command **uplink** and the `camera`
+  channel is the asymmetric video **downlink** (the shipped profiles set the
+  camera channel to ≈1.45× the uplink). This supersedes the constant
+  delays and collapses the matrix to one "5G condition" per cell, logging
+  the per-channel latency to `<run>/latency_profile.csv`. Run it as a
+  *separate session* from the constant 0/0.15/0.30 s sweep (don't mix the
+  two delay regimes in one paired comparison).
+- **Live HMI overlay (optional).** Add `--live-hud` to pop the Tesla-style
+  overlay (`simulation/hil_hud.py`) on each round's ZMQ ports — a virtual
+  steering wheel (operator command = ghost, applied road-wheel = solid) and
+  a throttle bar — so the operator and spectators see the filter takeover
+  *live* while driving. It only subscribes, so it cannot perturb the
+  real-time loop; it is torn down automatically at the end of each round.
 - Drop `--auto-start` so the script pauses between rounds; that gives the
   operator (and you) a reset/breath between runs and is where you read out
   "round k, filter X, delay Y."
