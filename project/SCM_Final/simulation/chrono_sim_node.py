@@ -480,7 +480,8 @@ def run_sim_node(args):
     traffic_mgr = None
     if args.convoy:
         traffic_mgr = TrafficManager.from_preset(args.convoy, ego_lane_y=0.0)
-        traffic_mgr.build(system, terrain, visualize=any_vis)
+        _detail = args.traffic_detail if any_vis else "none"
+        traffic_mgr.build(system, terrain, detail=_detail)
         print(f"  Convoy '{args.convoy}': {len(traffic_mgr.vehicles)} traffic vehicles")
 
     # --- Collision detector (active when rocks OR traffic present) ---
@@ -1458,8 +1459,14 @@ def main():
                         "--cam-width x --cam-height, scaled to the screen).")
     p.add_argument("--convoy", type=str, default="",
                    help="Spawn PID-driven traffic vehicles for a convoy safety "
-                        "scenario (lead_brake/cut_in/stalled/swerver/convoy). The "
+                        "scenario (lead_brake/cut_in/stalled/swerver/convoy/platoon/"
+                        "oncoming/double_cut/stop_and_go/jam/overtake/gauntlet). The "
                         "ego must avoid them; they appear as dynamic obstacles.")
+    p.add_argument("--traffic-detail", choices=["auto", "mesh", "primitives"],
+                   default="auto",
+                   help="Traffic vehicle render detail. 'auto' (default) uses mesh "
+                        "for <=3 vehicles, primitives for bigger scenes to stay "
+                        "real-time with the camera. Ignored when headless.")
     p.add_argument("--mesh-resolution", type=float, default=None,
                    help="SCM mesh spacing (m). Default 0.08 (paper fidelity); "
                         "0.12 is the real-time value for interactive/HIL runs.")

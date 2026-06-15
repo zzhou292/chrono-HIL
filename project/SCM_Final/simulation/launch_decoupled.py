@@ -313,7 +313,10 @@ Examples:
                    help="Display the driver POV fullscreen (renders at cam W x H).")
     p.add_argument("--convoy", type=str, default="",
                    help="Spawn PID-driven traffic for a convoy safety scenario "
-                        "(lead_brake/cut_in/stalled/swerver/convoy).")
+                        "(lead_brake/cut_in/stalled/swerver/convoy/platoon/oncoming/"
+                        "double_cut/stop_and_go/jam/overtake/gauntlet).")
+    p.add_argument("--traffic-detail", choices=["auto", "mesh", "primitives"],
+                   default="auto", help="Traffic render detail (auto stays real-time).")
     p.add_argument("--mesh-resolution", type=float, default=None,
                    help="SCM mesh spacing (m). Default 0.08; 0.12 for real-time HIL.")
 
@@ -428,7 +431,7 @@ Examples:
     if args.cam_fullscreen:
         sim_cmd.append("--cam-fullscreen")
     if args.convoy:
-        sim_cmd.extend(["--convoy", args.convoy])
+        sim_cmd.extend(["--convoy", args.convoy, "--traffic-detail", args.traffic_detail])
     if args.mesh_resolution is not None:
         sim_cmd.extend(["--mesh-resolution", str(args.mesh_resolution)])
     if args.manual:

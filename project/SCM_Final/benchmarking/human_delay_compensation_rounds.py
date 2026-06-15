@@ -105,7 +105,10 @@ def parse_args() -> argparse.Namespace:
                         "scaled to the screen). Use --no-cam-fullscreen for a window.")
     p.add_argument("--convoy", type=str, default="",
                    help="Spawn PID-driven traffic for a convoy safety scenario the "
-                        "operator must avoid (lead_brake/cut_in/stalled/swerver/convoy).")
+                        "operator must avoid (lead_brake/cut_in/stalled/swerver/convoy/"
+                        "platoon/oncoming/double_cut/stop_and_go/jam/overtake/gauntlet).")
+    p.add_argument("--traffic-detail", choices=["auto", "mesh", "primitives"],
+                   default="auto", help="Traffic render detail (auto stays real-time).")
     p.add_argument("--mesh-resolution", type=float, default=0.12,
                    help="SCM mesh spacing (m). Default 0.12 = real-time for HIL: "
                         "the terrain triangle count dominates the camera render "
@@ -168,7 +171,7 @@ def command_for_round(args: argparse.Namespace, run_dir: Path, idx: int, filter_
     if args.cam_fullscreen:
         cmd.append("--cam-fullscreen")
     if args.convoy:
-        cmd += ["--convoy", args.convoy]
+        cmd += ["--convoy", args.convoy, "--traffic-detail", args.traffic_detail]
     if args.mesh_resolution is not None:
         cmd += ["--mesh-resolution", str(args.mesh_resolution)]
     if args.latency_profile_json:
