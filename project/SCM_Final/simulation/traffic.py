@@ -28,6 +28,12 @@ from dataclasses import dataclass, field
 import pychrono as chrono
 import pychrono.vehicle as veh
 
+
+def _viz(name: str):
+    """Resolve a VisualizationType enum across PyChrono API variants."""
+    attr = f"VisualizationType_{name}"
+    return getattr(veh, attr, None) or getattr(chrono, attr)
+
 # A HMMWV is ~4.8 m x 2.1 m; this conservative bounding radius is what the ego's
 # obstacle pipeline / safety filter sees for each traffic vehicle.
 TRAFFIC_RADIUS = 2.2
@@ -70,7 +76,7 @@ class TrafficVehicle:
         self.vehicle = None
         self.driver = None
 
-    def build(self, system, terrain, add_patch) -> None:
+    def build(self, system, terrain, add_patch, visualize: bool = True) -> None:
         s = self.spec
         yaw = math.radians(s.heading_deg)
         tv = veh.HMMWV_Reduced(system)
@@ -84,6 +90,12 @@ class TrafficVehicle:
         tv.SetDriveType(veh.DrivelineTypeWV_AWD)
         tv.SetTireType(veh.TireModelType_RIGID)
         tv.Initialize()
+        if visualize:
+            tv.SetChassisVisualizationType(_viz("MESH"))
+            tv.SetWheelVisualizationType(_viz("MESH"))
+            tv.SetTireVisualizationType(_viz("MESH"))
+            tv.SetSuspensionVisualizationType(_viz("PRIMITIVES"))
+            tv.SetSteeringVisualizationType(_viz("PRIMITIVES"))
         self.vehicle = tv
 
         if add_patch is not None:
@@ -157,12 +169,12 @@ class TrafficManager:
             raise ValueError(f"unknown convoy preset '{name}'; have {sorted(CONVOY_PRESETS)}")
         return cls(CONVOY_PRESETS[name](ego_lane_y))
 
-    def build(self, system, terrain) -> None:
+    def build(self, system, terrain, visualize: bool = True) -> None:
         add_patch = (getattr(terrain, "AddActiveDomain", None)
                      or getattr(terrain, "AddMovingPatch", None))
         for spec in self.specs:
             tv = TrafficVehicle(spec)
-            tv.build(system, terrain, add_patch)
+            tv.build(system, terrain, add_patch, visualize=visualize)
             self.vehicles.append(tv)
 
     def synchronize(self, t: float, terrain) -> None:

@@ -480,7 +480,7 @@ def run_sim_node(args):
     traffic_mgr = None
     if args.convoy:
         traffic_mgr = TrafficManager.from_preset(args.convoy, ego_lane_y=0.0)
-        traffic_mgr.build(system, terrain)
+        traffic_mgr.build(system, terrain, visualize=any_vis)
         print(f"  Convoy '{args.convoy}': {len(traffic_mgr.vehicles)} traffic vehicles")
 
     # --- Collision detector (active when rocks OR traffic present) ---
