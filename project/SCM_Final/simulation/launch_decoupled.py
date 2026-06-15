@@ -309,6 +309,8 @@ Examples:
                    help="Driver POV camera horizontal FOV (rad, ~1.05=60deg).")
     p.add_argument("--cam-rate", type=float, default=30.0,
                    help="Driver POV camera render rate (Hz); real-time lever.")
+    p.add_argument("--cam-fullscreen", action="store_true",
+                   help="Display the driver POV fullscreen (renders at cam W x H).")
     p.add_argument("--mesh-resolution", type=float, default=None,
                    help="SCM mesh spacing (m). Default 0.08; 0.12 for real-time HIL.")
 
@@ -420,6 +422,8 @@ Examples:
                     "--cam-height", str(args.cam_height),
                     "--cam-fov", str(args.cam_fov),
                     "--cam-rate", str(args.cam_rate)])
+    if args.cam_fullscreen:
+        sim_cmd.append("--cam-fullscreen")
     if args.mesh_resolution is not None:
         sim_cmd.extend(["--mesh-resolution", str(args.mesh_resolution)])
     if args.manual:

@@ -726,7 +726,7 @@ def run_sim_node(args):
             driver_cam.SetName("DriverPOV")
             driver_cam.SetLag(latency_profile.delay(0.0, "camera") if latency_profile is not None else 0.0)
             driver_cam.PushFilter(sens.ChFilterVisualize(
-                args.cam_width, args.cam_height, "Driver POV", False
+                args.cam_width, args.cam_height, "Driver POV", args.cam_fullscreen
             ))
             sensor_manager.AddSensor(driver_cam)
             print("  Chrono Sensor: driver POV camera active")
@@ -823,8 +823,10 @@ def run_sim_node(args):
     _manual_mode = args.manual or args.wasd
     state_pub = None
     ctrl_sub = None
-    if not _manual_mode or args.wasd:
-        # Always publish state (terrain classifier needs it); skip ctrl_sub in WASD
+    # Always publish vehicle_state: the live HUD, terrain classifier, and
+    # telemetry all subscribe to it (including in g29/wasd manual rounds). Only
+    # the autonomous controller link needs the inbound ctrl_sub.
+    if True:
         state_pub = ZMQPublisher(sim_pub_endpoint(args.sim_port))
         print(f"  Publishing state on port {args.sim_port}")
         if not _manual_mode:
@@ -1428,6 +1430,9 @@ def main():
                         "the deformable terrain; combined with --mesh-resolution "
                         "this sets the real-time budget (1080p@30Hz is real-time "
                         "at mesh 0.12, but only ~0.55x at the fine 0.08 mesh).")
+    p.add_argument("--cam-fullscreen", action="store_true",
+                   help="Display the driver POV fullscreen (renders at "
+                        "--cam-width x --cam-height, scaled to the screen).")
     p.add_argument("--mesh-resolution", type=float, default=None,
                    help="SCM mesh spacing (m). Default 0.08 (paper fidelity); "
                         "0.12 is the real-time value for interactive/HIL runs.")

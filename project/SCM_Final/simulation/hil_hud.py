@@ -123,13 +123,16 @@ def main():
     steer_app = thr_app = brk_app = 0.0
     running = True
     frames = 0
+    rx = 0
+    last_hb = 0.0
     while running:
         for e in pg.event.get():
             if e.type == pg.QUIT or (e.type == pg.KEYDOWN and e.key in (pg.K_ESCAPE, pg.K_q)):
                 running = False
         msg = _drain(sub_state)
-        if msg is not None:
+        if msg is not None and isinstance(msg, tuple):
             _, m = msg
+            rx += 1
             steer_op = float(getattr(m, "steering_op", steer_op))
             thr_op = float(getattr(m, "throttle_op", thr_op))
             brk_op = float(getattr(m, "braking_op", brk_op))
@@ -161,6 +164,12 @@ def main():
 
         if frames == 1 and not args.smoke:
             _set_always_on_top(pg)   # window is mapped by now
+
+        now = pg.time.get_ticks() / 1000.0
+        if now - last_hb >= 1.0:      # heartbeat to the log: receive vs render
+            print(f"hud: rx={rx} steer_app={steer_app:+.2f} thr_app={thr_app:.2f} "
+                  f"steer_op={steer_op:+.2f}", flush=True)
+            last_hb = now
 
         clock.tick(args.fps)
         frames += 1

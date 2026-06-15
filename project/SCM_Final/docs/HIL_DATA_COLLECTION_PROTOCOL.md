@@ -139,9 +139,11 @@ python benchmarking/human_delay_compensation_rounds.py \
   borderless, docks into a screen corner (`--corner br`), and is set
   always-on-top (via `wmctrl`) so it sits over the sim instead of being a
   separate window you raise by hand. Subscribe-only, torn down per round.
-- **Real-time / resolution.** The driver POV defaults to a single 1080p
-  screen at 30 Hz (`--cam-width 1920 --cam-height 1080 --cam-rate 30`,
-  `--cam-fov 1.05`; use `--cam-height 1200` for a 16:10 monitor). Two things
+- **Real-time / resolution.** The driver POV defaults to **1920×1200 (16:10)
+  at 30 Hz, fullscreen** (`--cam-width 1920 --cam-height 1200 --cam-rate 30
+  --cam-fullscreen`, `--cam-fov 1.05`; `--no-cam-fullscreen` for a window,
+  `--cam-height 1080` for 16:9). It renders at that resolution and scales to
+  fill the screen. Two things
   broke real-time on the old setup: the 5760×1080 triple-monitor camera, and
   — measured to be the dominant cost — the **deformable SCM terrain mesh
   triangle count**, which the camera ray-traces (BVH rebuild) every frame.

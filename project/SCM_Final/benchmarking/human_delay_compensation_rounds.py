@@ -89,13 +89,17 @@ def parse_args() -> argparse.Namespace:
     # Real-time tuning for interactive driving (defaults favour real-time over
     # the autonomous-sweep fidelity, since a human must drive these live).
     p.add_argument("--cam-width", type=int, default=1920,
-                   help="Driver POV window width (px).")
-    p.add_argument("--cam-height", type=int, default=1080,
-                   help="Driver POV window height (px). Use 1200 for 16:10.")
+                   help="Driver POV render width (px).")
+    p.add_argument("--cam-height", type=int, default=1200,
+                   help="Driver POV render height (px). 1200 = 16:10 (default).")
     p.add_argument("--cam-fov", type=float, default=1.05,
                    help="Driver POV camera horizontal FOV (rad, ~1.05=60deg).")
     p.add_argument("--cam-rate", type=float, default=30.0,
                    help="Driver POV camera render rate (Hz).")
+    p.add_argument("--cam-fullscreen", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="Display the driver POV fullscreen (renders at cam W x H, "
+                        "scaled to the screen). Use --no-cam-fullscreen for a window.")
     p.add_argument("--mesh-resolution", type=float, default=0.12,
                    help="SCM mesh spacing (m). Default 0.12 = real-time for HIL: "
                         "the terrain triangle count dominates the camera render "
@@ -155,6 +159,8 @@ def command_for_round(args: argparse.Namespace, run_dir: Path, idx: int, filter_
         "--cam-fov", str(args.cam_fov),
         "--cam-rate", str(args.cam_rate),
     ]
+    if args.cam_fullscreen:
+        cmd.append("--cam-fullscreen")
     if args.mesh_resolution is not None:
         cmd += ["--mesh-resolution", str(args.mesh_resolution)]
     if args.latency_profile_json:
