@@ -1902,6 +1902,68 @@ safety outcome.
   \label{fig:auto_obstacle}
 \end{figure*}
 
+\subsection{Counterfactual replay on dynamic-traffic (convoy) scenarios}
+\label{sec:safety_convoy}
+
+The evaluations above use static rock obstacles. To stress the filters
+against \emph{dynamic} hazards we add PID-driven traffic vehicles --- full
+HMMWVs sharing the ego's deformable-terrain system and collision world, each
+following a lane at a set speed with scripted dangerous behaviour (a lead
+vehicle braking, a cut-in, a vehicle stalled in the lane). They enter the same
+obstacle interface as the rocks, so the ego planner and the safety filter must
+avoid them with no change to either.
+
+These scenarios also enable a \emph{counterfactual} measurement that removes
+the operator-variance confound entirely. Because the simulator is bit-for-bit
+deterministic, a single operator command trace can be replayed through the
+identical scenario with the filter off and with each filter, so every outcome
+difference is attributable to the filter alone --- no inter-operator averaging
+and no path-tracking proxy. Table~\ref{tab:convoy_cf} and
+Fig.~\ref{fig:convoy_cf} report a representative aggressive intent (constant
+forward throttle into the hazard --- the autonomous proxy for an operator who
+fails to react under latency; recorded operator traces from the HIL rounds of
+Sec.~\ref{sec:safety_hil} replay through the same machinery) across three
+convoy scenarios $\times$ two command delays ($0$, $0.30\,$s), six cells per
+filter. The unfiltered intent collides in all six cells; both filters prevent
+every collision. MPPI opens the larger clearance ($+5.6$ vs $+3.5\,$m) by
+braking ($|\Delta\tau|=0.27$), whereas DOB-CBF avoids almost entirely by
+steering ($|\Delta\tau|\approx0$, $|\Delta\delta|=0.26$) --- the same
+minimum-deviation, intent-preserving signature seen in the autonomous sweep,
+now established causally on identical operator intent.
+
+\begin{table}[!t]
+  \renewcommand{\arraystretch}{1.10}
+  \caption{Counterfactual convoy replay: one aggressive operator intent
+    replayed filter-off vs each filter across 3 traffic scenarios
+    (lead-brake, cut-in, stalled) $\times$ 2 command delays (6 cells).
+    The deterministic sim makes harm-prevented causal. $|\Delta\delta|$,
+    $|\Delta\tau|$ are the mean steering/throttle command corrections.}
+  \label{tab:convoy_cf}
+  \centering
+  \setlength{\tabcolsep}{3pt}
+  \footnotesize
+  \begin{tabular}{lccccc}
+    \toprule
+    \textbf{Filter} & \textbf{Coll.} & \textbf{Prevented} & \textbf{Clear.\,(m)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
+    \midrule
+    None      & $6/6$ & --- & $-1.43$ & --- & ---\\
+    \textbf{DOB-CBF} & $\mathbf{0/6}$ & $\mathbf{6/6}$ & $+3.46$ & $0.26$ & $0.00$\\
+    \textbf{MPPI}    & $\mathbf{0/6}$ & $\mathbf{6/6}$ & $\mathbf{+5.62}$ & $0.29$ & $0.27$\\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{convoy_counterfactual.png}
+  \caption{Counterfactual convoy replay (Table~\ref{tab:convoy_cf}). The same
+    operator intent collides in every unfiltered cell (left); both filters
+    prevent all collisions and open positive clearance (centre); DOB-CBF does
+    so by steering with negligible throttle correction, MPPI by braking
+    (right).}
+  \label{fig:convoy_cf}
+\end{figure}
+
 %======================================================================
 \section{5G-Profile Latency Robustness}
 \label{sec:latency}

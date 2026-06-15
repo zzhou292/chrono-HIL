@@ -57,8 +57,9 @@ def parse_args() -> argparse.Namespace:
                         "omitted, a reckless straight-ahead intent is generated.")
     p.add_argument("--reckless-throttle", type=float, default=0.6,
                    help="Throttle of the generated reckless intent (when no --trace).")
-    p.add_argument("--convoy", default="lead_brake",
-                   help="Convoy preset (lead_brake/cut_in/stalled/convoy/jam/gauntlet/...).")
+    p.add_argument("--convoy", nargs="+", default=["lead_brake", "cut_in", "stalled"],
+                   help="Convoy preset(s) to sweep (lead_brake/cut_in/stalled/convoy/"
+                        "jam/gauntlet/...). Each is replayed off vs each filter.")
     p.add_argument("--filters", nargs="+", default=["none", "dob_cbf", "mppi"],
                    choices=["none", "dob_cbf", "mppi", "nmpc"])
     p.add_argument("--delays", nargs="+", type=float, default=[0.0],
@@ -158,33 +159,37 @@ def _metrics_from_run(run_dir: Path) -> dict:
 def _run_one(task: Task) -> dict:
     run_dir = Path(task.run_dir)
     rc, wall, _ = run_process(_build_cmd(task), run_dir, task.timeout)
-    row = {"idx": task.idx, "filter": task.filter_name, "delay_s": task.delay,
-           "rc": rc, "wall_s": round(wall, 1)}
+    row = {"idx": task.idx, "convoy": task.convoy, "filter": task.filter_name,
+           "delay_s": task.delay, "rc": rc, "wall_s": round(wall, 1)}
     row.update(_metrics_from_run(run_dir))
     if rc != 0 and row["status"] == "ok":
         row["status"] = f"exit_{rc}"
     return row
 
 
-def plot_figures(df: pd.DataFrame, out_dir: Path) -> None:
+def plot_figures(summary: pd.DataFrame, out_dir: Path) -> None:
+    """Aggregate bars: collision rate, clearance, intrusiveness per filter."""
     fig_dir = out_dir / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
-    ok = df[df["status"] == "ok"].copy()
-    if ok.empty:
+    if summary.empty:
         return
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
-    for f in ok["filter"].unique():
-        s = ok[ok["filter"] == f].sort_values("delay_s")
-        axes[0].plot(s["delay_s"], s["collided"], marker="o", label=f)
-        axes[1].plot(s["delay_s"], s["min_clearance_m"], marker="o", label=f)
-        axes[2].plot(s["delay_s"], s["mean_abs_dsteer"], marker="o", label=f)
-    axes[0].set_ylabel("collided (1=yes)"); axes[0].set_title("Collision (same intent)")
-    axes[1].axhline(0, color="r", ls=":", lw=1); axes[1].set_ylabel("min clearance (m)")
+    s = summary.set_index("filter")
+    order = [f for f in ("none", "dob_cbf", "mppi", "nmpc") if f in s.index]
+    colors = {"none": "#b0392b", "dob_cbf": "#28c76f", "mppi": "#2d6cdf", "nmpc": "#9b59b6"}
+    x = range(len(order)); cols = [colors.get(f, "#888") for f in order]
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.8))
+    axes[0].bar(x, [s.loc[f, "collision_rate"] for f in order], color=cols)
+    axes[0].set_ylabel("collision rate"); axes[0].set_title("Collisions (same operator intent)")
+    axes[1].bar(x, [s.loc[f, "mean_clearance_m"] for f in order], color=cols)
+    axes[1].axhline(0, color="r", ls=":", lw=1); axes[1].set_ylabel("mean min clearance (m)")
     axes[1].set_title("Clearance (>0 = safe)")
-    axes[2].set_ylabel("mean |Δsteer| (intervention)"); axes[2].set_title("Filter intrusiveness")
+    dsteer = [s.loc[f, "mean_abs_dsteer"] if "mean_abs_dsteer" in s.columns and f != "none"
+              else 0.0 for f in order]
+    axes[2].bar(x, dsteer, color=cols)
+    axes[2].set_ylabel("mean |Δsteer|"); axes[2].set_title("Filter intrusiveness")
     for ax in axes:
-        ax.set_xlabel("command delay (s)"); ax.legend(); ax.grid(alpha=0.3)
-    fig.suptitle("Convoy counterfactual: identical operator intent, filter off vs on")
+        ax.set_xticks(list(x)); ax.set_xticklabels(order, rotation=15); ax.grid(alpha=0.3, axis="y")
+    fig.suptitle("Convoy counterfactual: replay one operator intent, filter off vs on")
     fig.tight_layout()
     fig.savefig(fig_dir / "convoy_counterfactual.png", dpi=200)
     plt.close(fig)
@@ -206,13 +211,14 @@ def main() -> None:
         print(f"Generated reckless intent (throttle={args.reckless_throttle}): {trace}")
 
     tasks, idx = [], 0
-    for filt in args.filters:
-        for delay in args.delays:
-            run_dir = out_dir / "raw" / f"{idx:03d}_{filt}_delay{delay:.2f}"
-            tasks.append(Task(idx, filt, delay, args.base_port + 2 * idx, str(run_dir),
-                              trace, args.convoy, args.terrain, args.time, args.mesh_resolution,
-                              args.safety_buffer, args.shield_horizon, args.mppi_samples, args.timeout))
-            idx += 1
+    for preset in args.convoy:
+        for filt in args.filters:
+            for delay in args.delays:
+                run_dir = out_dir / "raw" / f"{idx:03d}_{preset}_{filt}_d{delay:.2f}"
+                tasks.append(Task(idx, filt, delay, args.base_port + 2 * idx, str(run_dir),
+                                  trace, preset, args.terrain, args.time, args.mesh_resolution,
+                                  args.safety_buffer, args.shield_horizon, args.mppi_samples, args.timeout))
+                idx += 1
 
     rows = []
     # Cache prewarm: run task 0 solo (acados/CasADi codegen) then pool the rest.
@@ -227,35 +233,46 @@ def main() -> None:
     df = pd.DataFrame(rows).sort_values("idx").reset_index(drop=True)
     df.to_csv(out_dir / "results.csv", index=False)
 
-    # Counterfactual harm-prevented vs the filter-OFF baseline at each delay.
+    # Aggregate per filter across all (scenario, delay) cells. Each cell is one
+    # replay of the same operator intent; the baseline is the filter-off run of
+    # the SAME (scenario, delay), matched, so harm-prevented is causal.
+    ok = df[df["status"] == "ok"].copy()
+    base = ok[ok["filter"] == "none"].set_index(["convoy", "delay_s"])
     summary_rows = []
-    for delay in sorted(df["delay_s"].unique()):
-        sub = df[(df["delay_s"] == delay) & (df["status"] == "ok")]
-        base = sub[sub["filter"] == "none"]
-        base_coll = int(base["collided"].iloc[0]) if not base.empty else None
-        base_clr = float(base["min_clearance_m"].iloc[0]) if not base.empty else math.nan
-        for _, r in sub.iterrows():
-            summary_rows.append({
-                "filter": r["filter"], "delay_s": delay,
-                "collided": int(r["collided"]),
-                "collision_prevented": (1 if (base_coll == 1 and r["collided"] == 0) else 0)
-                                       if (base_coll is not None and r["filter"] != "none") else "",
-                "min_clearance_m": round(r["min_clearance_m"], 3),
-                "clearance_gain_m": round(r["min_clearance_m"] - base_clr, 3)
-                                    if (r["filter"] != "none" and math.isfinite(base_clr)) else "",
-                "mean_abs_dsteer": round(r.get("mean_abs_dsteer", math.nan), 3),
-                "mean_abs_dthrottle": round(r.get("mean_abs_dthrottle", math.nan), 3),
-                "progress_x_m": round(r["progress_x_m"], 1),
-            })
+    for filt in args.filters:
+        sub = ok[ok["filter"] == filt]
+        if sub.empty:
+            continue
+        n = len(sub); coll = int(sub["collided"].sum())
+        rec = {"filter": filt, "n_cells": n, "collisions": coll,
+               "collision_rate": round(coll / n, 3),
+               "mean_clearance_m": round(sub["min_clearance_m"].mean(), 3)}
+        if filt != "none":
+            prevented = base_coll = 0
+            for _, r in sub.iterrows():
+                key = (r["convoy"], r["delay_s"])
+                if key in base.index:
+                    bc = int(base.loc[key, "collided"])
+                    base_coll += bc
+                    if bc == 1 and r["collided"] == 0:
+                        prevented += 1
+            rec["baseline_collisions"] = base_coll
+            rec["collisions_prevented"] = prevented
+            rec["mean_abs_dsteer"] = round(sub["mean_abs_dsteer"].mean(), 3)
+            rec["mean_abs_dthrottle"] = round(sub["mean_abs_dthrottle"].mean(), 3)
+        summary_rows.append(rec)
     summary = pd.DataFrame(summary_rows)
     summary.to_csv(out_dir / "summary.csv", index=False)
-    plot_figures(df, out_dir)
+    ok.sort_values("idx").to_csv(out_dir / "summary_per_cell.csv", index=False)
+    plot_figures(summary, out_dir)
     save_summary_markdown(out_dir, "Convoy Counterfactual Safety-Filter Eval", summary, [
-        f"Scenario: --convoy {args.convoy}, terrain {args.terrain}, {args.time:.0f}s.",
-        "Identical operator intent replayed filter-off vs each filter (deterministic "
-        "sim), so differences are causal. 'collision_prevented' = baseline (none) "
-        "collided but this filter did not. CTE is deliberately not reported -- the "
-        "operator is avoiding, not path-tracking.",
+        f"Scenarios: {', '.join(args.convoy)} x delays {args.delays} "
+        f"({len(args.convoy) * len(args.delays)} cells), terrain {args.terrain}.",
+        "Identical operator intent replayed filter-off vs each filter on each "
+        "(scenario, delay) cell; the sim is deterministic so differences are causal. "
+        "collisions_prevented = cells where the filter-off baseline collided but the "
+        "filter did not. CTE is deliberately not reported -- the operator is avoiding, "
+        "not path-tracking; intrusiveness is the mean command correction.",
     ])
     print(f"\nDone: {out_dir}")
     print(summary.to_string(index=False))
