@@ -55,6 +55,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--trace", default="",
                    help="Operator command trace CSV (a run's sim_diag.csv). If "
                         "omitted, a reckless straight-ahead intent is generated.")
+    p.add_argument("--trace-dir", default="",
+                   help="Batch mode: a HIL collection session dir (human_delay_"
+                        "compensation_rounds_*). Every recorded round's sim_diag.csv "
+                        "is replayed filter-off vs each filter at its recorded delay; "
+                        "harm-prevented is aggregated per filter across rounds. Use "
+                        "--convoy to set the scenario the rounds were collected in.")
     p.add_argument("--reckless-throttle", type=float, default=0.6,
                    help="Throttle of the generated reckless intent (when no --trace).")
     p.add_argument("--convoy", nargs="+", default=["lead_brake", "cut_in", "stalled"],
@@ -88,6 +94,17 @@ def generate_reckless_trace(path: Path, duration: float, throttle: float) -> Non
             t += 0.1
 
 
+def discover_round_traces(trace_dir: Path) -> list[tuple[str, float, str]]:
+    """Find each recorded round's (sim_diag.csv, delay, label) in a session dir."""
+    import re
+    out = []
+    for f in sorted(trace_dir.glob("raw/*/sim_diag.csv")):
+        name = f.parent.name
+        m = re.search(r"delay([0-9.]+)", name)
+        out.append((str(f), float(m.group(1)) if m else 0.0, name))
+    return out
+
+
 @dataclass(frozen=True)
 class Task:
     idx: int
@@ -104,6 +121,7 @@ class Task:
     horizon: int
     mppi_samples: int
     timeout: float
+    cell: str = ""          # baseline-matching key (scenario or recorded round)
 
 
 def _build_cmd(t: Task) -> list[str]:
@@ -159,8 +177,9 @@ def _metrics_from_run(run_dir: Path) -> dict:
 def _run_one(task: Task) -> dict:
     run_dir = Path(task.run_dir)
     rc, wall, _ = run_process(_build_cmd(task), run_dir, task.timeout)
-    row = {"idx": task.idx, "convoy": task.convoy, "filter": task.filter_name,
-           "delay_s": task.delay, "rc": rc, "wall_s": round(wall, 1)}
+    row = {"idx": task.idx, "cell": task.cell, "convoy": task.convoy,
+           "filter": task.filter_name, "delay_s": task.delay,
+           "rc": rc, "wall_s": round(wall, 1)}
     row.update(_metrics_from_run(run_dir))
     if rc != 0 and row["status"] == "ok":
         row["status"] = f"exit_{rc}"
@@ -201,24 +220,42 @@ def main() -> None:
     write_manifest(out_dir, args, "Counterfactual safety-filter eval on the convoy scenario.")
     print(f"Output: {out_dir}")
 
-    # Resolve the operator intent trace (recorded or generated).
-    if args.trace:
-        trace = str(Path(args.trace).expanduser().resolve())
-        print(f"Replaying recorded trace: {trace}")
-    else:
-        trace = str(out_dir / "reckless_trace.csv")
-        generate_reckless_trace(Path(trace), args.time, args.reckless_throttle)
-        print(f"Generated reckless intent (throttle={args.reckless_throttle}): {trace}")
-
     tasks, idx = [], 0
-    for preset in args.convoy:
-        for filt in args.filters:
-            for delay in args.delays:
-                run_dir = out_dir / "raw" / f"{idx:03d}_{preset}_{filt}_d{delay:.2f}"
+    if args.trace_dir:
+        # Batch: each recorded round (sim_diag.csv) is one cell, replayed off vs
+        # each filter at its recorded delay, all in the session's convoy scenario.
+        preset0 = args.convoy[0]
+        rounds = discover_round_traces(Path(args.trace_dir).expanduser().resolve())
+        if not rounds:
+            raise SystemExit(f"no */sim_diag.csv under {args.trace_dir}/raw/")
+        print(f"Batch: {len(rounds)} recorded rounds x {len(args.filters)} filters, "
+              f"convoy={preset0}")
+        for trace_f, delay, name in rounds:
+            for filt in args.filters:
+                run_dir = out_dir / "raw" / f"{idx:03d}_{name}_{filt}"
                 tasks.append(Task(idx, filt, delay, args.base_port + 2 * idx, str(run_dir),
-                                  trace, preset, args.terrain, args.time, args.mesh_resolution,
-                                  args.safety_buffer, args.shield_horizon, args.mppi_samples, args.timeout))
+                                  trace_f, preset0, args.terrain, args.time, args.mesh_resolution,
+                                  args.safety_buffer, args.shield_horizon, args.mppi_samples,
+                                  args.timeout, cell=name))
                 idx += 1
+    else:
+        # Single trace (recorded or generated) replayed across preset x delay cells.
+        if args.trace:
+            trace = str(Path(args.trace).expanduser().resolve())
+            print(f"Replaying recorded trace: {trace}")
+        else:
+            trace = str(out_dir / "reckless_trace.csv")
+            generate_reckless_trace(Path(trace), args.time, args.reckless_throttle)
+            print(f"Generated reckless intent (throttle={args.reckless_throttle}): {trace}")
+        for preset in args.convoy:
+            for filt in args.filters:
+                for delay in args.delays:
+                    run_dir = out_dir / "raw" / f"{idx:03d}_{preset}_{filt}_d{delay:.2f}"
+                    tasks.append(Task(idx, filt, delay, args.base_port + 2 * idx, str(run_dir),
+                                      trace, preset, args.terrain, args.time, args.mesh_resolution,
+                                      args.safety_buffer, args.shield_horizon, args.mppi_samples,
+                                      args.timeout, cell=f"{preset}@d{delay:.2f}"))
+                    idx += 1
 
     rows = []
     # Cache prewarm: run task 0 solo (acados/CasADi codegen) then pool the rest.
@@ -237,7 +274,7 @@ def main() -> None:
     # replay of the same operator intent; the baseline is the filter-off run of
     # the SAME (scenario, delay), matched, so harm-prevented is causal.
     ok = df[df["status"] == "ok"].copy()
-    base = ok[ok["filter"] == "none"].set_index(["convoy", "delay_s"])
+    base = ok[ok["filter"] == "none"].drop_duplicates("cell").set_index("cell")
     summary_rows = []
     for filt in args.filters:
         sub = ok[ok["filter"] == filt]
@@ -250,7 +287,7 @@ def main() -> None:
         if filt != "none":
             prevented = base_coll = 0
             for _, r in sub.iterrows():
-                key = (r["convoy"], r["delay_s"])
+                key = r["cell"]
                 if key in base.index:
                     bc = int(base.loc[key, "collided"])
                     base_coll += bc
