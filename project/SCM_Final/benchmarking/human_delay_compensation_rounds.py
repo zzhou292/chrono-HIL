@@ -285,6 +285,13 @@ def run_round(cmd: list[str], run_dir: Path, timeout: float) -> tuple[int, float
     ensure_runtime_env()
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "run.log"
+    # Route the sim-side collision logger and the safety-filter/shield loggers
+    # into this run's dir (same mechanism the parallel sweeps use), so each
+    # round's cbf/mppi/nmpc shield CSV + collision log land here -- otherwise
+    # they fall back to a shared global dir and the intrusiveness metrics
+    # (mean_abs_dsteer/dthrottle, intervention rate) are lost.
+    env = dict(os.environ)
+    env["HIL_RUN_LOG_DIR"] = str(run_dir)
     t0 = time.time()
     with log_path.open("w") as f:
         try:
@@ -294,7 +301,7 @@ def run_round(cmd: list[str], run_dir: Path, timeout: float) -> tuple[int, float
                 stdout=f,
                 stderr=subprocess.STDOUT,
                 timeout=timeout,
-                env=dict(**os.environ),
+                env=env,
             )
             rc = proc.returncode
         except subprocess.TimeoutExpired:
@@ -304,17 +311,28 @@ def run_round(cmd: list[str], run_dir: Path, timeout: float) -> tuple[int, float
 
 
 def collect_global_logs(run_dir: Path, created_after: float) -> tuple[str, str]:
+    """Resolve the per-run collision + shield log paths.
+
+    With HIL_RUN_LOG_DIR set in run_round, the sim/safety loggers write these
+    straight into run_dir; fall back to the shared global LOGS_DIR for any that
+    an older path still drops there.
+    """
     collision_csv = ""
     shield_csv = ""
-    for name in ("collision_log.csv", "mppi_shield_log.csv", "nmpc_shield_log.csv", "cbf_filter_log.csv"):
-        src = LOGS_DIR / name
-        if src.exists() and src.stat().st_mtime >= created_after - 2.0:
-            dst = run_dir / name
-            shutil.copy2(src, dst)
-            if name == "collision_log.csv":
-                collision_csv = str(dst)
-            else:
-                shield_csv = str(dst)
+    for name in ("collision_log.csv", "cbf_filter_log.csv", "mppi_shield_log.csv", "nmpc_shield_log.csv"):
+        local = run_dir / name
+        if local.exists():
+            src = local
+        else:
+            src = LOGS_DIR / name
+            if not (src.exists() and src.stat().st_mtime >= created_after - 2.0):
+                continue
+            shutil.copy2(src, run_dir / name)
+            src = run_dir / name
+        if name == "collision_log.csv":
+            collision_csv = str(src)
+        elif not shield_csv:
+            shield_csv = str(src)
     return collision_csv, shield_csv
 
 
