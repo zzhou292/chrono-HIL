@@ -286,6 +286,7 @@ class CBFSafetyFilter:
                  vehicle_params: dict,
                  nn_casadi=None,
                  max_steering_rate: float = 8.0,
+                 steer_tau: float = 0.12,
                  cbf_alpha: float = 1.0,
                  cbf_alpha2: float = 0.8,
                  obstacle_buffer: float = 0.25,
@@ -320,6 +321,7 @@ class CBFSafetyFilter:
         self.vehicle_radius = vehicle_radius
         self.max_speed = max_speed
         self.max_steer_rate = max_steering_rate
+        self.steer_tau = max(steer_tau, 1e-3)   # first-order steering-actuator lag (s)
         self.control_dt = control_dt
 
         # Ellipsoidal barrier weights (from reference: w1=1/100, w2=1/9)
@@ -376,6 +378,7 @@ class CBFSafetyFilter:
         # impulse, and (b) watch for the measured road-wheel angle no longer
         # tracking the command -- the signature of a broken rack -- and warn.
         self._last_safe_steering = 0.0   # last (slewed) normalized steering out
+        self._reactive_dir = 0.0         # committed reactive-steer side (hysteresis)
         self._last_filter_wall = None    # wall time of previous filter() call
         self._steer_track_ema = 0.0      # EMA of |measured - commanded| road angle
         self._steer_broken = False       # latched once a break is detected
@@ -677,9 +680,17 @@ class CBFSafetyFilter:
             return 0.0
         dist, dy_body, safe_r, react_range = nearest
         proximity = np.clip(1.0 - (dist - safe_r) / max(react_range - safe_r, 0.1), 0.0, 1.0)
-        # Steer AWAY (dy_body > 0 → obstacle left → steer right → negative).
-        direction = -np.sign(dy_body) if abs(dy_body) > 0.3 else -1.0
-        return float(np.clip(direction * proximity * 0.4, -1.0, 1.0))
+        # Steer AWAY (dy_body > 0 → obstacle left → steer right → negative), with
+        # hysteresis on the side decision: once we've committed to a side, keep
+        # it until the obstacle is clearly (>0.8 m) on the other side. This stops
+        # the direction flip-flopping when an obstacle sits near dead-ahead.
+        if dy_body > 0.8:
+            self._reactive_dir = -1.0
+        elif dy_body < -0.8:
+            self._reactive_dir = 1.0
+        elif self._reactive_dir == 0.0:
+            self._reactive_dir = -1.0   # first commit: default to the right
+        return float(np.clip(self._reactive_dir * proximity * 0.4, -1.0, 1.0))
 
     def filter(self,
                desired_steering: float,
@@ -1184,24 +1195,30 @@ class CBFSafetyFilter:
                 if not qp_success or active_constraints == 0:
                     active_constraints = 1
 
-        # Slew-rate limit the steering output ONLY to kill the pathological
-        # impulse: the QP/reactive/infeasible paths can flip between far-apart
-        # steering solutions on consecutive ~12 ms solves (effectively tens of
-        # rad/s), which whips the front steering rack/suspension hard enough to
-        # break it. The cap (max_steer_rate, default 8 rad/s) is well above any
-        # human or normal-avoidance steering rate, so it leaves ordinary driving
-        # untouched and trims only the violent flip. Uses the actual wall-clock
-        # dt between calls so the bound is correct regardless of control cadence.
+        # Steering-actuator model. A real steering rack can't snap between
+        # angles, so the commanded steering goes through (1) a hard slew-rate cap
+        # and (2) a first-order lag (time constant steer_tau). The lag is the key
+        # to the "stop steering like crazy back and forth" fix: the QP/reactive
+        # layer can flip between two opposite avoidance solutions on consecutive
+        # ~12 ms solves; that high-frequency flip-flop is low-passed by the lag
+        # into a single steady command, while a sustained human/avoidance input
+        # (low frequency) still tracks through with only the actuator's small
+        # delay. Uses the actual wall-clock dt so both are cadence-correct.
         dt_call = (t_start - self._last_filter_wall) if self._last_filter_wall else self.control_dt
         self._last_filter_wall = t_start
         dt_call = float(np.clip(dt_call, 0.005, 0.1))
+        prev = self._last_safe_steering
+        # 1) first-order lag toward the full target -- passes the steady (human /
+        #    sustained-avoidance) component, attenuates the high-frequency QP/
+        #    reactive flip-flop.
+        a = dt_call / (self.steer_tau + dt_call)
+        smoothed = prev + a * (safe_steering - prev)
+        # 2) hard slew cap as a physical backstop (won't bind on normal input).
         max_dsteer = self.max_steer_rate * dt_call / self.max_road_steer_angle
-        slewed = float(np.clip(safe_steering,
-                               self._last_safe_steering - max_dsteer,
-                               self._last_safe_steering + max_dsteer))
-        if abs(slewed - safe_steering) > 1e-4:
+        smoothed = float(np.clip(smoothed, prev - max_dsteer, prev + max_dsteer))
+        if abs(smoothed - safe_steering) > 1e-4:
             was_modified = True
-        safe_steering = slewed
+        safe_steering = smoothed
         self._last_safe_steering = safe_steering
 
         # Track applied steering for next call's linearization point
