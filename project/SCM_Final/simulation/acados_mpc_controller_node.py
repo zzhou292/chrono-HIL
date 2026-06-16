@@ -1907,7 +1907,7 @@ def main():
     )
     # Path
     p.add_argument("--path", default="lane_change",
-                   choices=["lane_change", "double_lane_change", "right_left", "sinusoidal"])
+                   choices=["lane_change", "double_lane_change", "right_left", "sinusoidal", "straight"])
     p.add_argument("--speed", type=float, default=5.0, help="Target speed (m/s)")
     p.add_argument(
         "--speed-weight",

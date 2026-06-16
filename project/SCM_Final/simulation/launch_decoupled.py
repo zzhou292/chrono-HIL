@@ -317,6 +317,9 @@ Examples:
                         "double_cut/stop_and_go/jam/overtake/gauntlet).")
     p.add_argument("--traffic-detail", choices=["auto", "mesh", "primitives"],
                    default="mesh", help="Traffic render detail (mesh|auto|primitives).")
+    p.add_argument("--goal-distance", type=float, default=0.0,
+                   help="If >0, place a visible goal gate this far ahead (m) and "
+                        "end the round early once the ego reaches it.")
     p.add_argument("--replay-cmds", type=str, default="",
                    help="Counterfactual replay: re-drive the ego from a recorded "
                         "command trace CSV (no controller/manual driver).")
@@ -435,6 +438,8 @@ Examples:
         sim_cmd.append("--cam-fullscreen")
     if args.convoy:
         sim_cmd.extend(["--convoy", args.convoy, "--traffic-detail", args.traffic_detail])
+    if args.goal_distance > 0:
+        sim_cmd.extend(["--goal-distance", str(args.goal_distance)])
     if args.replay_cmds:
         sim_cmd.extend(["--replay-cmds", args.replay_cmds])
     if args.mesh_resolution is not None:

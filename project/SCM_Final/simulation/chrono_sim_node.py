@@ -530,6 +530,26 @@ def run_sim_node(args):
         traffic_mgr.build(system, terrain, detail=_detail)
         print(f"  Convoy '{args.convoy}': {len(traffic_mgr.vehicles)} traffic vehicles")
 
+    # --- Goal gate (visible finish line; round ends early on reaching it) ---
+    if args.goal_distance > 0 and any_vis:
+        _gx = float(args.goal_distance)
+        for _gy in (-3.5, 3.5):                       # two bright posts
+            post = chrono.ChBodyEasyBox(0.4, 0.4, 3.5, 100.0, True, False)
+            post.SetPos(chrono.ChVector3d(_gx, _gy, 1.75)); post.SetFixed(True)
+            try:
+                post.GetVisualShape(0).SetColor(chrono.ChColor(0.1, 0.9, 0.2))
+            except Exception:
+                pass
+            system.Add(post)
+        banner = chrono.ChBodyEasyBox(0.4, 7.4, 0.5, 100.0, True, False)
+        banner.SetPos(chrono.ChVector3d(_gx, 0.0, 3.3)); banner.SetFixed(True)
+        try:
+            banner.GetVisualShape(0).SetColor(chrono.ChColor(0.1, 0.9, 0.2))
+        except Exception:
+            pass
+        system.Add(banner)
+        print(f"  Goal gate at x={_gx:.0f} m (round ends on reaching it)")
+
     # --- Collision detector (active when rocks OR traffic present) ---
     # Parallel sweeps set HIL_RUN_LOG_DIR to a unique per-run directory so the
     # collision / shield / warning logs are NOT shared across concurrent
@@ -1050,6 +1070,10 @@ def run_sim_node(args):
 
         if (not _manual_mode or args.manual_honor_time or args.replay_cmds) and time_chrono >= args.time:
             break
+        if args.goal_distance > 0 and vehicle.GetVehicle().GetPos().x >= args.goal_distance:
+            print(f"  GOAL REACHED: ego x={vehicle.GetVehicle().GetPos().x:.1f} m "
+                  f">= goal {args.goal_distance:.0f} m at t={time_chrono:.1f} s -- ending round early")
+            break
         if vis is not None and not vis.Run():
             break
 
@@ -1532,6 +1556,9 @@ def main():
                         "scenario (lead_brake/cut_in/stalled/swerver/convoy/platoon/"
                         "oncoming/double_cut/stop_and_go/jam/overtake/gauntlet). The "
                         "ego must avoid them; they appear as dynamic obstacles.")
+    p.add_argument("--goal-distance", type=float, default=0.0,
+                   help="If >0, place a visible goal gate this far ahead (m) and "
+                        "end the round early once the ego reaches it.")
     p.add_argument("--replay-cmds", type=str, default="",
                    help="Counterfactual replay: re-drive the ego from a recorded "
                         "operator command trace CSV (steering_op/throttle_op/"

@@ -186,6 +186,8 @@ def command_for_round(args: argparse.Namespace, run_dir: Path, idx: int, filter_
         cmd.append("--cam-fullscreen")
     if convoy:
         cmd += ["--convoy", convoy, "--traffic-detail", args.traffic_detail]
+    if args.goal_distance > 0:
+        cmd += ["--goal-distance", str(args.goal_distance)]
     if args.mesh_resolution is not None:
         cmd += ["--mesh-resolution", str(args.mesh_resolution)]
     if args.latency_profile_json:
