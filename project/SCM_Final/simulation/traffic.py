@@ -139,10 +139,41 @@ class TrafficVehicle:
                 bias = float(hz.params.get("gain", 0.6)) * (toward_y - y)
                 inp.m_steering = max(-1.0, min(1.0, inp.m_steering + bias))
 
-    def synchronize(self, t: float, terrain) -> None:
+    def _avoid_rocks(self, inp, avoid_obstacles) -> None:
+        """Steer the lead around the nearest rock ahead in its lane."""
+        v = self.vehicle.GetVehicle()
+        p = v.GetPos()
+        rot = v.GetRot()
+        psi = math.atan2(2 * (rot.e0 * rot.e3 + rot.e1 * rot.e2),
+                         1 - 2 * (rot.e2 * rot.e2 + rot.e3 * rot.e3))
+        cps, sps = math.cos(psi), math.sin(psi)
+        best = None
+        for ox, oy, orad in avoid_obstacles:
+            rx, ry = ox - p.x, oy - p.y
+            lon = rx * cps + ry * sps
+            lat = -rx * sps + ry * cps
+            if 0.0 < lon < 14.0 and abs(lat) < orad + 2.0:
+                if best is None or lon < best[0]:
+                    best = (lon, lat, orad)
+        if best is not None:
+            lon, lat, orad = best
+            # steer away from the rock (toward the side with more room), stronger when closer
+            away = -1.0 if lat >= 0 else 1.0
+            gain = 0.7 * (1.0 - lon / 14.0)
+            inp.m_steering = max(-1.0, min(1.0, inp.m_steering + away * gain))
+
+    def synchronize(self, t: float, terrain, hold: bool = False, avoid_obstacles=None) -> None:
         self.driver.Synchronize(t)
         inp = self.driver.GetInputs()
-        self._apply_hazards(t, inp)
+        if hold:
+            # Wait for the ego to get moving before the convoy sets off.
+            inp.m_throttle = 0.0
+            inp.m_steering = 0.0
+            inp.m_braking = 1.0
+        else:
+            self._apply_hazards(t, inp)
+            if avoid_obstacles:
+                self._avoid_rocks(inp, avoid_obstacles)
         self._last_inputs = inp
         self.vehicle.Synchronize(t, inp, terrain)
 
@@ -165,6 +196,7 @@ class TrafficManager:
     def __init__(self, specs: list[TrafficSpec]):
         self.specs = specs
         self.vehicles: list[TrafficVehicle] = []
+        self._released = False   # convoy holds until the ego starts moving
 
     @classmethod
     def from_preset(cls, name: str, ego_lane_y: float = 0.0) -> "TrafficManager":
@@ -183,9 +215,16 @@ class TrafficManager:
             tv.build(system, terrain, add_patch, detail=detail)
             self.vehicles.append(tv)
 
-    def synchronize(self, t: float, terrain) -> None:
+    def synchronize(self, t: float, terrain, ego_speed: float | None = None,
+                    avoid_obstacles=None) -> None:
+        # Release the convoy once the ego is moving (rear-approach scenarios go
+        # immediately so they can actually catch the ego).
+        if not self._released and ego_speed is not None and ego_speed > 0.5:
+            self._released = True
+        rear_only = all(s.heading_deg == 0.0 and s.init_x < 0.0 for s in self.specs)
+        hold = (ego_speed is not None) and (not self._released) and not rear_only
         for tv in self.vehicles:
-            tv.synchronize(t, terrain)
+            tv.synchronize(t, terrain, hold=hold, avoid_obstacles=avoid_obstacles)
 
     def advance(self, step: float) -> None:
         for tv in self.vehicles:
@@ -204,26 +243,26 @@ class TrafficManager:
 # The ego starts at (0,0) heading +x; traffic is placed ahead / alongside.
 # ---------------------------------------------------------------------------
 def _lead_brake(ego_y: float) -> list[TrafficSpec]:
-    # A lead vehicle ahead in the ego's lane that slams the brakes at t=6s.
-    return [TrafficSpec(init_x=18.0, init_y=ego_y, speed=4.0,
+    # A lead vehicle just ahead in the ego's lane that slams the brakes.
+    return [TrafficSpec(init_x=9.0, init_y=ego_y, speed=4.0,
                         hazards=[Hazard(6.0, 4.0, "brake")])]
 
 
 def _cut_in(ego_y: float) -> list[TrafficSpec]:
-    # A vehicle in the next lane that lunges into the ego's lane at t=5s.
-    return [TrafficSpec(init_x=14.0, init_y=ego_y + 3.5, speed=4.5,
+    # A vehicle just ahead in the next lane that lunges into the ego's lane.
+    return [TrafficSpec(init_x=9.0, init_y=ego_y + 3.5, speed=4.5,
                         hazards=[Hazard(5.0, 3.0, "cut_in", {"toward_y": ego_y})])]
 
 
 def _stalled(ego_y: float) -> list[TrafficSpec]:
-    # A stalled vehicle blocking the lane from the start.
-    return [TrafficSpec(init_x=30.0, init_y=ego_y, speed=0.0,
+    # A stalled vehicle blocking the lane a short distance ahead.
+    return [TrafficSpec(init_x=16.0, init_y=ego_y, speed=0.0,
                         hazards=[Hazard(0.0, 60.0, "stop")])]
 
 
 def _swerver(ego_y: float) -> list[TrafficSpec]:
-    # An erratic lead vehicle that swerves within the lane.
-    return [TrafficSpec(init_x=18.0, init_y=ego_y, speed=3.5,
+    # An erratic lead vehicle just ahead that swerves within the lane.
+    return [TrafficSpec(init_x=10.0, init_y=ego_y, speed=3.5,
                         hazards=[Hazard(4.0, 12.0, "swerve", {"amp": 0.5, "period": 2.5})])]
 
 
@@ -291,7 +330,7 @@ def _rear_approach(ego_y: float) -> list[TrafficSpec]:
     # A fast vehicle closing from BEHIND -- a rear-end threat the ego can only
     # escape by accelerating or moving aside, not by braking. Tests whether a
     # forward-collision filter helps (or hurts) against a threat from the rear.
-    return [TrafficSpec(init_x=-12.0, init_y=ego_y, speed=8.0)]
+    return [TrafficSpec(init_x=-8.0, init_y=ego_y, speed=8.0)]
 
 
 def _gauntlet(ego_y: float) -> list[TrafficSpec]:

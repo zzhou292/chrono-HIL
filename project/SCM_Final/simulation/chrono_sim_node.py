@@ -1212,7 +1212,14 @@ def run_sim_node(args):
         _tw = wall_time.time()
         vehicle.Synchronize(time_chrono, driver_inputs, terrain)
         if traffic_mgr is not None:
-            traffic_mgr.synchronize(time_chrono, terrain)
+            _rock_obs = None
+            if args.rocks > 0 and rocks:
+                _rp = get_rock_positions(rocks); _rr = get_rock_radii(rocks)
+                _rock_obs = [(float(_rp[i, 0]), float(_rp[i, 1]), float(_rr[i]))
+                             for i in range(len(_rp))]
+            traffic_mgr.synchronize(time_chrono, terrain,
+                                    ego_speed=vehicle.GetVehicle().GetSpeed(),
+                                    avoid_obstacles=_rock_obs)
         _t_veh_sync += wall_time.time() - _tw
 
         if vis is not None:

@@ -50,6 +50,7 @@ exec python benchmarking/human_delay_compensation_rounds.py \
     --filters none dob_cbf mppi \
     --terrains clay \
     --paths straight \
+    --rocks 0 \
     --speeds 4 \
     --bumpiness 0 \
     --rounds 1 \
