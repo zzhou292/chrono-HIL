@@ -1554,7 +1554,11 @@ obstacles, and returns the filtered command plus diagnostics. The
 DOB-CBF variant solves a single-step minimum-deviation QP around the
 incoming command --- the natural intent-preserving mechanism for HIL
 teleoperation --- and logs intervention rate and command deviation as
-an intrusiveness signal. The MPPI variant runs at the controller rate,
+an intrusiveness signal. It also carries a rear-approach guard: when an
+in-lane vehicle is closing from behind within a threat distance, it refuses
+any deceleration and, with the path ahead clear, accelerates to escape (even
+from a standstill), since slowing into a rear approach only worsens the impact
+(scope and limits in Sec.~\ref{sec:limitations}). The MPPI variant runs at the controller rate,
 samples $K\!=\!384$ noisy command sequences, rolls each forward
 through the same neural tire surrogate the planner uses over a
 horizon padded by the exponentially smoothed round-trip delay, and
@@ -2358,9 +2362,22 @@ setting also used by the reference terramechanics estimators
 (Sec.~\ref{sec:ukf}). This assumes deployment soils lie near that
 manifold; soils with large independent excursions in cohesion, friction,
 or stiffness fall outside the present scope, and $n$-recovery degrades
-off the manifold. Estimating the full soil vector online, hardware
-transfer, and the human-subject teleoperation study the HIL protocol is
-built for are the principal directions for future work.
+off the manifold.
+
+The safety filters are fundamentally \emph{forward}-collision-avoidance: their
+barriers guard the ego's path ahead, and a threat from behind is the harder
+case, since escaping it requires accelerating or changing lanes rather than
+the braking/steering the minimum-deviation formulation favors. We added a
+rear-approach guard to DOB-CBF (it refuses deceleration and accelerates to
+escape a closing in-lane rear vehicle); on a stationary-ego rear-approach test
+it accelerated away and cut the impact penetration from $3.3$ to $0.6\,$m, but
+it cannot guarantee avoidance --- a fast tailgater is unescapable from low
+speed --- the MPPI filter is not yet rear-aware, and this behaviour has so far
+been validated only on a single rear-approach scenario in simulation. Lane-
+change escape and a predictive rear cost in MPPI are the natural extensions.
+Estimating the full soil vector online, hardware transfer, and the
+human-subject teleoperation study the HIL protocol is built for are the
+principal directions for future work.
 
 %======================================================================
 \section{Conclusion}
