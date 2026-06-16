@@ -34,7 +34,7 @@ echo "Starting HIL collection session (G29 + Irrlicht + live HUD)."
 echo "You'll be prompted to press Enter before each round -- grab the wheel first."
 echo
 
-LATENCY_PROFILE="config/latency_profiles/5g_nhits_youtube_ul_scm_youtube_ul_smoke.json"
+LATENCY_PROFILE="config/latency_profiles/5g_hil_usable.json"
 
 # vis-mode sensor (NOT irrlicht): only the Chrono-Sensor camera applies the
 # profile's per-frame camera (downlink) latency. The scenarios below are all

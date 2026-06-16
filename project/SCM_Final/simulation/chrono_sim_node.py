@@ -1142,6 +1142,10 @@ def run_sim_node(args):
                 driver_inputs.m_throttle,
                 driver_inputs.m_braking,
             ))
+            # Sort by due time: under jittery latency a command with a large
+            # delay must not block newer low-delay commands behind it (FIFO
+            # would freeze the controls when the delay spikes then drops).
+            manual_cmd_buffer.sort(key=lambda c: c[0])
             now_manual = wall_time.time()
             while manual_cmd_buffer and manual_cmd_buffer[0][0] <= now_manual:
                 _, delayed_manual_inputs[0], delayed_manual_inputs[1], delayed_manual_inputs[2] = manual_cmd_buffer.pop(0)
