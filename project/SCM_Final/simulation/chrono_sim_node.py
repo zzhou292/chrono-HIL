@@ -1008,6 +1008,7 @@ def run_sim_node(args):
     last_terrain_seq = -1
     manual_cmd_buffer = []
     delayed_manual_inputs = [0.0, 0.0, 0.0]
+    cam_lag_ema = None   # EMA-smoothed camera lag (anti-stutter, see SetLag below)
     step_count = 0
     sim_diag_file = None
     sim_diag_writer = None
@@ -1284,9 +1285,21 @@ def run_sim_node(args):
             # Apply camera lag whenever a non-zero delay is active, whether it
             # comes from the time-varying latency profile or the fixed
             # --camera-input-delay flag used by the HIL delay sweep.
+            #
+            # Smooth the lag with an EMA before applying it. The profile's
+            # per-frame camera delay is jittery; pushing a different lag into the
+            # sensor every frame makes buffered frames release at uneven
+            # intervals, which shows up as visible stutter once the scene is
+            # moving (i.e. while you're driving) and looks fine when stopped.
+            # The EMA keeps the slow good/poor-regime variation but kills the
+            # frame-to-frame jump, so the view is smooth at a realistic delay.
             if driver_cam is not None and camera_delay_s > 0.0:
+                if cam_lag_ema is None:
+                    cam_lag_ema = camera_delay_s
+                else:
+                    cam_lag_ema += 0.1 * (camera_delay_s - cam_lag_ema)
                 try:
-                    driver_cam.SetLag(camera_delay_s)
+                    driver_cam.SetLag(cam_lag_ema)
                 except Exception:
                     pass
             _tw = wall_time.time()

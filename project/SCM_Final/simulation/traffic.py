@@ -139,28 +139,55 @@ class TrafficVehicle:
                 bias = float(hz.params.get("gain", 0.6)) * (toward_y - y)
                 inp.m_steering = max(-1.0, min(1.0, inp.m_steering + bias))
 
-    def _avoid_rocks(self, inp, avoid_obstacles) -> None:
-        """Steer the lead around the nearest rock ahead in its lane."""
+    def _avoid_obstacles(self, inp, obstacles) -> None:
+        """Steer around AND brake for obstacles ahead (rocks + other vehicles).
+
+        Steering turns away from the nearest obstacle in a lateral band so the
+        vehicle goes around it; the longitudinal term keeps a speed-dependent
+        following gap behind anything on a collision course (so platoon/convoy
+        vehicles don't rear-end each other or a rock they can't steer past).
+        """
         v = self.vehicle.GetVehicle()
         p = v.GetPos()
+        spd = v.GetSpeed()
         rot = v.GetRot()
         psi = math.atan2(2 * (rot.e0 * rot.e3 + rot.e1 * rot.e2),
                          1 - 2 * (rot.e2 * rot.e2 + rot.e3 * rot.e3))
         cps, sps = math.cos(psi), math.sin(psi)
-        best = None
-        for ox, oy, orad in avoid_obstacles:
+        half_w = 1.2                 # vehicle half-width for the collision corridor
+        look = 18.0                  # forward look-ahead (m)
+        nearest_steer = None         # nearest obstacle to steer away from
+        nearest_block = None         # nearest obstacle on a collision course
+        for ox, oy, orad in obstacles:
             rx, ry = ox - p.x, oy - p.y
             lon = rx * cps + ry * sps
             lat = -rx * sps + ry * cps
-            if 0.0 < lon < 14.0 and abs(lat) < orad + 2.0:
-                if best is None or lon < best[0]:
-                    best = (lon, lat, orad)
-        if best is not None:
-            lon, lat, orad = best
-            # steer away from the rock (toward the side with more room), stronger when closer
+            if lon <= 0.0 or lon > look:
+                continue
+            if abs(lat) < orad + 2.0:
+                if nearest_steer is None or lon < nearest_steer[0]:
+                    nearest_steer = (lon, lat, orad)
+            if abs(lat) < orad + half_w:   # would actually hit it
+                if nearest_block is None or lon < nearest_block[0]:
+                    nearest_block = (lon, lat, orad)
+        # Steer away from the nearest obstacle in the band (stronger when close).
+        if nearest_steer is not None:
+            lon, lat, orad = nearest_steer
             away = -1.0 if lat >= 0 else 1.0
-            gain = 0.7 * (1.0 - lon / 14.0)
+            gain = 0.8 * (1.0 - lon / look)
             inp.m_steering = max(-1.0, min(1.0, inp.m_steering + away * gain))
+        # Brake to hold a gap behind anything on a collision course.
+        if nearest_block is not None:
+            lon = nearest_block[0]
+            stop_gap = 5.0
+            slow_gap = max(9.0, 5.0 + 1.5 * spd)
+            if lon < stop_gap:
+                inp.m_throttle = 0.0
+                inp.m_braking = 1.0
+            elif lon < slow_gap:
+                frac = (lon - stop_gap) / (slow_gap - stop_gap)
+                inp.m_throttle *= frac
+                inp.m_braking = max(inp.m_braking, 0.5 * (1.0 - frac))
 
     def synchronize(self, t: float, terrain, hold: bool = False, avoid_obstacles=None) -> None:
         self.driver.Synchronize(t)
@@ -173,7 +200,7 @@ class TrafficVehicle:
         else:
             self._apply_hazards(t, inp)
             if avoid_obstacles:
-                self._avoid_rocks(inp, avoid_obstacles)
+                self._avoid_obstacles(inp, avoid_obstacles)
         self._last_inputs = inp
         self.vehicle.Synchronize(t, inp, terrain)
 
@@ -223,8 +250,14 @@ class TrafficManager:
             self._released = True
         rear_only = all(s.heading_deg == 0.0 and s.init_x < 0.0 for s in self.specs)
         hold = (ego_speed is not None) and (not self._released) and not rear_only
-        for tv in self.vehicles:
-            tv.synchronize(t, terrain, hold=hold, avoid_obstacles=avoid_obstacles)
+        # Each vehicle avoids the rocks AND every other traffic vehicle, so the
+        # convoy/platoon keeps spacing instead of rear-ending itself.
+        rocks = list(avoid_obstacles) if avoid_obstacles else []
+        states = [tv.state() for tv in self.vehicles]
+        for i, tv in enumerate(self.vehicles):
+            others = [(states[j]["x"], states[j]["y"], states[j]["r"])
+                      for j in range(len(self.vehicles)) if j != i]
+            tv.synchronize(t, terrain, hold=hold, avoid_obstacles=rocks + others)
 
     def advance(self, step: float) -> None:
         for tv in self.vehicles:
