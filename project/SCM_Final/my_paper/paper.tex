@@ -1964,6 +1964,36 @@ now established causally on identical operator intent.
   \label{fig:convoy_cf}
 \end{figure}
 
+\subsection{Real-time scaling with obstacle count}
+\label{sec:safety_scaling}
+
+The two filters scale very differently with the number of in-range obstacles
+$N$ --- and since a rock and a traffic vehicle are identical $(x,y,r)$ entries
+to the filter, $N$ counts both jointly. Timing each filter's solve in
+isolation against the $100\,$ms ($10\,$Hz) shield budget
+(Fig.~\ref{fig:safety_scaling}): the DOB-CBF QP costs $0.25\,$ms at $N=0$ and
+only $3.5\,$ms at $N=128$, so it never approaches the budget and has no
+practical obstacle-count limit. MPPI is instead dominated by its sampled
+rollout --- $\approx\!85\,$ms at the deployed $K=384$ samples \emph{regardless
+of $N$}, with each obstacle adding only $\sim\!0.3\,$ms --- so it crosses the
+budget near $N=64$ (a capacity of $\approx\!32$). Its real-time ceiling is set
+by the sample count, not the scene: solve time is linear in $K$ ($85\,$ms at
+$K=384$, over budget by $K=512$, $194\,$ms at $K=1024$). This is a concrete
+guide for the swappable design: DOB-CBF for dense scenes at negligible cost,
+MPPI when predictive avoidance is worth the fixed rollout, with $K$ chosen
+against the control-rate budget.
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{safety_filter_scaling.png}
+  \caption{Safety-filter solve time vs.\ obstacle count $N$ (left) and MPPI
+    sample count $K$ (right), against the $100\,$ms / $10\,$Hz shield budget
+    (dashed). DOB-CBF stays $\le\!3.5\,$ms out to $N=128$; MPPI is
+    rollout-bound --- flat in $N$, linear in $K$. Standalone solve timing,
+    single-thread BLAS.}
+  \label{fig:safety_scaling}
+\end{figure}
+
 %======================================================================
 \section{5G-Profile Latency Robustness}
 \label{sec:latency}
