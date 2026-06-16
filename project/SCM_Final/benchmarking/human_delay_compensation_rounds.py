@@ -134,10 +134,10 @@ def parse_args() -> argparse.Namespace:
                         "'sit still -> 0 collisions' result: a round is a clean "
                         "success only if it is collision-free AND reaches the goal.")
     p.add_argument("--rocks", type=int, default=5)
-    p.add_argument("--rock-min-spacing", type=float, default=4.0,
-                   help="Min spacing (m) between rocks -> threadable boulder field "
-                        "(worst-case clear gap stays wider than the HMMWV).")
-    p.add_argument("--rock-centerline-clear", type=float, default=2.0,
+    p.add_argument("--rock-min-spacing", type=float, default=6.0,
+                   help="Min spacing (m) between rocks -> steerable boulder field "
+                        "(wide gaps; worst-case clear gap well over the HMMWV width).")
+    p.add_argument("--rock-centerline-clear", type=float, default=3.0,
                    help="Half-width (m) where rock density is thinned for the lead's line.")
     p.add_argument("--rock-spawn-clear", type=float, default=8.0,
                    help="Rock-free radius (m) around the spawn.")

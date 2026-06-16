@@ -43,25 +43,24 @@ LATENCY_PROFILE="config/latency_profiles/5g_hil_usable.json"
 # single-vehicle, so the sensor camera holds real-time. The 5G profile drives
 # BOTH the command (uplink) and camera (downlink) channels and supersedes any
 # fixed --delays. Scenarios are swept as separate rounds.
-# Off-road boulder field: ~70 rocks spread the full width over the whole
-# course (no clean lane to swerve into), blue-noise spaced so a route always
-# exists, on moderately bumpy terrain, out to a 100 m goal gate. Scenarios mix
-# open-field navigation ("" = no lead) with convoy-follow rounds where a lead
-# picks the line through the field. The lead waits for you to move and weaves
-# around rocks.
+# Off-road boulder field: ~35 scattered rocks spread the full width over the
+# whole course (no clean side to swerve into), blue-noise spaced (6 m) so it's
+# steerable, on moderately bumpy terrain, out to a 100 m goal gate. Every round
+# has other HMMWVs: convoy (3) and platoon (5) plus single-lead scenarios. The
+# lead(s) wait for you to move, then pick a line through the field.
 exec python benchmarking/human_delay_compensation_rounds.py \
     --manual-mode g29 \
     --vis-mode sensor \
     --live-hud \
     --latency-profile-json "$LATENCY_PROFILE" \
-    --convoy "" lead_brake stalled rear_approach \
+    --convoy convoy platoon lead_brake rear_approach \
     --filters none dob_cbf mppi \
     --terrains clay \
     --paths straight \
     --goal-distance 100 \
-    --rocks 70 \
-    --rock-min-spacing 4.0 \
-    --rock-centerline-clear 2.0 \
+    --rocks 35 \
+    --rock-min-spacing 6.0 \
+    --rock-centerline-clear 3.0 \
     --rock-spawn-clear 8.0 \
     --rock-size 0.5 1.4 \
     --speeds 4 \
