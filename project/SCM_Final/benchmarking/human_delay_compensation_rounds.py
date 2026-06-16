@@ -104,10 +104,11 @@ def parse_args() -> argparse.Namespace:
                    default=True,
                    help="Display the driver POV fullscreen (renders at cam W x H, "
                         "scaled to the screen). Use --no-cam-fullscreen for a window.")
-    p.add_argument("--convoy", type=str, default="",
-                   help="Spawn PID-driven traffic for a convoy safety scenario the "
-                        "operator must avoid (lead_brake/cut_in/stalled/swerver/convoy/"
-                        "platoon/oncoming/double_cut/stop_and_go/jam/overtake/gauntlet).")
+    p.add_argument("--convoy", nargs="+", default=[""],
+                   help="Convoy scenario(s) the operator must avoid, swept as "
+                        "separate rounds (lead_brake/cut_in/stalled/swerver/convoy/"
+                        "platoon/oncoming/double_cut/stop_and_go/jam/overtake/"
+                        "gauntlet/rear_approach). Empty = open course (rocks only).")
     p.add_argument("--traffic-detail", choices=["auto", "mesh", "primitives"],
                    default="mesh", help="Traffic render detail (mesh|auto|primitives).")
     p.add_argument("--mesh-resolution", type=float, default=0.12,
@@ -156,7 +157,7 @@ def parse_args() -> argparse.Namespace:
 
 def command_for_round(args: argparse.Namespace, run_dir: Path, idx: int, filter_name: str,
                       delay: float, terrain: str, path: str, speed: float,
-                      bump: int, seed: int) -> list[str]:
+                      bump: int, seed: int, convoy: str = "") -> list[str]:
     sim_port = args.base_port + 2 * idx
     ctrl_port = sim_port + 1
     camera_delay = delay * args.camera_delay_scale
@@ -183,8 +184,8 @@ def command_for_round(args: argparse.Namespace, run_dir: Path, idx: int, filter_
     ]
     if args.cam_fullscreen:
         cmd.append("--cam-fullscreen")
-    if args.convoy:
-        cmd += ["--convoy", args.convoy, "--traffic-detail", args.traffic_detail]
+    if convoy:
+        cmd += ["--convoy", convoy, "--traffic-detail", args.traffic_detail]
     if args.mesh_resolution is not None:
         cmd += ["--mesh-resolution", str(args.mesh_resolution)]
     if args.latency_profile_json:
@@ -429,7 +430,8 @@ def plot_figures(results_csv: Path, out_dir: Path) -> None:
 
 
 def brief_round(args: argparse.Namespace, i: int, total: int, filter_name: str,
-                delay: float, terrain: str, path: str, speed: float, bump: int) -> None:
+                delay: float, terrain: str, path: str, speed: float, bump: int,
+                convoy: str = "") -> None:
     """Print an operator-facing briefing: scenario, goal, filter, and latency."""
     bar = "=" * 64
     print(f"\n{bar}")
@@ -439,12 +441,12 @@ def brief_round(args: argparse.Namespace, i: int, total: int, filter_name: str,
     extras = f", bumpiness {bump}" if bump else ""
     print(f"  SCENARIO : {terrain} terrain, straight forward course, "
           f"{args.time:.0f}s run{extras}.")
-    if args.convoy:
-        desc = CONVOY_DESCRIPTIONS.get(args.convoy, args.convoy)
+    if convoy:
+        desc = CONVOY_DESCRIPTIONS.get(convoy, convoy)
         print(f"             Traffic: {desc}.")
     if args.rocks > 0:
         print(f"             Plus {args.rocks} rocks scattered along the course.")
-    if not args.convoy and args.rocks == 0:
+    if not convoy and args.rocks == 0:
         print(f"             Open course, no obstacles.")
     # --- goal ---
     print(f"  GOAL     : drive FORWARD and reach the far end (~{args.goal_distance:.0f} m "
@@ -508,29 +510,31 @@ def main() -> None:
 
     planned = []
     idx = 0
-    for filter_name in args.filters:
-        for delay in args.delays:
-            for terrain in args.terrains:
-                for path in args.paths:
-                    for speed in args.speeds:
-                        for bump in args.bumpiness:
-                            for rep in range(args.rounds):
-                                seed = args.base_seed + rep
-                                cell = prof_tag if prof_tag else f"delay{delay:.2f}"
-                                run_dir = out_dir / "raw" / (
-                                    f"{idx:04d}_{filter_name}_{cell}_{terrain}_{path}_v{speed:g}_b{bump}_r{rep}"
-                                )
-                                cmd = command_for_round(args, run_dir, idx, filter_name, delay, terrain, path, speed, bump, seed)
-                                planned.append((idx, filter_name, delay, terrain, path, speed, bump, seed, run_dir, cmd))
-                                idx += 1
+    for convoy in args.convoy:
+        for filter_name in args.filters:
+            for delay in args.delays:
+                for terrain in args.terrains:
+                    for path in args.paths:
+                        for speed in args.speeds:
+                            for bump in args.bumpiness:
+                                for rep in range(args.rounds):
+                                    seed = args.base_seed + rep
+                                    cell = prof_tag if prof_tag else f"delay{delay:.2f}"
+                                    cv = convoy if convoy else "open"
+                                    run_dir = out_dir / "raw" / (
+                                        f"{idx:04d}_{filter_name}_{cv}_{cell}_{terrain}_{path}_v{speed:g}_b{bump}_r{rep}"
+                                    )
+                                    cmd = command_for_round(args, run_dir, idx, filter_name, delay, terrain, path, speed, bump, seed, convoy)
+                                    planned.append((idx, filter_name, delay, terrain, path, speed, bump, seed, convoy, run_dir, cmd))
+                                    idx += 1
 
     plan_rows = [
         {
-            "idx": i, "filter": f, "delay_s": d, "terrain": te, "path": pa,
+            "idx": i, "filter": f, "delay_s": d, "convoy": cv, "terrain": te, "path": pa,
             "speed_mps": sp, "bumpiness": bu, "seed": se,
             "run_dir": str(rd), "command": " ".join(cmd),
         }
-        for i, f, d, te, pa, sp, bu, se, rd, cmd in planned
+        for i, f, d, te, pa, sp, bu, se, cv, rd, cmd in planned
     ]
     pd.DataFrame(plan_rows).to_csv(out_dir / "round_plan.csv", index=False)
     if args.dry_run:
@@ -539,12 +543,12 @@ def main() -> None:
 
     rows: list[dict] = []
     total = len(planned)
-    for i, filter_name, delay, terrain, path, speed, bump, seed, run_dir, cmd in planned:
+    for i, filter_name, delay, terrain, path, speed, bump, seed, convoy, run_dir, cmd in planned:
         for name in ("collision_log.csv", "mppi_shield_log.csv", "nmpc_shield_log.csv", "cbf_filter_log.csv"):
             p = LOGS_DIR / name
             if p.exists():
                 p.unlink()
-        brief_round(args, i, total, filter_name, delay, terrain, path, speed, bump)
+        brief_round(args, i, total, filter_name, delay, terrain, path, speed, bump, convoy)
         print(f"  (raw output -> {run_dir})")
         if not args.auto_start:
             input("\n  Press Enter when you're ready to drive this round...")
@@ -562,6 +566,7 @@ def main() -> None:
             "delay_s": delay,
             "camera_delay_s": delay * args.camera_delay_scale,
             "latency_profile": prof_tag,
+            "convoy": convoy,
             "terrain": terrain,
             "path": path,
             "speed_mps": speed,

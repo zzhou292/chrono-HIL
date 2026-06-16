@@ -4,10 +4,12 @@
 #   ./collect_hil.sh                 # sensible default session
 #   ./collect_hil.sh --convoy jam --rounds 5     # override anything
 #
-# Defaults: G29 wheel, Irrlicht fixed driver view, live HMI overlay, the
-# lead-brake convoy, paired filters {none, DOB-CBF, MPPI} at a 0.15 s teleop
-# delay, 2 rounds each. Each round logs sim_diag.csv (with the operator's raw
-# commands), which the counterfactual eval can replay
+# Defaults: G29 wheel, Chrono-Sensor driver POV (so the 5G CAMERA latency is
+# applied), live HMI overlay, the learned 5G latency profile on BOTH the
+# command and camera channels, five single-vehicle convoy scenarios
+# (lead_brake, cut_in, stalled, swerver, rear_approach) x filters {none,
+# DOB-CBF, MPPI}, 1 round each (15 rounds). Each round logs sim_diag.csv (with
+# the operator's raw commands), which the counterfactual eval can replay
 # (benchmarking/convoy_counterfactual_eval.py --trace <run>/sim_diag.csv).
 #
 # Results land in benchmarking/results/human_delay_compensation_rounds_<ts>/.
@@ -32,16 +34,23 @@ echo "Starting HIL collection session (G29 + Irrlicht + live HUD)."
 echo "You'll be prompted to press Enter before each round -- grab the wheel first."
 echo
 
+LATENCY_PROFILE="config/latency_profiles/5g_nhits_youtube_ul_scm_youtube_ul_smoke.json"
+
+# vis-mode sensor (NOT irrlicht): only the Chrono-Sensor camera applies the
+# profile's per-frame camera (downlink) latency. The scenarios below are all
+# single-vehicle, so the sensor camera holds real-time. The 5G profile drives
+# BOTH the command (uplink) and camera (downlink) channels and supersedes any
+# fixed --delays. Scenarios are swept as separate rounds.
 exec python benchmarking/human_delay_compensation_rounds.py \
     --manual-mode g29 \
-    --vis-mode irrlicht \
+    --vis-mode sensor \
     --live-hud \
-    --convoy lead_brake \
+    --latency-profile-json "$LATENCY_PROFILE" \
+    --convoy lead_brake cut_in stalled swerver rear_approach \
     --filters none dob_cbf mppi \
-    --delays 0.15 \
     --terrains clay \
     --paths straight \
     --speeds 4 \
     --bumpiness 0 \
-    --rounds 2 \
+    --rounds 1 \
     "$@"
