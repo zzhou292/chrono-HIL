@@ -80,7 +80,7 @@ Examples:
     p.add_argument("--transition-width", type=float, default=2.0,
                    help="Full width of the linear soil blend (m); 0 = hard step.")
     p.add_argument("--path", default="lane_change",
-                   choices=["lane_change", "double_lane_change", "right_left", "sinusoidal"])
+                   choices=["lane_change", "double_lane_change", "right_left", "sinusoidal", "straight"])
     p.add_argument("--sine-amplitude", type=float, default=2.0)
     p.add_argument("--sine-wavelength", type=float, default=30.0)
     p.add_argument("--lead-in", type=float, default=0.0,

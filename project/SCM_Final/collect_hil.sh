@@ -13,14 +13,14 @@
 # (benchmarking/convoy_counterfactual_eval.py --trace <run>/sim_diag.csv).
 #
 # Results land in benchmarking/results/human_delay_compensation_rounds_<ts>/.
-set -uo pipefail
+set -o pipefail   # NOT -u: conda's (de)activate scripts reference unset vars
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
 # --- environment (the sim env + acados; see CLAUDE.md) ---
 source "$HOME/miniconda3/etc/profile.d/conda.sh"
-conda activate sim
+conda activate sim 2>/dev/null || true   # already-active env can trip a re-activate
 export ACADOS_SOURCE_DIR="$HOME/Documents/sbel/acados"
 export DISPLAY="${DISPLAY:-:0}"   # use the desktop's display (G29 + window)
 
