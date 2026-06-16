@@ -1981,7 +1981,15 @@ by the sample count, not the scene: solve time is linear in $K$ ($85\,$ms at
 $K=384$, over budget by $K=512$, $194\,$ms at $K=1024$). This is a concrete
 guide for the swappable design: DOB-CBF for dense scenes at negligible cost,
 MPPI when predictive avoidance is worth the fixed rollout, with $K$ chosen
-against the control-rate budget.
+against the control-rate budget. Crucially, that budget is the only thing
+forcing $K$ down: replaying the aggressive intent through the convoy scenarios
+at each $K$, MPPI is \emph{collision-free across $K\!\in\![64,512]$} with
+clearance growing only marginally ($5.3\!\to\!5.9\,$m) --- the hand-crafted
+seed trajectories (Sec.~\ref{sec:safety_seeds}) supply the evasive options
+regardless of the random sample count. The deployed $K=384$ ($90\,$ms) is thus
+conservative: $K=64$ is equally collision-free at $30\,$ms ($3\times$ the
+real-time margin), while $K=512$ already exceeds the budget. Safety is flat in
+$K$ and cost is linear, so $K$ is a pure real-time knob here, not a safety one.
 
 \begin{figure}[!t]
   \centering
