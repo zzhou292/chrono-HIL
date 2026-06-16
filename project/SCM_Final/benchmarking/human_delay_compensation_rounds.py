@@ -134,6 +134,15 @@ def parse_args() -> argparse.Namespace:
                         "'sit still -> 0 collisions' result: a round is a clean "
                         "success only if it is collision-free AND reaches the goal.")
     p.add_argument("--rocks", type=int, default=5)
+    p.add_argument("--rock-min-spacing", type=float, default=4.0,
+                   help="Min spacing (m) between rocks -> threadable boulder field "
+                        "(worst-case clear gap stays wider than the HMMWV).")
+    p.add_argument("--rock-centerline-clear", type=float, default=2.0,
+                   help="Half-width (m) where rock density is thinned for the lead's line.")
+    p.add_argument("--rock-spawn-clear", type=float, default=8.0,
+                   help="Rock-free radius (m) around the spawn.")
+    p.add_argument("--rock-size", type=float, nargs=2, default=[0.5, 1.4],
+                   help="Rock diameter range (m). Field rocks are smaller/denser.")
     p.add_argument("--manual-mode", choices=["g29", "wasd"], default="g29")
     p.add_argument("--vis-mode", choices=["irrlicht", "sensor", "both", "none"], default="irrlicht",
                    help="Driver view. 'irrlicht' (default) rasterizes the fixed "
@@ -204,7 +213,10 @@ def command_for_round(args: argparse.Namespace, run_dir: Path, idx: int, filter_
         cmd += [
             "--rock-zone-x", str(zone["x"][0]), str(zone["x"][1]),
             "--rock-zone-y", str(zone["y"][0]), str(zone["y"][1]),
-            "--rock-size", "0.8", "1.8",
+            "--rock-size", str(args.rock_size[0]), str(args.rock_size[1]),
+            "--rock-min-spacing", str(args.rock_min_spacing),
+            "--rock-centerline-clear", str(args.rock_centerline_clear),
+            "--rock-spawn-clear", str(args.rock_spawn_clear),
         ]
     if filter_name != "none":
         cmd += [
@@ -445,10 +457,12 @@ def brief_round(args: argparse.Namespace, i: int, total: int, filter_name: str,
           f"{args.time:.0f}s run{extras}.")
     if convoy:
         desc = CONVOY_DESCRIPTIONS.get(convoy, convoy)
-        print(f"             Traffic: {desc}.")
+        print(f"             Convoy lead: {desc} (it waits for you to move, then "
+              f"picks a line through the field).")
     if args.rocks > 0:
-        print(f"             Plus {args.rocks} rocks scattered along the course.")
-    if not convoy and args.rocks == 0:
+        print(f"             {args.rocks}-rock boulder field spanning the full "
+              f"width -- thread a route, you can't go around.")
+    elif not convoy:
         print(f"             Open course, no obstacles.")
     # --- goal ---
     print(f"  GOAL     : drive FORWARD and reach the far end (~{args.goal_distance:.0f} m "

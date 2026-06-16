@@ -36,7 +36,10 @@ SPEEDS = (5.0, 7.0, 9.0)
 BUMPS = (0, 4, 8)
 
 PATH_ROCK_ZONES: dict[str, dict[str, tuple[float, float]]] = {
-    "straight": {"x": (12.0, 70.0), "y": (-3.0, 3.0)},
+    # 'straight' is the HIL boulder field: rocks span the full width (both
+    # sides, well beyond any swerve) over the whole course, so there is no
+    # clean lateral bypass -- you thread a route, you don't go around.
+    "straight": {"x": (10.0, 98.0), "y": (-16.0, 16.0)},
     "sinusoidal": {"x": (12.0, 50.0), "y": (-3.0, 3.0)},
     "lane_change": {"x": (15.0, 50.0), "y": (-1.0, 4.0)},
     "double_lane_change": {"x": (15.0, 60.0), "y": (-1.0, 4.0)},

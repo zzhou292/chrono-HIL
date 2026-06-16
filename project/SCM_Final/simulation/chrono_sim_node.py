@@ -513,11 +513,17 @@ def run_sim_node(args):
     rocks = []
     collision_logger = None
     if args.rocks > 0:
-        exclusion_zones = [(0.0, 0.0, 12.0)]  # Vehicle spawn at (0,0)
+        # Only clear the immediate spawn so you're in the field quickly; also
+        # keep the goal gate clear if one is set.
+        exclusion_zones = [(0.0, 0.0, args.rock_spawn_clear)]
+        if args.goal_distance > 0:
+            exclusion_zones.append((float(args.goal_distance), 0.0, 6.0))
         rocks = add_rock_obstacles(
             system, num_rocks=args.rocks,
             zone_x=tuple(args.rock_zone_x), zone_y=tuple(args.rock_zone_y),
             size_range=tuple(args.rock_size), seed=args.rock_seed,
+            min_spacing=args.rock_min_spacing,
+            centerline_clear=args.rock_centerline_clear,
             exclusion_zones=exclusion_zones,
         )
         print(f"  Placed {len(rocks)} rock obstacles")
@@ -1690,6 +1696,14 @@ def main():
     p.add_argument("--rock-zone-y", type=float, nargs=2, default=[-10.0, 10.0])
     p.add_argument("--rock-size", type=float, nargs=2, default=[0.5, 3.0])
     p.add_argument("--rock-seed", type=int, default=42)
+    p.add_argument("--rock-min-spacing", type=float, default=0.0,
+                   help="Min center-to-center spacing (m) between rocks. >0 makes "
+                        "a threadable blue-noise boulder field (no free bypass).")
+    p.add_argument("--rock-centerline-clear", type=float, default=0.0,
+                   help="Lateral half-width (m) around y=0 where rock density is "
+                        "thinned so the convoy lead can pick a line (not a clear lane).")
+    p.add_argument("--rock-spawn-clear", type=float, default=12.0,
+                   help="Radius (m) of the rock-free circle around the spawn.")
 
     # Safety filter
     p.add_argument("--safety-filter", action="store_true",

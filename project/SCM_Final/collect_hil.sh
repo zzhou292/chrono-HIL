@@ -6,10 +6,12 @@
 #
 # Defaults: G29 wheel, Chrono-Sensor driver POV (so the 5G CAMERA latency is
 # applied), live HMI overlay, the learned 5G latency profile on BOTH the
-# command and camera channels, five single-vehicle convoy scenarios
-# (lead_brake, cut_in, stalled, swerver, rear_approach) x filters {none,
-# DOB-CBF, MPPI}, 1 round each (15 rounds). Each round logs sim_diag.csv (with
-# the operator's raw commands), which the counterfactual eval can replay
+# command and camera channels. The course is a ~100 m off-road boulder field
+# (rocks the full width, no clean bypass) on moderately bumpy terrain, with a
+# goal gate at 100 m that ends the round early. Four scenarios -- open-field
+# navigation ("") + lead_brake/stalled/rear_approach convoy-follow -- x filters
+# {none, DOB-CBF, MPPI}, 1 round each (12 rounds). Each round logs sim_diag.csv
+# (with the operator's raw commands), which the counterfactual eval can replay
 # (benchmarking/convoy_counterfactual_eval.py --trace <run>/sim_diag.csv).
 #
 # Results land in benchmarking/results/human_delay_compensation_rounds_<ts>/.
@@ -41,17 +43,28 @@ LATENCY_PROFILE="config/latency_profiles/5g_hil_usable.json"
 # single-vehicle, so the sensor camera holds real-time. The 5G profile drives
 # BOTH the command (uplink) and camera (downlink) channels and supersedes any
 # fixed --delays. Scenarios are swept as separate rounds.
+# Off-road boulder field: ~70 rocks spread the full width over the whole
+# course (no clean lane to swerve into), blue-noise spaced so a route always
+# exists, on moderately bumpy terrain, out to a 100 m goal gate. Scenarios mix
+# open-field navigation ("" = no lead) with convoy-follow rounds where a lead
+# picks the line through the field. The lead waits for you to move and weaves
+# around rocks.
 exec python benchmarking/human_delay_compensation_rounds.py \
     --manual-mode g29 \
     --vis-mode sensor \
     --live-hud \
     --latency-profile-json "$LATENCY_PROFILE" \
-    --convoy lead_brake cut_in stalled swerver rear_approach \
+    --convoy "" lead_brake stalled rear_approach \
     --filters none dob_cbf mppi \
     --terrains clay \
     --paths straight \
-    --rocks 0 \
+    --goal-distance 100 \
+    --rocks 70 \
+    --rock-min-spacing 4.0 \
+    --rock-centerline-clear 2.0 \
+    --rock-spawn-clear 8.0 \
+    --rock-size 0.5 1.4 \
     --speeds 4 \
-    --bumpiness 0 \
+    --bumpiness 4 \
     --rounds 1 \
     "$@"

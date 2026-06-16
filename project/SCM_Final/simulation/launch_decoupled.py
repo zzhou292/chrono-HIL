@@ -220,6 +220,9 @@ Examples:
     p.add_argument("--rock-zone-y", type=float, nargs=2, default=[-10.0, 10.0])
     p.add_argument("--rock-size", type=float, nargs=2, default=[0.5, 3.0])
     p.add_argument("--rock-seed", type=int, default=42)
+    p.add_argument("--rock-min-spacing", type=float, default=0.0)
+    p.add_argument("--rock-centerline-clear", type=float, default=0.0)
+    p.add_argument("--rock-spawn-clear", type=float, default=12.0)
 
     # Safety filter
     p.add_argument("--safety-filter", action="store_true",
@@ -468,6 +471,9 @@ Examples:
         sim_cmd.extend(["--rock-zone-y"] + [str(v) for v in args.rock_zone_y])
         sim_cmd.extend(["--rock-size"] + [str(v) for v in args.rock_size])
         sim_cmd.extend(["--rock-seed", str(args.rock_seed)])
+        sim_cmd.extend(["--rock-min-spacing", str(args.rock_min_spacing)])
+        sim_cmd.extend(["--rock-centerline-clear", str(args.rock_centerline_clear)])
+        sim_cmd.extend(["--rock-spawn-clear", str(args.rock_spawn_clear)])
     # Safety filter
     if args.safety_filter:
         sim_cmd.append("--safety-filter")

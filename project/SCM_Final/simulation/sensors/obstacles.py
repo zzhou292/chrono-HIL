@@ -36,6 +36,9 @@ def add_rock_obstacles(system: 'chrono.ChSystem',
                        size_range: Tuple[float, float] = (0.5, 3.0),
                        seed: int = 42,
                        bury_fraction: float = 0.3,
+                       min_spacing: float = 0.0,
+                       centerline_clear: float = 0.0,
+                       centerline_keep_prob: float = 0.35,
                        exclusion_zones: List[Tuple[float, float, float]] = None) -> List[dict]:
     """
     Add randomized rock obstacles to the Chrono system.
@@ -56,6 +59,18 @@ def add_rock_obstacles(system: 'chrono.ChSystem',
         seed: Random seed for reproducibility
         bury_fraction: Fraction of rock below ground level (0-1).
                       0.3 means 30% buried, matching C++ reference.
+        min_spacing: If >0, reject any candidate whose center is closer than
+                      this (m) to an already-placed rock. Turns a random
+                      scatter into a blue-noise "boulder field": always a
+                      threadable gap between rocks, never an impassable clump,
+                      and no free bypass (the field is uniformly dense).
+        centerline_clear: If >0, rocks landing within this lateral half-width
+                      (m) of y=0 are kept only with probability
+                      centerline_keep_prob. This thins (not clears) the line
+                      the convoy lead takes through the field, so the lead can
+                      pick a route without a painted "lane" -- rocks still
+                      intrude on the centerline.
+        centerline_keep_prob: Keep-probability for rocks inside centerline_clear.
         exclusion_zones: List of (center_x, center_y, radius) tuples.
                         No rocks will be placed within these circles.
                         Use to protect vehicle spawn and path corridor.
@@ -81,7 +96,9 @@ def add_rock_obstacles(system: 'chrono.ChSystem',
     rock_material.SetRestitution(0.1)
     
     attempts = 0
-    max_attempts = num_rocks * 10  # Prevent infinite loop with tight exclusion zones
+    # Blue-noise rejection (min_spacing) and centerline thinning reject many
+    # candidates, so allow more attempts before giving up on the requested count.
+    max_attempts = num_rocks * (40 if (min_spacing > 0.0 or centerline_clear > 0.0) else 10)
     
     while len(rocks) < num_rocks and attempts < max_attempts:
         attempts += 1
@@ -99,7 +116,25 @@ def add_rock_obstacles(system: 'chrono.ChSystem',
                     break
             if excluded:
                 continue
-        
+
+        # Soft centerline thinning: keep only some rocks near the route the
+        # convoy lead takes (no painted lane -- the line is just less dense).
+        if centerline_clear > 0.0 and abs(y) < centerline_clear:
+            if rng.random() > centerline_keep_prob:
+                continue
+
+        # Blue-noise spacing: reject candidates too close to an existing rock so
+        # the field is always threadable (a gap >= min_spacing always exists)
+        # but never leaves a clear lateral bypass.
+        if min_spacing > 0.0 and rocks:
+            too_close = False
+            for r in rocks:
+                if (x - r['x'])**2 + (y - r['y'])**2 < min_spacing**2:
+                    too_close = True
+                    break
+            if too_close:
+                continue
+
         # Random size and orientation
         size = rng.uniform(size_range[0], size_range[1])
         yaw = rng.uniform(0, 2 * np.pi)
