@@ -157,7 +157,7 @@ class TrafficVehicle:
         psi = math.atan2(2 * (rot.e0 * rot.e3 + rot.e1 * rot.e2),
                          1 - 2 * (rot.e2 * rot.e2 + rot.e3 * rot.e3))
         cps, sps = math.cos(psi), math.sin(psi)
-        half_w = 1.2                 # vehicle half-width for the collision corridor
+        half_w = 0.8                 # narrow corridor: only brake for near-dead-ahead
         look = 18.0                  # forward look-ahead (m)
         nearest_steer = None         # nearest obstacle to steer away from
         nearest_block = None         # nearest obstacle on a collision course
@@ -189,18 +189,22 @@ class TrafficVehicle:
         if nearest_steer is not None:
             lon, lat, orad = nearest_steer
             away = -1.0 if lat >= 0 else 1.0
-            gain = (1.0 if stuck else 0.8) * (1.0 - lon / look)
+            # Strong, early steering so the vehicle flows around obstacles
+            # (overcoming the path-follower's pull back to the line) instead of
+            # braking to a stop in front of them.
+            gain = (1.2 if stuck else 1.0) * (1.0 - lon / look)
             inp.m_steering = max(-1.0, min(1.0, inp.m_steering + away * gain))
-        # Longitudinal: hold a gap behind a collision-course obstacle, but crawl
-        # if we've been wedged too long (so the convoy never permanently stalls).
+        # Longitudinal: only slow for something truly close and dead ahead, so
+        # the convoy keeps moving and relies on steering to get around the rest;
+        # crawl if we've been wedged too long (so it never permanently stalls).
         if nearest_block is not None:
             lon = nearest_block[0]
             if stuck:
                 inp.m_throttle = max(inp.m_throttle, 0.4)
                 inp.m_braking = 0.0
             else:
-                stop_gap = 5.0
-                slow_gap = max(9.0, 5.0 + 1.5 * spd)
+                stop_gap = 4.0
+                slow_gap = max(6.0, 3.0 + spd)
                 if lon < stop_gap:
                     inp.m_throttle = 0.0
                     inp.m_braking = 1.0

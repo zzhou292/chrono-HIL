@@ -285,7 +285,7 @@ class CBFSafetyFilter:
     def __init__(self,
                  vehicle_params: dict,
                  nn_casadi=None,
-                 max_steering_rate: float = 2.0,
+                 max_steering_rate: float = 8.0,
                  cbf_alpha: float = 1.0,
                  cbf_alpha2: float = 0.8,
                  obstacle_buffer: float = 0.25,
@@ -646,42 +646,40 @@ class CBFSafetyFilter:
         cos_psi = np.cos(psi)
         sin_psi = np.sin(psi)
 
-        steer_cmd = 0.0
-
+        # Act on only the SINGLE nearest obstacle that is actually on a collision
+        # course (near the path centreline) and close. In a dense field, summing
+        # an avoidance push for every nearby obstacle produces a large constant
+        # bias that fights the driver's own weaving; here we nudge only when the
+        # driver is genuinely about to hit something, and leave normal driving
+        # (steering around obstacles before they're on a collision course) alone.
+        nearest = None
         for (obs_x, obs_y, obs_r) in obstacles:
-            # Transform obstacle to body frame
             dx_world = obs_x - x
             dy_world = obs_y - y
             dx_body = dx_world * cos_psi + dy_world * sin_psi   # forward
             dy_body = -dx_world * sin_psi + dy_world * cos_psi  # left-positive
-
-            # Only care about obstacles ahead
             if dx_body < 1.0:
                 continue
-
             safe_r = obs_r + self.vehicle_radius + self.obstacle_buffer
+            # Only obstacles we'd actually hit on the current heading.
+            if abs(dy_body) > safe_r:
+                continue
             dist = np.sqrt(dx_body**2 + dy_body**2)
-
-            # Intervention range: from safe_r out to react_range
-            react_range = safe_r + 8.0 + v * 0.5  # scales slightly with speed
+            # Tight range: only when close (a couple of car lengths), not the
+            # old safe_r + 10 m that fired across half the field.
+            react_range = safe_r + 3.0 + v * 0.4
             if dist > react_range:
                 continue
+            if nearest is None or dist < nearest[0]:
+                nearest = (dist, dy_body, safe_r, react_range)
 
-            # Proximity: 0 at react_range, 1 at safe_r
-            proximity = np.clip(1.0 - (dist - safe_r) / max(react_range - safe_r, 0.1), 0.0, 1.0)
-
-            # Steer AWAY from obstacle
-            # dy_body > 0 → obstacle to the left → steer right (negative normalized steering)
-            # dy_body < 0 → obstacle to the right → steer left (positive normalized steering)
-            if abs(dy_body) > 0.3:
-                direction = -np.sign(dy_body)
-            else:
-                # Nearly head-on: pick the side with more clearance, default right
-                direction = -1.0
-
-            steer_cmd += direction * proximity * 0.5
-
-        return np.clip(steer_cmd, -1.0, 1.0)
+        if nearest is None:
+            return 0.0
+        dist, dy_body, safe_r, react_range = nearest
+        proximity = np.clip(1.0 - (dist - safe_r) / max(react_range - safe_r, 0.1), 0.0, 1.0)
+        # Steer AWAY (dy_body > 0 → obstacle left → steer right → negative).
+        direction = -np.sign(dy_body) if abs(dy_body) > 0.3 else -1.0
+        return float(np.clip(direction * proximity * 0.4, -1.0, 1.0))
 
     def filter(self,
                desired_steering: float,
@@ -1138,10 +1136,15 @@ class CBFSafetyFilter:
         if len(obstacles) > 0 and min_h < 2.0:
             reactive_steer = self._compute_reactive_steering(vehicle_state, obstacles)
             if abs(reactive_steer) > 0.01:
-                safe_steering = np.clip(safe_steering + reactive_steer, -1.0, 1.0)
-                if not was_modified:
-                    was_modified = True
-                    self._modify_count += 1
+                # Don't fight a driver who is already steering away from it --
+                # only override when they're passive or steering toward it.
+                driver_avoiding = (abs(desired_steering) > 0.2
+                                   and np.sign(desired_steering) == np.sign(reactive_steer))
+                if not driver_avoiding:
+                    safe_steering = np.clip(safe_steering + reactive_steer, -1.0, 1.0)
+                    if not was_modified:
+                        was_modified = True
+                        self._modify_count += 1
 
         # Teleop: forward-predict over delay horizon and emergency-brake
         # if the QP-safe output still leads to a collision within the RTT
@@ -1159,12 +1162,14 @@ class CBFSafetyFilter:
                 if not qp_success or active_constraints == 0:
                     active_constraints = 1
 
-        # Slew-rate limit the steering output. The QP/reactive/infeasible paths
-        # can jump between far-apart steering solutions on consecutive calls;
-        # that impulse is what whips the steering rack/front suspension hard
-        # enough to break it. Bound the change to the physical steering-rack rate
-        # (max_steer_rate, rad/s) using the actual wall-clock dt between calls so
-        # the limit is correct regardless of the control-loop cadence.
+        # Slew-rate limit the steering output ONLY to kill the pathological
+        # impulse: the QP/reactive/infeasible paths can flip between far-apart
+        # steering solutions on consecutive ~12 ms solves (effectively tens of
+        # rad/s), which whips the front steering rack/suspension hard enough to
+        # break it. The cap (max_steer_rate, default 8 rad/s) is well above any
+        # human or normal-avoidance steering rate, so it leaves ordinary driving
+        # untouched and trims only the violent flip. Uses the actual wall-clock
+        # dt between calls so the bound is correct regardless of control cadence.
         dt_call = (t_start - self._last_filter_wall) if self._last_filter_wall else self.control_dt
         self._last_filter_wall = t_start
         dt_call = float(np.clip(dt_call, 0.005, 0.1))
