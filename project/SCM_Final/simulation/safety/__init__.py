@@ -54,6 +54,7 @@ Usage:
     )
 """
 
+import os
 import numpy as np
 from scipy.optimize import minimize
 from typing import List, Tuple, Optional, Dict
@@ -365,6 +366,19 @@ class CBFSafetyFilter:
         # Current steering angle state (integrated from dbeta)
         self._beta = 0.0  # road wheel angle (rad)
         self._alpha = 0.0  # last throttle command
+
+        # Steering output slew-rate limiter + steering-break detector.
+        # Large call-to-call jumps in the commanded road-wheel angle (the QP
+        # flipping between far-apart steering solutions) whip the steering
+        # rack/front suspension hard enough to break it in-sim, after which the
+        # vehicle stops responding to steering. We (a) rate-limit the steering
+        # output to the physical steering-rack rate so the QP can't issue an
+        # impulse, and (b) watch for the measured road-wheel angle no longer
+        # tracking the command -- the signature of a broken rack -- and warn.
+        self._last_safe_steering = 0.0   # last (slewed) normalized steering out
+        self._last_filter_wall = None    # wall time of previous filter() call
+        self._steer_track_ema = 0.0      # EMA of |measured - commanded| road angle
+        self._steer_broken = False       # latched once a break is detected
 
         # Rear-approach avoidance: when a vehicle closes from behind, never let
         # the driver slow down (braking raises rear-end risk), and accelerate to
@@ -713,6 +727,33 @@ class CBFSafetyFilter:
 
         # Update internal beta from measured steering angle
         self._beta = delta
+
+        # Steering-break detection: compare the measured road-wheel angle to the
+        # angle we commanded last step. A sustained large divergence while we are
+        # actively steering means the front steering rack/suspension has broken
+        # in-sim and the vehicle has gone unresponsive to steering. Latch + warn
+        # (and drop a marker in the run dir) so the operator can discard the round.
+        cmd_prev = self._last_safe_steering * self.max_road_steer_angle
+        track_err = abs(delta - cmd_prev)
+        if abs(cmd_prev) > 0.15:
+            self._steer_track_ema = 0.9 * self._steer_track_ema + 0.1 * track_err
+        else:
+            self._steer_track_ema *= 0.9
+        if self._steer_track_ema > 0.20 and not self._steer_broken:
+            self._steer_broken = True
+            print(f"  [CBF #{self._filter_count}] ** STEERING RACK LIKELY BROKEN ** "
+                  f"commanded road-angle {cmd_prev:+.2f} rad, measured {delta:+.2f} rad "
+                  f"(tracking-error EMA {self._steer_track_ema:.2f} rad sustained) -- "
+                  f"vehicle may be unresponsive to steering; discard this round")
+            try:
+                log_dir = os.environ.get('HIL_RUN_LOG_DIR') or os.path.join(
+                    os.path.dirname(os.path.dirname(__file__)), 'logs')
+                os.makedirs(log_dir, exist_ok=True)
+                with open(os.path.join(log_dir, 'steering_break.txt'), 'w') as fh:
+                    fh.write(f"filter_call={self._filter_count} cmd_road_angle={cmd_prev:.3f} "
+                             f"measured={delta:.3f} track_err_ema={self._steer_track_ema:.3f}\n")
+            except Exception:
+                pass
 
         # Teleop: stale command detection — emergency brake if no recent cmds
         if self._is_command_stale():
@@ -1117,6 +1158,24 @@ class CBFSafetyFilter:
                 was_modified = True
                 if not qp_success or active_constraints == 0:
                     active_constraints = 1
+
+        # Slew-rate limit the steering output. The QP/reactive/infeasible paths
+        # can jump between far-apart steering solutions on consecutive calls;
+        # that impulse is what whips the steering rack/front suspension hard
+        # enough to break it. Bound the change to the physical steering-rack rate
+        # (max_steer_rate, rad/s) using the actual wall-clock dt between calls so
+        # the limit is correct regardless of the control-loop cadence.
+        dt_call = (t_start - self._last_filter_wall) if self._last_filter_wall else self.control_dt
+        self._last_filter_wall = t_start
+        dt_call = float(np.clip(dt_call, 0.005, 0.1))
+        max_dsteer = self.max_steer_rate * dt_call / self.max_road_steer_angle
+        slewed = float(np.clip(safe_steering,
+                               self._last_safe_steering - max_dsteer,
+                               self._last_safe_steering + max_dsteer))
+        if abs(slewed - safe_steering) > 1e-4:
+            was_modified = True
+        safe_steering = slewed
+        self._last_safe_steering = safe_steering
 
         # Track applied steering for next call's linearization point
         self._beta = safe_steering * self.max_road_steer_angle
