@@ -714,6 +714,18 @@ class CBFSafetyFilter:
         if obstacles is None:
             obstacles = []
 
+        # Normalize obstacles to (x, y, r) plus a parallel is-vehicle flag.
+        # Callers may pass a 4th element (True for a moving vehicle); if absent
+        # we infer it from the radius (rocks are small, ~<0.7 m; HMMWVs ~2.2 m).
+        # The flag lets the QP prefer STEERING around static rocks but weight
+        # braking equally for vehicles (where stopping is an equally valid move).
+        _obs_in = obstacles
+        obstacles = []
+        obs_is_vehicle = []
+        for _o in _obs_in:
+            obstacles.append((_o[0], _o[1], _o[2]))
+            obs_is_vehicle.append(bool(_o[3]) if len(_o) >= 4 else (_o[2] >= 1.5))
+
         # Extract vehicle state
         x = vehicle_state.get('x', 0.0)
         y = vehicle_state.get('y', 0.0)
@@ -865,13 +877,14 @@ class CBFSafetyFilter:
         A_ineq_list = []
         b_ineq_list = []
         min_h = float('inf')
+        threat_is_vehicle = False   # type of the most-threatening (min-h) obstacle
         self._pending_obs_logs = []
 
         # Expand obstacle filtering range to cover delay-inflated buffer
         delay_inflate = effective_buffer - self.obstacle_buffer
         r_precpt_eff = self.r_precpt + delay_inflate
 
-        for (obs_x, obs_y, obs_r) in obstacles:
+        for _oi, (obs_x, obs_y, obs_r) in enumerate(obstacles):
             # Distance check -- skip far obstacles
             dd = (x - obs_x)**2 + (y - obs_y)**2
             if dd > r_precpt_eff**2:
@@ -906,7 +919,9 @@ class CBFSafetyFilter:
 
             # Barrier value
             h = w1 * d_along**2 + w2 * d_cross**2 - safe_r**2
-            min_h = min(min_h, h)
+            if h < min_h:
+                min_h = h
+                threat_is_vehicle = obs_is_vehicle[_oi]
 
             # Euclidean distance from vehicle CG to obstacle center
             dist_eucl = np.sqrt(dd)
@@ -1073,9 +1088,16 @@ class CBFSafetyFilter:
             # QP cost: min ||u - u_desired||^2
             # u = [steer_out, alpha_out], u_desired = [desired_steering, alpha_cmd]
             if self.cbf_flavor == 'balance':
-                # Steering 10x cheaper than throttle: QP prefers to steer
-                # around obstacles rather than brake
-                W = np.diag([1.0, 10.0])
+                # Steering 10x cheaper than throttle: the QP prefers to steer
+                # around an obstacle rather than brake -- but ONLY for static
+                # rocks. When the controlling threat is a vehicle, braking is an
+                # equally valid response (and often the right one: you don't
+                # always want to swerve around a car), so weight steer/brake
+                # equally and let the QP pick whichever deviates least.
+                if threat_is_vehicle:
+                    W = np.diag([1.0, 1.0])
+                else:
+                    W = np.diag([1.0, 10.0])
                 H = 2.0 * W
                 f = -2.0 * W @ u_desired
             elif self.cbf_flavor == 'steer_priority':

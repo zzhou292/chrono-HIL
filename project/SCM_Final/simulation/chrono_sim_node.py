@@ -1206,11 +1206,13 @@ def run_sim_node(args):
                     dist = np.sqrt((rock_pos[i, 0] - veh_pos.x)**2 +
                                    (rock_pos[i, 1] - veh_pos.y)**2)
                     if dist < 30.0:
-                        all_obstacles.append((rock_pos[i, 0], rock_pos[i, 1], rock_rad[i]))
+                        # 4th element False => static rock (CBF prefers steering)
+                        all_obstacles.append((rock_pos[i, 0], rock_pos[i, 1], rock_rad[i], False))
             if traffic_mgr is not None:
                 for ox, oy, orad in traffic_mgr.obstacles():
                     if (ox - veh_pos.x) ** 2 + (oy - veh_pos.y) ** 2 < 30.0 ** 2:
-                        all_obstacles.append((ox, oy, orad))
+                        # 4th element True => vehicle (CBF weights braking equally)
+                        all_obstacles.append((ox, oy, orad, True))
 
             veh_state = {
                 'x': veh_pos.x, 'y': veh_pos.y, 'psi': veh_psi,
