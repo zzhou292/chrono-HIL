@@ -139,13 +139,16 @@ class TrafficVehicle:
                 bias = float(hz.params.get("gain", 0.6)) * (toward_y - y)
                 inp.m_steering = max(-1.0, min(1.0, inp.m_steering + bias))
 
-    def _avoid_obstacles(self, inp, obstacles) -> None:
+    def _avoid_obstacles(self, t, inp, obstacles) -> None:
         """Steer around AND brake for obstacles ahead (rocks + other vehicles).
 
         Steering turns away from the nearest obstacle in a lateral band so the
         vehicle goes around it; the longitudinal term keeps a speed-dependent
         following gap behind anything on a collision course (so platoon/convoy
         vehicles don't rear-end each other or a rock they can't steer past).
+        If a vehicle stays blocked-and-stopped for >3 s it is genuinely wedged
+        (e.g. nosed up against a rock), so it switches to a hard-steer crawl to
+        work around it rather than sitting there forever and blocking the goal.
         """
         v = self.vehicle.GetVehicle()
         p = v.GetPos()
@@ -170,24 +173,41 @@ class TrafficVehicle:
             if abs(lat) < orad + half_w:   # would actually hit it
                 if nearest_block is None or lon < nearest_block[0]:
                     nearest_block = (lon, lat, orad)
-        # Steer away from the nearest obstacle in the band (stronger when close).
+        # Stuck detection: accumulate time spent blocked-and-stopped; reset as
+        # soon as we get moving or the path clears.
+        prev_t = getattr(self, "_prev_t", t)
+        dt = min(max(t - prev_t, 0.0), 0.1)
+        self._prev_t = t
+        if nearest_block is not None and spd < 1.0:
+            self._stuck_t = getattr(self, "_stuck_t", 0.0) + dt
+        else:
+            self._stuck_t = 0.0
+        stuck = self._stuck_t > 3.0
+
+        # Steer away from the nearest obstacle in the band (stronger when close,
+        # and harder once we're wedged).
         if nearest_steer is not None:
             lon, lat, orad = nearest_steer
             away = -1.0 if lat >= 0 else 1.0
-            gain = 0.8 * (1.0 - lon / look)
+            gain = (1.0 if stuck else 0.8) * (1.0 - lon / look)
             inp.m_steering = max(-1.0, min(1.0, inp.m_steering + away * gain))
-        # Brake to hold a gap behind anything on a collision course.
+        # Longitudinal: hold a gap behind a collision-course obstacle, but crawl
+        # if we've been wedged too long (so the convoy never permanently stalls).
         if nearest_block is not None:
             lon = nearest_block[0]
-            stop_gap = 5.0
-            slow_gap = max(9.0, 5.0 + 1.5 * spd)
-            if lon < stop_gap:
-                inp.m_throttle = 0.0
-                inp.m_braking = 1.0
-            elif lon < slow_gap:
-                frac = (lon - stop_gap) / (slow_gap - stop_gap)
-                inp.m_throttle *= frac
-                inp.m_braking = max(inp.m_braking, 0.5 * (1.0 - frac))
+            if stuck:
+                inp.m_throttle = max(inp.m_throttle, 0.4)
+                inp.m_braking = 0.0
+            else:
+                stop_gap = 5.0
+                slow_gap = max(9.0, 5.0 + 1.5 * spd)
+                if lon < stop_gap:
+                    inp.m_throttle = 0.0
+                    inp.m_braking = 1.0
+                elif lon < slow_gap:
+                    frac = (lon - stop_gap) / (slow_gap - stop_gap)
+                    inp.m_throttle *= frac
+                    inp.m_braking = max(inp.m_braking, 0.5 * (1.0 - frac))
 
     def synchronize(self, t: float, terrain, hold: bool = False, avoid_obstacles=None) -> None:
         self.driver.Synchronize(t)
@@ -200,7 +220,7 @@ class TrafficVehicle:
         else:
             self._apply_hazards(t, inp)
             if avoid_obstacles:
-                self._avoid_obstacles(inp, avoid_obstacles)
+                self._avoid_obstacles(t, inp, avoid_obstacles)
         self._last_inputs = inp
         self.vehicle.Synchronize(t, inp, terrain)
 
