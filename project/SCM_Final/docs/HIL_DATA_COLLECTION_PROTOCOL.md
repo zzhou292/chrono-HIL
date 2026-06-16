@@ -41,10 +41,11 @@ Three rules turn the uncontrolled human into clean data:
    condition. Skill, style, and reaction time are then constant *within*
    each operator's comparison, so the filter effect is a within-operator
    paired contrast.
-2. **Fixed, repeated scenarios.** Hold the obstacle layout, path, terrain,
-   and rock seed **identical** across the filter conditions a given
+2. **Fixed, repeated scenarios.** Hold the convoy scenario, terrain, and
+   latency profile **identical** across the filter conditions a given
    operator drives, so the only thing that changes between `none` and
-   `DOB-CBF` is the filter. Repeat each condition several times (`--rounds`)
+   `DOB-CBF` is the filter. The convoy scenarios are deterministic, so the
+   matrix already pairs them across filters. Repeat each condition (`--rounds`)
    to average within-operator run-to-run noise.
 3. **Counterbalance order.** Randomise / Latin-square the order of
    conditions per operator so learning and fatigue don't alias onto a
@@ -62,18 +63,26 @@ it below the filter effect you are trying to show.
 | Axis | Levels | Role |
 | --- | --- | --- |
 | Filter | `none`, `DOB-CBF`, `MPPI` (optionally `NMPC`) | **treatment** |
-| Command/camera delay | 0.0, 0.15, 0.30 s (camera ×1.6 for the 5G-asymmetric link) | stress axis |
-| Terrain | clay, sand (soft + firm) | secondary; keep small |
-| Path / obstacle field | a small fixed set (e.g. sinusoidal + lane-change, `--rocks 5`) | **held fixed per operator** |
-| Speed cap, bumpiness | fixed (`--speeds 4`, `--bumpiness 0`) | held fixed |
+| Latency | the learned **5G profile** on both channels (command/uplink + camera/downlink, the latter ≈1.45× via the profile's `camera` channel). Constant `--delays {0,0.15,0.30}` is the simpler alternative. | stress axis |
+| Scenario (`--convoy`) | dynamic-traffic convoy scenarios on a **straight forward course**: `lead_brake`, `cut_in`, `stalled`, `swerver`, `rear_approach` (all single-vehicle → real-time with the sensor camera). | **held fixed per operator** |
+| Terrain | clay (optionally + sand) | secondary; keep small |
+| Speed (pace), bumpiness | fixed (`--speeds 4`, `--bumpiness 0`) | held fixed |
 
 Keep the matrix **small**: a human cannot drive 1000 runs. A defensible
-core is `{none, DOB-CBF, MPPI} × {0, 0.15, 0.30 s} × {1 path, 1–2 terrains}
-× rounds`. That is 9–18 conditions per operator; with 3 rounds, ~30–55
-manned runs per operator at ~30 s each ≈ 30–60 min of driving including
-resets. The obstacle-blind autonomous sweeps (Sec VII–VIII) already cover
-the large, reproducible matrix — HIL only has to add the *human-command*
-evidence the autonomous runs cannot.
+core is `{none, DOB-CBF, MPPI} × {5G profile} × {3–5 convoy scenarios} ×
+rounds` — the 5G profile collapses the latency axis to one realistic
+condition, freeing budget for more scenarios. That is ~9–15 conditions per
+operator; with a couple of rounds, ~30–45 manned runs at ~30 s of driving
+each (plus ~30–40 s of Chrono start-up per round). The autonomous sweeps
+(Sec VII–VIII) cover the large, reproducible matrix; HIL adds the
+*human-command* evidence the autonomous runs cannot.
+
+The note on latency: only the **Chrono-Sensor** camera (`--vis-mode sensor`)
+applies the 5G profile's per-frame *camera* latency; the faster Irrlicht view
+has no lag mechanism, so it models command latency only. Use `sensor` for the
+latency-realistic collection (the single-vehicle scenarios above stay
+real-time on it); Irrlicht is for high-vehicle-count scenes where camera
+latency is not the focus.
 
 ---
 
@@ -100,20 +109,32 @@ evidence the autonomous runs cannot.
 
 ## 5. Session protocol
 
-Driver tool: `benchmarking/human_delay_compensation_rounds.py` (G29 wheel),
-one round at a time, logging `sim_diag.csv` + shield/collision logs per run.
+One command starts a session (G29 + sensor camera + live HMI overlay + the 5G
+profile, sweeping the convoy scenarios), logging `sim_diag.csv` (with the
+operator's raw commands) + shield/collision logs per round:
 
 ```bash
-# Per operator, after warm-up. Order of filters/delays counterbalanced
-# across operators (run subsets and reorder, or shuffle the lists).
-python benchmarking/human_delay_compensation_rounds.py \
-    --filters none dob_cbf mppi \
-    --delays 0.0 0.15 0.30 \
-    --camera-delay-scale 1.6 \
-    --terrains clay sand --paths sinusoidal \
-    --speeds 4 --bumpiness 0 --rocks 5 \
-    --rounds 5 --manual-mode g29 --vis-mode sensor
+./collect_hil.sh                         # default session (15 rounds)
+./collect_hil.sh --rounds 3              # or override anything
+./collect_hil.sh --convoy lead_brake jam --terrains clay sand
 ```
+
+It expands to the driver tool `benchmarking/human_delay_compensation_rounds.py`:
+
+```bash
+python benchmarking/human_delay_compensation_rounds.py \
+    --manual-mode g29 --vis-mode sensor --live-hud \
+    --latency-profile-json config/latency_profiles/5g_nhits_youtube_ul_scm_youtube_ul_smoke.json \
+    --convoy lead_brake cut_in stalled swerver rear_approach \
+    --filters none dob_cbf mppi \
+    --terrains clay --paths straight --speeds 4 --bumpiness 0 --rounds 1
+```
+
+Each round prints an operator briefing first (scenario, goal, filter, and the
+exact latency) and waits for Enter so you can grab the wheel. The task is a
+**timed forward drive-and-avoid** on a straight course, scored on reaching the
+goal distance (`--goal-distance`, default 50 m) *and* staying collision-free —
+sitting still does not count (`reached_goal`/`clean_success` in the results).
 
 - `--vis-mode sensor` gives the operator the latency-affected camera POV
   (what they drive on). Use `--vis-mode both` only for the clips (Sec 7),
@@ -157,11 +178,12 @@ python benchmarking/human_delay_compensation_rounds.py \
   `--cam-width` before touching the mesh further.
 - Drop `--auto-start` so the script pauses between rounds; that gives the
   operator (and you) a reset/breath between runs and is where you read out
-  "round k, filter X, delay Y."
-- **Same rock seed across the filter conditions a given operator sees** —
-  `--base-seed` is fixed by the script per condition index; verify the
-  obstacle layout is identical for `none` vs `DOB-CBF` vs `MPPI` at a given
-  (terrain, path, delay) before trusting the paired comparison.
+  "round k, scenario X, filter Y."
+- **Same scenario across the filter conditions a given operator sees** — the
+  convoy presets are deterministic and the matrix holds (convoy, terrain,
+  latency) fixed across `none`/`DOB-CBF`/`MPPI`, so the comparison is paired by
+  construction. (The counterfactual replay, below, makes this exact: the same
+  recorded operator trace is re-run through each filter.)
 - Take breaks; **fatigue inflates collisions** and aliases onto whatever
   filter you ran last.
 
@@ -256,8 +278,9 @@ one concrete takeover → an annotated trajectory plot (+ a clip for the talk).
 
 - **Learning/fatigue** → counterbalance order, warm up to plateau, take
   breaks. The #1 way HIL results lie is order effects.
-- **Non-identical scenarios across filters** → verify the rock seed/layout
-  is the same for `none` vs filtered at each cell, or the pairing is void.
+- **Non-identical scenarios across filters** → the convoy presets are
+  deterministic so this is handled by construction; the counterfactual replay
+  removes any doubt by re-running the identical operator trace per filter.
 - **Over-collecting** → a human cannot generate the autonomous matrix's
   statistics. Keep the manned matrix small and let the autonomous sweeps
   (Sec VII–VIII) carry the large-N safety numbers; HIL adds the
@@ -271,9 +294,11 @@ one concrete takeover → an annotated trajectory plot (+ a clip for the talk).
 
 ## 11. Minimal viable dataset (if time is short)
 
-`{none, DOB-CBF, MPPI} × {0.15 s} × {1 path, clay} × 5 rounds`, one
-operator (you), plus the two video clips and one annotated takeover
-trajectory. That is ~15 manned runs, supports the trade-off figure at a
-single representative delay, and is honestly framed as a single-operator
-pilot. Add delay sweep and a second/third operator as bandwidth allows —
-each addition strengthens generality, none is required for the core claim.
+`./collect_hil.sh` as-is — `{none, DOB-CBF, MPPI} × {5G profile} × {5 convoy
+scenarios, clay} × 1 round` = 15 manned runs — plus the two video clips and one
+annotated takeover trajectory. One operator (you), ~15 min of driving, honestly
+framed as a single-operator pilot. Then `convoy_counterfactual_eval.py
+--trace-dir <session>` replays those rounds filter-off vs each filter for the
+causal harm-prevented result. Add `--rounds`, more `--convoy` scenarios, a
+second terrain, and a second/third operator as bandwidth allows — each
+strengthens generality, none is required for the core claim.
