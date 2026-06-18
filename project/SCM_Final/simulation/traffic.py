@@ -115,7 +115,7 @@ class TrafficVehicle:
         drv = veh.ChPathFollowerDriver(tv.GetVehicle(), path, "traffic", s.speed)
         drv.GetSteeringController().SetLookAheadDistance(5.0)
         drv.GetSteeringController().SetGains(0.8, 0, 0)
-        drv.GetSpeedController().SetGains(0.4, 0.0, 0.0)
+        drv.GetSpeedController().SetGains(0.6, 0.05, 0.0)
         drv.Initialize()
         self.driver = drv
 
@@ -140,15 +140,15 @@ class TrafficVehicle:
                 inp.m_steering = max(-1.0, min(1.0, inp.m_steering + bias))
 
     def _avoid_obstacles(self, t, inp, obstacles) -> None:
-        """Steer around AND brake for obstacles ahead (rocks + other vehicles).
+        """Steer around obstacles; brake only for vehicles (or an unavoidable rock).
 
-        Steering turns away from the nearest obstacle in a lateral band so the
-        vehicle goes around it; the longitudinal term keeps a speed-dependent
-        following gap behind anything on a collision course (so platoon/convoy
-        vehicles don't rear-end each other or a rock they can't steer past).
-        If a vehicle stays blocked-and-stopped for >3 s it is genuinely wedged
-        (e.g. nosed up against a rock), so it switches to a hard-steer crawl to
-        work around it rather than sitting there forever and blocking the goal.
+        Obstacles are tagged (x, y, r, is_vehicle). The vehicle STEERS around
+        anything in its path. It only BRAKES to keep a following gap behind
+        another vehicle -- it does NOT slow for rocks (it steers past them),
+        except as a last resort for a rock dead-ahead and about to be hit, which
+        otherwise feeds the >3 s wedged crawl. This stops the convoy from
+        stopping for every rock that drifts near its line. (Earlier it braked for
+        any obstacle in the corridor, so it crawled through the field.)
         """
         v = self.vehicle.GetVehicle()
         p = v.GetPos()
@@ -159,9 +159,12 @@ class TrafficVehicle:
         cps, sps = math.cos(psi), math.sin(psi)
         half_w = 0.8                 # narrow corridor: only brake for near-dead-ahead
         look = 18.0                  # forward look-ahead (m)
-        nearest_steer = None         # nearest obstacle to steer away from
-        nearest_block = None         # nearest obstacle on a collision course
-        for ox, oy, orad in obstacles:
+        nearest_steer = None         # nearest obstacle (any type) to steer around
+        veh_block = None             # nearest vehicle on a collision course
+        rock_block = None            # nearest rock on a collision course
+        for o in obstacles:
+            ox, oy, orad = o[0], o[1], o[2]
+            is_veh = bool(o[3]) if len(o) >= 4 else (orad >= 1.5)
             rx, ry = ox - p.x, oy - p.y
             lon = rx * cps + ry * sps
             lat = -rx * sps + ry * cps
@@ -171,47 +174,53 @@ class TrafficVehicle:
                 if nearest_steer is None or lon < nearest_steer[0]:
                     nearest_steer = (lon, lat, orad)
             if abs(lat) < orad + half_w:   # would actually hit it
-                if nearest_block is None or lon < nearest_block[0]:
-                    nearest_block = (lon, lat, orad)
-        # Stuck detection: accumulate time spent blocked-and-stopped; reset as
-        # soon as we get moving or the path clears.
+                if is_veh:
+                    if veh_block is None or lon < veh_block[0]:
+                        veh_block = (lon, lat, orad)
+                elif rock_block is None or lon < rock_block[0]:
+                    rock_block = (lon, lat, orad)
+
+        # Stuck detection: blocked-and-stopped (by anything) for >3 s -> wedged.
+        blocked = veh_block is not None or rock_block is not None
         prev_t = getattr(self, "_prev_t", t)
         dt = min(max(t - prev_t, 0.0), 0.1)
         self._prev_t = t
-        if nearest_block is not None and spd < 1.0:
-            self._stuck_t = getattr(self, "_stuck_t", 0.0) + dt
-        else:
-            self._stuck_t = 0.0
+        self._stuck_t = (getattr(self, "_stuck_t", 0.0) + dt) if (blocked and spd < 1.0) else 0.0
         stuck = self._stuck_t > 3.0
 
-        # Steer away from the nearest obstacle in the band (stronger when close,
-        # and harder once we're wedged).
+        # Steer around the nearest obstacle (rock or vehicle), harder when wedged.
         if nearest_steer is not None:
             lon, lat, orad = nearest_steer
             away = -1.0 if lat >= 0 else 1.0
-            # Strong, early steering so the vehicle flows around obstacles
-            # (overcoming the path-follower's pull back to the line) instead of
-            # braking to a stop in front of them.
             gain = (1.2 if stuck else 1.0) * (1.0 - lon / look)
             inp.m_steering = max(-1.0, min(1.0, inp.m_steering + away * gain))
-        # Longitudinal: only slow for something truly close and dead ahead, so
-        # the convoy keeps moving and relies on steering to get around the rest;
-        # crawl if we've been wedged too long (so it never permanently stalls).
-        if nearest_block is not None:
-            lon = nearest_block[0]
-            if stuck:
-                inp.m_throttle = max(inp.m_throttle, 0.4)
-                inp.m_braking = 0.0
-            else:
-                stop_gap = 4.0
-                slow_gap = max(6.0, 3.0 + spd)
-                if lon < stop_gap:
-                    inp.m_throttle = 0.0
-                    inp.m_braking = 1.0
-                elif lon < slow_gap:
-                    frac = (lon - stop_gap) / (slow_gap - stop_gap)
-                    inp.m_throttle *= frac
-                    inp.m_braking = max(inp.m_braking, 0.5 * (1.0 - frac))
+
+        if stuck:
+            # Wedged -> crawl forward and steer hard to work free.
+            inp.m_throttle = max(inp.m_throttle, 0.4)
+            inp.m_braking = 0.0
+            return
+
+        # Vehicles: keep a speed-dependent following gap (the convoy behaviour).
+        if veh_block is not None:
+            lon = veh_block[0]
+            stop_gap = 4.0
+            slow_gap = max(6.0, 3.0 + spd)
+            if lon < stop_gap:
+                inp.m_throttle = 0.0
+                inp.m_braking = 1.0
+            elif lon < slow_gap:
+                frac = (lon - stop_gap) / (slow_gap - stop_gap)
+                inp.m_throttle *= frac
+                inp.m_braking = max(inp.m_braking, 0.5 * (1.0 - frac))
+
+        # Rocks: do NOT slow -- steer around them. Brake only as a last resort for
+        # a rock essentially dead-ahead and very close (steering can't clear it).
+        if rock_block is not None:
+            lon, lat, orad = rock_block
+            if lon < 3.0 and abs(lat) < orad + 0.4:
+                inp.m_throttle = 0.0
+                inp.m_braking = 1.0
 
     def synchronize(self, t: float, terrain, hold: bool = False, avoid_obstacles=None) -> None:
         self.driver.Synchronize(t)
@@ -275,11 +284,14 @@ class TrafficManager:
         rear_only = all(s.heading_deg == 0.0 and s.init_x < 0.0 for s in self.specs)
         hold = (ego_speed is not None) and (not self._released) and not rear_only
         # Each vehicle avoids the rocks AND every other traffic vehicle, so the
-        # convoy/platoon keeps spacing instead of rear-ending itself.
-        rocks = list(avoid_obstacles) if avoid_obstacles else []
+        # convoy/platoon keeps spacing instead of rear-ending itself. Tag each
+        # obstacle's type (4th element): rocks (False) are steered around;
+        # vehicles (True) are gap-kept. This keeps the convoy flowing instead of
+        # stopping for every rock near its line.
+        rocks = [(o[0], o[1], o[2], False) for o in (avoid_obstacles or [])]
         states = [tv.state() for tv in self.vehicles]
         for i, tv in enumerate(self.vehicles):
-            others = [(states[j]["x"], states[j]["y"], states[j]["r"])
+            others = [(states[j]["x"], states[j]["y"], states[j]["r"], True)
                       for j in range(len(self.vehicles)) if j != i]
             tv.synchronize(t, terrain, hold=hold, avoid_obstacles=rocks + others)
 
