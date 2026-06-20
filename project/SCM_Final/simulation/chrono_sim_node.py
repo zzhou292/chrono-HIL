@@ -1282,6 +1282,10 @@ def run_sim_node(args):
                         pass
             except Exception:
                 pass
+        if steer_broken:
+            # No point continuing a round whose vehicle is mechanically broken.
+            print("  Ending round early (front end broken).", flush=True)
+            break
 
         _tw = wall_time.time()
         terrain.Synchronize(time_chrono)

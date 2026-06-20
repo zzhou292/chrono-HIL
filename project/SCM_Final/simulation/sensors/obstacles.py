@@ -86,14 +86,18 @@ def add_rock_obstacles(system: 'chrono.ChSystem',
     rng = np.random.RandomState(seed)
     rocks = []
     
-    # Contact material for rocks. Young's modulus 1e9 Pa is "soft rock"
-    # range and produces enough SMC penalty force to block a 2500 kg
-    # chassis at ~7 m/s without visible penetration; the prior 1e8 Pa
-    # let the chassis push through buried rocks.
+    # Contact material for rocks. Young's modulus is deliberately moderate
+    # (3e8 Pa, down from 1e9): a 1e9 rock is so stiff that a front wheel
+    # striking it spikes a huge SMC penalty force into the steering/suspension
+    # in a single step and blows the front end apart (unrecoverable "break").
+    # 3e8 cuts that impact force roughly in half (F ~ sqrt(E)) so a hit is a
+    # hard bump that slows/stops you rather than an explosion, while still being
+    # ~3x stiffer than the 1e8 that let the chassis push straight through.
+    # Restitution 0 removes bounce-back energy injection.
     rock_material = chrono.ChContactMaterialSMC()
     rock_material.SetFriction(0.9)
-    rock_material.SetYoungModulus(1e9)
-    rock_material.SetRestitution(0.1)
+    rock_material.SetYoungModulus(3e8)
+    rock_material.SetRestitution(0.0)
     
     attempts = 0
     # Blue-noise rejection (min_spacing) and centerline thinning reject many
