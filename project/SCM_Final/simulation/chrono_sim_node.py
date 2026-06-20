@@ -1009,6 +1009,8 @@ def run_sim_node(args):
     manual_cmd_buffer = []
     delayed_manual_inputs = [0.0, 0.0, 0.0]
     cam_lag_ema = None   # EMA-smoothed camera lag (anti-stutter, see SetLag below)
+    steer_diverge_t = 0.0   # accumulated time the actual steer angle defies the command
+    steer_broken = False    # latched once the front steering/suspension breaks
     step_count = 0
     sim_diag_file = None
     sim_diag_writer = None
@@ -1241,6 +1243,45 @@ def run_sim_node(args):
         app_io = (driver_inputs.m_steering, driver_inputs.m_throttle,
                   driver_inputs.m_braking)
         driver_io = op_io + app_io
+
+        # --- Front steering/suspension break detection ---
+        # Compare the ACTUAL front road-wheel angle (from the vehicle) to what we
+        # commanded. A real break makes the wheels stop responding, splay apart,
+        # or snap to an impossible angle. (The earlier in-filter check compared
+        # the command to itself -- it was fed the commanded steering as 'delta',
+        # not the measured angle -- so it could never fire. This runs every step,
+        # filter or not.) A sustained-divergence timer keeps normal steering lag
+        # from false-tripping; the insane-angle checks fire immediately.
+        if not steer_broken:
+            try:
+                _vo = vehicle.GetVehicle()
+                _sa_l = _vo.GetSteeringAngle(0, veh.LEFT)
+                _sa_r = _vo.GetSteeringAngle(0, veh.RIGHT)
+                _steer_act = 0.5 * (_sa_l + _sa_r)
+                _cmd_ang = driver_inputs.m_steering * 0.49
+                _insane = ((not math.isfinite(_steer_act)) or abs(_steer_act) > 0.9
+                           or abs(_sa_l - _sa_r) > 0.6)   # max physical ~0.49; Ackermann split is small
+                if abs(_cmd_ang) > 0.12 and abs(_steer_act - _cmd_ang) > 0.28:
+                    steer_diverge_t += step_size
+                else:
+                    steer_diverge_t = 0.0
+                if _insane or steer_diverge_t > 1.0:
+                    steer_broken = True
+                    _msg = (f"FRONT STEERING/SUSPENSION LIKELY BROKEN at t={time_chrono:.1f}s: "
+                            f"commanded {_cmd_ang:+.2f} rad, actual L/R "
+                            f"{_sa_l:+.2f}/{_sa_r:+.2f} rad -- vehicle is unresponsive to "
+                            f"steering. DISCARD THIS ROUND.")
+                    print(f"\n  ** {_msg} **\n", flush=True)
+                    try:
+                        _ld = os.environ.get('HIL_RUN_LOG_DIR') or os.path.join(
+                            os.path.dirname(__file__), 'logs')
+                        os.makedirs(_ld, exist_ok=True)
+                        with open(os.path.join(_ld, 'steering_break.txt'), 'w') as _fh:
+                            _fh.write(_msg + "\n")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
         _tw = wall_time.time()
         terrain.Synchronize(time_chrono)

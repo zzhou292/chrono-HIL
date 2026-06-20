@@ -749,32 +749,10 @@ class CBFSafetyFilter:
         # Update internal beta from measured steering angle
         self._beta = delta
 
-        # Steering-break detection: compare the measured road-wheel angle to the
-        # angle we commanded last step. A sustained large divergence while we are
-        # actively steering means the front steering rack/suspension has broken
-        # in-sim and the vehicle has gone unresponsive to steering. Latch + warn
-        # (and drop a marker in the run dir) so the operator can discard the round.
-        cmd_prev = self._last_safe_steering * self.max_road_steer_angle
-        track_err = abs(delta - cmd_prev)
-        if abs(cmd_prev) > 0.15:
-            self._steer_track_ema = 0.9 * self._steer_track_ema + 0.1 * track_err
-        else:
-            self._steer_track_ema *= 0.9
-        if self._steer_track_ema > 0.20 and not self._steer_broken:
-            self._steer_broken = True
-            print(f"  [CBF #{self._filter_count}] ** STEERING RACK LIKELY BROKEN ** "
-                  f"commanded road-angle {cmd_prev:+.2f} rad, measured {delta:+.2f} rad "
-                  f"(tracking-error EMA {self._steer_track_ema:.2f} rad sustained) -- "
-                  f"vehicle may be unresponsive to steering; discard this round")
-            try:
-                log_dir = os.environ.get('HIL_RUN_LOG_DIR') or os.path.join(
-                    os.path.dirname(os.path.dirname(__file__)), 'logs')
-                os.makedirs(log_dir, exist_ok=True)
-                with open(os.path.join(log_dir, 'steering_break.txt'), 'w') as fh:
-                    fh.write(f"filter_call={self._filter_count} cmd_road_angle={cmd_prev:.3f} "
-                             f"measured={delta:.3f} track_err_ema={self._steer_track_ema:.3f}\n")
-            except Exception:
-                pass
+        # NOTE: steering-break detection lives in chrono_sim_node now, where the
+        # ACTUAL front road-wheel angle is available. The old check here was fed
+        # the *commanded* steering as `delta`, so it compared the command to
+        # itself and never fired.
 
         # Teleop: stale command detection — emergency brake if no recent cmds
         if self._is_command_stale():
