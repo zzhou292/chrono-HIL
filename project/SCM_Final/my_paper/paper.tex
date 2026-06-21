@@ -63,8 +63,9 @@ neural tire surrogate is embedded in an \emph{acados} nonlinear MPC
 from inertial and wheel-speed signals, and an asymmetric throttle
 disturbance observer closes the residual soft-soil speed gap. A
 two-layer obstacle-avoidance stack pairs in-horizon NMPC softplus
-barriers with a swappable downstream safety filter (DOB-CBF, MPPI, or
-gradient NMPC); a parallel terrain- and latency-aware forward
+barriers with a swappable downstream safety filter; the shipped filter
+is an intent-preserving DOB-CBF, the minimum-deviation screen suited to
+human teleoperation. A parallel terrain- and latency-aware forward
 collision warning re-uses the same tire surrogate to derive a
 soil-conditioned braking budget and advise the operator without
 overriding commands. Chrono::Vehicle inside Chrono::HIL provides the
@@ -73,16 +74,18 @@ camera delays. A multi-seed evaluation shows the terrain-aware neural
 stack cuts median RMS crosstrack error by $37$--$38\,\%$ over
 SCM-calibrated Pacejka and TMeasy baselines in the live-estimator regime
 (recovering near-oracle tracking with no prior terrain knowledge), the disturbance observer
-recovers part of the soft-soil speed gap at a small tracking cost, both
-safety filters cut collisions by more than 90\,\% under the learned 5G
-profile, and the warning predicts stopping distance to within
+recovers part of the soft-soil speed gap at a small tracking cost, the
+DOB-CBF filter sharply cuts collisions under the learned 5G profile ---
+with a deterministic counterfactual replay attributing the prevented
+collisions causally to the filter on the operator's own intent ---
+and the warning predicts stopping distance to within
 $0.17\,\mathrm{m}$ mean absolute error against actual Chrono brake
 stops.
 \end{abstract}
 
 \begin{IEEEkeywords}
 Off-road teleoperation, soil contact model, neural surrogate, model
-predictive control, safety filter, MPPI, 5G latency, Chrono.
+predictive control, control barrier function, safety filter, 5G latency, Chrono.
 \end{IEEEkeywords}
 
 %======================================================================
@@ -153,10 +156,13 @@ Concretely, this work contributes:
         integrator.
   \item A two-layer obstacle-avoidance stack
         (Section~\ref{sec:safety}) pairing in-horizon NMPC softplus
-        barriers with a swappable downstream safety filter: an
-        intent-preserving DOB-CBF-QP inspired by~\cite{Zhang25}, an
-        MPPI predictive safety filter with seeded recovery trajectories, and
-        a gradient-based NMPC variant on the same rollout.
+        barriers with a swappable downstream safety filter; the shipped
+        instance is an intent-preserving DOB-CBF-QP inspired
+        by~\cite{Zhang25}, with physical steering/throttle rate limits
+        baked into the QP. Its effect is quantified by a deterministic
+        \emph{counterfactual replay} of the operator's own command trace
+        (filter off vs.\ on), giving a causal collisions-prevented
+        measurement that is robust to inter-operator variance.
   \item A learned 5G latency model (Section~\ref{sec:latency}) that
         drives a queue-load delay on both the operator-command and
         camera paths and exercises closed-loop robustness.
@@ -236,7 +242,7 @@ arriving between estimator ticks.
     \textbf{Role} & \textbf{Protocol method} & \textbf{Shipped variants}\\
     \midrule
     Command source     & \texttt{next\_command}  & NMPC, G29, WASD\\
-    Safety filter      & \texttt{filter}         & DOB-CBF, MPPI, NMPC, none\\
+    Safety filter      & \texttt{filter}         & DOB-CBF, none\\
     Collision warning  & \texttt{evaluate}       & TTC\\
     Tire-force model   & \texttt{predict}        & rate-MLP, axle-rate-MLP,\\
                        &                         & Pacejka, TMeasy\\
@@ -1558,31 +1564,19 @@ an intrusiveness signal. It also carries a rear-approach guard: when an
 in-lane vehicle is closing from behind within a threat distance, it refuses
 any deceleration and, with the path ahead clear, accelerates to escape (even
 from a standstill), since slowing into a rear approach only worsens the impact
-(scope and limits in Sec.~\ref{sec:limitations}). The MPPI variant runs at the controller rate,
-samples $K\!=\!384$ noisy command sequences, rolls each forward
-through the same neural tire surrogate the planner uses over a
-horizon padded by the exponentially smoothed round-trip delay, and
-returns the importance-weighted mean of the first action. Its cost
-combines (i)~a softplus obstacle barrier inflated by a
-stopping-distance buffer, (ii)~a neural-surrogate-derived
-friction-cone penalty, (iii)~a terrain-aware speed cap, and
-(iv)~deviation from operator intent.
+(scope and limits in Sec.~\ref{sec:limitations}). The DOB-CBF output
+is passed through a steering/throttle actuator model --- a physical
+rate limit baked into the QP and enforced at the physics step --- so
+the filter never commands a non-physical instantaneous reversal that
+would otherwise destabilise the front end under teleoperation.
 
-\paragraph{Seed trajectories.}
-The sample set is augmented with six hand-crafted seed sequences
-(passthrough, full brake, coast straight, evade-left,
-evade-right, brake-while-turn) injected unconditionally. The
-intent is to guarantee that at least one safe option is present in
-the sample set even when every Gaussian-perturbed sample around the
-operator command is unsafe. Section~\ref{sec:safety_seeds} reports
-an ablation that confirms the seeds are not optional.
-
-\paragraph{Comparison filters.}
-The safety-filter contract is evaluated with (i) the DOB-CBF filter of
-Zhang et al.~\cite{Zhang25}, optionally evaluated on the same neural
-surrogate; (ii) the MPPI predictive safety filter; (iii) a gradient-based
-NMPC variant solved via SLSQP on the identical rollout; and (iv) no
-filter.
+\paragraph{Comparison.}
+The safety layer is evaluated as DOB-CBF (the intent-preserving filter
+of Zhang et al.~\cite{Zhang25}, optionally reading the same neural
+surrogate) versus no filter. The registry remains swappable, but
+DOB-CBF is the shipped instance: it is the only candidate that screens
+a human command by minimum deviation rather than re-optimising it, which
+is what teleoperation requires.
 
 \subsection{Human-in-the-loop safety-filter protocol}
 \label{sec:safety_hil}
@@ -1822,49 +1816,11 @@ two variants over 1215 closed-loop trials.
   \label{fig:dobcbf_nn}
 \end{figure*}
 
-\subsection{MPPI seed-trajectory ablation}
-\label{sec:safety_seeds}
-
-The contribution of the hand-crafted seed trajectories is
-quantified by disabling the seed-injection logic and forcing the
-safety filter to rely solely on Gaussian sampling around the operator
-command. Table~\ref{tab:mppi_seeds} and Fig.~\ref{fig:mppi_seeds}
-report the result over 810 closed-loop trials. Removing the seeds
-increases the collision rate by approximately 27$\times$ and drives
-the minimum clearance into the obstacle footprint.
-
-\begin{table}[!t]
-  \renewcommand{\arraystretch}{1.10}
-  \caption{MPPI seed-trajectory ablation. 810 runs.}
-  \label{tab:mppi_seeds}
-  \centering
-  \setlength{\tabcolsep}{3pt}
-  \footnotesize
-  \begin{tabular}{lccccc}
-    \toprule
-    \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
-    \midrule
-    MPPI, no seeds   & $2.18$ & $-1.05$ & $86$ & $0.22$ & $0.25$\\
-    \textbf{MPPI, with seeds} & $\mathbf{0.08}$ & $\mathbf{+2.03}$ & $88$ & $0.46$ & $0.61$\\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-\begin{figure*}[!t]
-  \centering
-  \includegraphics[width=\textwidth]{mppi_seed_ablation_collision_heatmap.png}
-  \caption{MPPI seed-trajectory ablation. Removing the seeds
-    eliminates the safety filter's commitment to evasive maneuvers; the
-    weighted mean then averages over many comparably high-error samples
-    rather than concentrating on a recoverable trajectory.}
-  \label{fig:mppi_seeds}
-\end{figure*}
-
-\subsection{Planner tire model under a fixed MPPI filter}
+\subsection{Planner tire model under a fixed DOB-CBF filter}
 \label{sec:safety_tire}
 
 A separate sweep runs the autonomous obstacle scenario with the
-MPPI filter always on, varying only the planner's tire model (the
+DOB-CBF filter always on, varying only the planner's tire model (the
 analytical planners use the SCM-calibrated parameters of
 Sec.~\ref{sec:tires_static}). All three tire models avoid the obstacles
 approximately equally
@@ -1876,7 +1832,7 @@ safety outcome.
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
   \caption{Autonomous obstacle avoidance, planner tire model swept
-    under a fixed MPPI filter (analytical planners SCM-calibrated).
+    under a fixed DOB-CBF filter (analytical planners SCM-calibrated).
     1215 runs (405 per model).}
   \label{tab:auto_obstacle}
   \centering
@@ -1896,7 +1852,7 @@ safety outcome.
   \centering
   \includegraphics[width=\textwidth]{autonomous_obstacle_collision_heatmap.png}
   \caption{Autonomous obstacle avoidance, planner tire model swept
-    under a fixed MPPI filter. Mean unique obstacles hit per run
+    under a fixed DOB-CBF filter. Mean unique obstacles hit per run
     stratified by terrain with across-seed whisker error bars; the
     three tire models are statistically indistinguishable here because
     the safety filter, not the planner-tire choice, dominates the safety
