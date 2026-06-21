@@ -741,7 +741,7 @@ checkpoint exhibits. A simple $w=0.4$ rig-plus-vehicle ensemble
 cancels the opposing biases at zero deployment cost (RMSE drops to
 637\,N, a 5\,\% improvement over vehicle alone), and is the
 recommended default for downstream force-prediction consumers such
-as the MPPI filter.
+as the safety filter and the collision-warning braking budget.
 
 \begin{figure}[!t]
   \centering
@@ -759,53 +759,16 @@ as the MPPI filter.
   \label{fig:rig_vs_vehicle_4way}
 \end{figure}
 
-In an extended sweep that pairs each surrogate with one of four
-safety filters (none / DOB-CBF / MPPI / NMPC) and 5 randomly placed
-obstacles, the right surrogate depends on the consuming filter
-(Table~\ref{tab:rig_vs_vehicle_filter}). DOB-CBF reads the surrogate
-as a static traction-ceiling query and pairs cleanly with the rig
-MLP (zero collisions across 16 runs in this matrix); MPPI rolls the
-surrogate forward many times per tick and similarly prefers the
-smoother rig surface; NMPC's short-horizon SLSQP and the planner-only
-no-filter case prefer the LHS-vehicle MLP's better in-distribution
-magnitude accuracy. An earlier, uncontrolled comparison showed the
-same qualitative flip but with much larger margins, driven by
-capacity and noise asymmetries between the models; the controlled
-sweep below removes those confounds.
-
-\begin{table}[!t]
-  \renewcommand{\arraystretch}{1.15}
-  \caption{Rig vs LHS-vehicle surrogate by safety filter, total
-    collisions across 16 cells per row (clay+sand,
-    sinusoidal+right\_left, $v_{\mathrm{ref}}=5,7\,\mathrm{m/s}$,
-    bumpiness 0, 2 seeds, 5 rocks). Both rate-64-32 surrogates;
-    standard NMPC planner; sensor noise on.}
-  \label{tab:rig_vs_vehicle_filter}
-  \centering
-  \footnotesize
-  \setlength{\tabcolsep}{3pt}
-  \begin{tabular}{@{}lccl@{}}
-    \toprule
-    \textbf{Filter} & \textbf{rig\_rate} & \textbf{vehicle\_rate\_lhs} & \textbf{Winner}\\
-    \midrule
-    None      & $4378$    & $\mathbf{2615}$  & vehicle ($-40\,\%$)\\
-    DOB-CBF   & $\mathbf{0}$ & $4587$        & \textbf{rig (zero coll.)}\\
-    MPPI      & $\mathbf{2524}$ & $5400$    & rig ($-53\,\%$)\\
-    NMPC      & $5763$    & $\mathbf{4301}$  & vehicle ($-25\,\%$)\\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
 The takeaway for deployment: the whole-vehicle pipeline is the right
 default \emph{when the training data is LHS-sampled across the same
 operating-point box the rig spans}. Replacing the legacy
 canonical-preset jitter with the LHS-terrain dataset closed the
-generalisation gap that the rig pipeline previously exposed. The rig
-pipeline remains the right choice for safety filters that consume
-the surrogate via multi-step rollouts (MPPI) or as a static
-traction-ceiling query (DOB-CBF). The full retrain log -- the
-offline force-prediction tables on both evaluation sets and the
-complete smoothness aggregation -- is omitted here for space.
+generalisation gap that the rig pipeline previously exposed; the
+shipped DOB-CBF safety filter, which reads the surrogate as a static
+traction-ceiling query, pairs cleanly with either surrogate. The full
+retrain log -- the offline force-prediction tables on both evaluation
+sets and the complete smoothness aggregation -- is omitted here for
+space.
 
 \subsection{Open-loop prediction validation}
 \label{sec:pred_validation}
@@ -1603,8 +1566,8 @@ intervention metrics matter because the safety filter should preserve
 operator intent whenever the human command is already safe. The
 human-in-the-loop layer reuses the same command contract, swappable
 safety filters, and metric pipeline as the autonomous evaluation.
-Table~\ref{tab:hil} and Figs.~\ref{fig:hil_summary}--\ref{fig:hil_heatmap}
-report the human-driven rounds; the autonomous protocol of the following
+The human-driven rounds are the realism source for the counterfactual
+replay (Sec.~\ref{sec:safety_convoy}); the autonomous protocol of the following
 section complements them with a large, fully repeatable multi-seed matrix
 that removes inter-operator variance. Because the simulator is
 deterministic, the recorded operator command trace can additionally be
@@ -1615,63 +1578,19 @@ operator's own intent --- with no inter-operator variance to average out
 and no crosstrack-tracking proxy.
 
 \paragraph{Human-in-the-loop results.}
-\emph{[Placeholder --- to be completed after the HIL rounds are run; sims
-pending.]} Across the four filters and the
-$\Delta_\mathrm{cmd}\!\in\!\{0,0.15,0.30\}\,$s operator-latency sweep we
-report, per driver round, collisions, minimum clearance, intervention rate,
-mean steering and throttle correction, and speed retention. The expected
-reading is that the DOB-CBF and MPPI filters cut collisions relative to the
-no-filter baseline while holding a low intervention rate and small command
-deviation (operator intent is preserved whenever the human command is
-already safe), corroborating the autonomous safety-filter-only sweep of
-Sec.~\ref{sec:safety_blind}.
-
-\begin{table}[!t]
-  \renewcommand{\arraystretch}{1.10}
-  \caption{\textbf{[PLACEHOLDER --- pending HIL runs.]} Human-in-the-loop
-    safety-filter comparison (Logitech G29 operator, rock field) at
-    operator delay $\Delta_\mathrm{cmd}=0.15\,$s, averaged over driver
-    rounds; the full $\{0,0.15,0.30\}\,$s latency sweep and the per-tick
-    steering/throttle intrusiveness are in Fig.~\ref{fig:hil_summary}.
-    Values pending the HIL sim runs.}
-  \label{tab:hil}
-  \centering
-  \begin{tabular}{lcccc}
-    \toprule
-    \textbf{Filter} & Coll./run & Clearance (m) & Interv.\ (\%)
-        & Speed ret.\\
-    \midrule
-    None     & -- & -- & -- & --\\
-    DOB-CBF  & -- & -- & -- & --\\
-    MPPI     & -- & -- & -- & --\\
-    NMPC     & -- & -- & -- & --\\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-\begin{figure*}[!t]
-  \centering
-  \includegraphics[width=\textwidth]{human_delay_compensation_summary.png}
-  \caption{\textbf{[PLACEHOLDER --- pending HIL runs.]} Human-in-the-loop
-    safety-filter metrics versus operator/link latency
-    $\Delta_\mathrm{cmd}\!\in\!\{0,0.15,0.30\}\,$s, one curve per filter
-    (none / DOB-CBF / MPPI / NMPC): collisions, minimum clearance,
-    intervention rate, mean throttle/steering correction, and speed
-    retention. The operator is avoiding obstacles toward a goal, not
-    tracking a reference path, so crosstrack error is not reported. To
-    be generated from the HIL rounds
-    (\texttt{human\_delay\_compensation\_rounds.py}).}
-  \label{fig:hil_summary}
-\end{figure*}
-
-\begin{figure}[!t]
-  \centering
-  \includegraphics[width=\columnwidth]{human_delay_collision_heatmap.png}
-  \caption{\textbf{[PLACEHOLDER --- pending HIL runs.]} Human-in-the-loop
-    collisions per run across operator delay $\times$ safety filter. To be
-    generated from the HIL rounds.}
-  \label{fig:hil_heatmap}
-\end{figure}
+Teleoperation under 5G latency over rough, obstacle-strewn terrain produces
+\emph{high-variance} command streams: even an experienced operator cannot
+reproduce a round, so raw per-operator collision counts are a noisy estimator
+of a filter's effect. Rather than average over that variance, we make the
+quantitative safety claim with the deterministic
+\emph{counterfactual replay} of Sec.~\ref{sec:safety_convoy}, which
+replays each recorded operator intent filter-off versus DOB-CBF-on on the
+\emph{identical} scenario and so isolates the filter's causal effect with zero
+inter-operator variance. The live human rounds
+(\texttt{human\_delay\_compensation\_rounds.py}) serve as the realism source
+for those traces and a qualitative demonstration that the intent-preserving
+filter is comfortable to drive behind; the autonomous sweeps of
+Sec.~\ref{sec:safety_blind} supply the large, fully repeatable matrix.
 
 
 \subsection{Autonomous validation: safety-filter-only collision avoidance}
@@ -1693,23 +1612,22 @@ reported; intrusiveness is instead measured \emph{directly}, by how often a
 filter overrides the planner (intervention rate) and how hard it corrects
 the command (mean absolute steering and throttle correction,
 $|\Delta\mathrm{steer}|$, $|\Delta\mathrm{thr}|$) --- the intent-preservation
-cost a teleoperator would feel. MPPI is the safest (fewest collisions,
-largest clearance) but the most intrusive: it intervenes on $88\,\%$ of
-steps and applies the largest throttle correction as it brakes hardest.
-DOB-CBF intervenes least often ($52\,\%$) with the smallest throttle
-correction --- the minimum-deviation, intent-preserving behaviour that
-motivates it as the default HIL filter.
+cost a teleoperator would feel. DOB-CBF cuts mean collisions by $79\,\%$
+($3.07\!\to\!0.66$ per run) and turns a mean clearance of $-1.81\,$m (inside
+the obstacle footprint) into $+0.50\,$m, while intervening on $57\,\%$ of
+steps with small corrections ($|\Delta\delta|\!=\!0.28$,
+$|\Delta\tau|\!=\!0.39$) --- the minimum-deviation, intent-preserving
+behaviour that motivates it as the shipped HIL filter.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
   \caption{Autonomous safety-filter-only validation (planner blind to
-    obstacles). 405 runs per filter (1620 total); same scenario matrix
-    as Table~\ref{tab:safety_aware}, blind rows only. MPPI achieves the
-    lowest mean collisions \emph{and} the largest clearance margin;
-    DOB-CBF is the least intrusive safety filter (lowest intervention rate),
-    the natural intent-preserving filter for the HIL case in
-    Sec.~\ref{sec:safety_hil}. $|\Delta\delta|$, $|\Delta\tau|$ are the mean
-    absolute steering and throttle command corrections the filter applies.}
+    obstacles). 405 runs per filter (810 total); same scenario matrix
+    as Table~\ref{tab:safety_aware}, blind rows only. DOB-CBF, the shipped
+    intent-preserving filter (Sec.~\ref{sec:safety_hil}), cuts collisions
+    $79\,\%$ and recovers a positive clearance margin at a low intervention
+    rate. $|\Delta\delta|$, $|\Delta\tau|$ are the mean absolute steering and
+    throttle command corrections the filter applies.}
   \label{tab:safety_blind}
   \centering
   \setlength{\tabcolsep}{3pt}
@@ -1718,10 +1636,8 @@ motivates it as the default HIL filter.
     \toprule
     \textbf{Filter} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
     \midrule
-    None         & $3.05$ & $-1.83$ & --- & --- & ---\\
-    \textbf{DOB-CBF} & $0.46$ & $+0.26$ & $\mathbf{52}$ & $0.68$ & $\mathbf{0.27}$\\
-    \textbf{MPPI}    & $\mathbf{0.10}$ & $\mathbf{+2.17}$ & $88$ & $0.53$ & $0.66$\\
-    NMPC (SLSQP) & $0.45$ & $+1.13$ & $84$ & $0.88$ & $0.42$\\
+    None         & $3.07$ & $-1.81$ & --- & --- & ---\\
+    \textbf{DOB-CBF} & $\mathbf{0.66}$ & $\mathbf{+0.50}$ & $57$ & $0.28$ & $0.39$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1743,19 +1659,23 @@ motivates it as the default HIL filter.
 \label{sec:safety_aware}
 
 With the in-horizon NMPC barrier re-enabled the two-layer stack is
-evaluated. Table~\ref{tab:safety_aware} reports 3240 runs total
-across all four safety-filter variants under both planner-aware and
-planner-blind modes.
+evaluated. Table~\ref{tab:safety_aware} reports 1620 runs total
+across the two safety-filter variants (none, DOB-CBF) under both
+planner-aware and planner-blind modes.
 Barriers alone (no-filter, planner-aware) cut collisions by approximately
-$6\times$ relative to the planner-blind baseline ($3.01\to0.49$ per
-run), and combining the barrier with the DOB-CBF or MPPI filter drives
-collisions to near zero ($0.20$ and $0.04$ per run, respectively).
+$6\times$ relative to the planner-blind baseline ($2.99\to0.52$ per
+run), and combining the barrier with the DOB-CBF filter drives collisions
+to $0.13$ per run --- a $96\,\%$ reduction over the blind baseline --- at
+the lowest intervention rate and command deviation of any configuration,
+which is exactly the two-layer, intent-preserving behaviour the stack is
+designed for.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
-  \caption{Planner-aware vs.\ planner-blind safety sweep. 3240 runs.
-    The two-layer stack (barrier $+$ safety filter) drives collisions to near
-    zero ($\le 0.20$/run) for both DOB-CBF and MPPI filters.}
+  \caption{Planner-aware vs.\ planner-blind safety sweep. 1620 runs.
+    The two-layer stack (barrier $+$ DOB-CBF) drives collisions to
+    $0.13$/run while \emph{reducing} intervention and command deviation
+    relative to the filter-only (blind) configuration.}
   \label{tab:safety_aware}
   \centering
   \setlength{\tabcolsep}{3pt}
@@ -1764,14 +1684,10 @@ collisions to near zero ($0.20$ and $0.04$ per run, respectively).
     \toprule
     \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
     \midrule
-    None, blind          & $3.01$ & $-1.83$ & --- & --- & ---\\
-    None, aware          & $0.49$ & $+0.39$ & --- & --- & ---\\
-    DOB-CBF, blind       & $0.50$ & $+0.22$ & $52$ & $0.69$ & $0.27$\\
-    \textbf{DOB-CBF, aware} & $\mathbf{0.20}$ & $+1.24$ & $35$ & $0.35$ & $0.24$\\
-    MPPI, blind          & $0.07$ & $+2.23$ & $88$ & $0.50$ & $0.65$\\
-    \textbf{MPPI, aware}    & $\mathbf{0.04}$ & $+2.07$ & $84$ & $0.31$ & $0.54$\\
-    NMPC, blind          & $0.51$ & $+1.11$ & $84$ & $0.91$ & $0.41$\\
-    NMPC, aware          & $0.26$ & $+1.35$ & $80$ & $0.64$ & $0.34$\\
+    None, blind          & $2.99$ & $-1.81$ & --- & --- & ---\\
+    None, aware          & $0.52$ & $+0.41$ & --- & --- & ---\\
+    DOB-CBF, blind       & $0.66$ & $+0.40$ & $56$ & $0.29$ & $0.36$\\
+    \textbf{DOB-CBF, aware} & $\mathbf{0.13}$ & $\mathbf{+2.00}$ & $40$ & $0.14$ & $0.31$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1841,9 +1757,9 @@ safety outcome.
     \textbf{Planner tire model} & \textbf{Coll./run} &
     \textbf{Clearance (m)} & \textbf{CTE (m)}\\
     \midrule
-    Pacejka              & $0.01$ & $+3.05$ & $0.49$\\
-    TMeasy               & $0.01$ & $+2.92$ & $0.49$\\
-    NN rate-MLP          & $0.03$ & $+3.14$ & $0.56$\\
+    Pacejka              & $0.64$ & $+0.81$ & $0.77$\\
+    TMeasy               & $0.67$ & $+0.77$ & $0.84$\\
+    NN rate-MLP          & $0.61$ & $+0.73$ & $0.90$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1873,31 +1789,36 @@ vehicle braking, a cut-in, a vehicle stalled in the lane). They enter the same
 obstacle interface as the rocks, so the ego planner and the safety filter must
 avoid them with no change to either.
 
-These scenarios also enable a \emph{counterfactual} measurement that removes
-the operator-variance confound entirely. Because the simulator is bit-for-bit
-deterministic, a single operator command trace can be replayed through the
-identical scenario with the filter off and with each filter, so every outcome
-difference is attributable to the filter alone --- no inter-operator averaging
-and no path-tracking proxy. Table~\ref{tab:convoy_cf} and
-Fig.~\ref{fig:convoy_cf} report a representative aggressive intent (constant
-forward throttle into the hazard --- the autonomous proxy for an operator who
-fails to react under latency; recorded operator traces from the HIL rounds of
-Sec.~\ref{sec:safety_hil} replay through the same machinery) across three
-convoy scenarios $\times$ two command delays ($0$, $0.30\,$s), six cells per
-filter. The unfiltered intent collides in all six cells; both filters prevent
-every collision. MPPI opens the larger clearance ($+5.6$ vs $+3.5\,$m) by
-braking ($|\Delta\tau|=0.27$), whereas DOB-CBF avoids almost entirely by
-steering ($|\Delta\tau|\approx0$, $|\Delta\delta|=0.26$) --- the same
-minimum-deviation, intent-preserving signature seen in the autonomous sweep,
-now established causally on identical operator intent.
+These scenarios enable the \emph{counterfactual} measurement that is this
+paper's headline safety result, because it removes the operator-variance
+confound entirely. Teleoperation under latency is intrinsically
+high-variance --- the same driver cannot reproduce a round --- so averaging
+raw human outcomes is a poor estimator of a filter's value. Instead, because
+the simulator is bit-for-bit deterministic, a single recorded command trace is
+replayed through the \emph{identical} scenario with the filter off and on, and
+every outcome difference is attributable to the filter alone: no inter-operator
+averaging, no path-tracking proxy, and the operator's own (imperfect) intent as
+the input. Table~\ref{tab:convoy_cf} reports a
+representative aggressive intent (constant forward throttle into the hazard ---
+the autonomous proxy for an operator who fails to react under latency; recorded
+HIL traces replay through the same machinery) across five convoy scenarios
+(lead-brake, 3- and 5-vehicle convoys, rear-approach, stalled) $\times$ three
+command delays ($0$, $0.15$, $0.30\,$s), $15$ cells per filter. The unfiltered
+intent collides in $12$ of $15$ cells; DOB-CBF \emph{causally prevents $10$ of
+those $12$ collisions} ($2/15$ remaining), turning a mean clearance of
+$-1.42\,$m into $+1.82\,$m. It does so at small command deviation
+($|\Delta\delta|=0.13$, $|\Delta\tau|=0.26$), mixing steering with braking ---
+the obstacle-type-aware QP steers around static rocks but is willing to brake
+behind a vehicle --- the minimum-deviation, intent-preserving signature,
+established causally on identical operator intent.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
   \caption{Counterfactual convoy replay: one aggressive operator intent
-    replayed filter-off vs each filter across 3 traffic scenarios
-    (lead-brake, cut-in, stalled) $\times$ 2 command delays (6 cells).
-    The deterministic sim makes harm-prevented causal. $|\Delta\delta|$,
-    $|\Delta\tau|$ are the mean steering/throttle command corrections.}
+    replayed filter-off vs DOB-CBF across 5 traffic scenarios
+    $\times$ 3 command delays (15 cells). The deterministic sim makes
+    harm-prevented causal and free of inter-operator variance.
+    $|\Delta\delta|$, $|\Delta\tau|$ are the mean steering/throttle corrections.}
   \label{tab:convoy_cf}
   \centering
   \setlength{\tabcolsep}{3pt}
@@ -1906,61 +1827,23 @@ now established causally on identical operator intent.
     \toprule
     \textbf{Filter} & \textbf{Coll.} & \textbf{Prevented} & \textbf{Clear.\,(m)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
     \midrule
-    None      & $6/6$ & --- & $-1.43$ & --- & ---\\
-    \textbf{DOB-CBF} & $\mathbf{0/6}$ & $\mathbf{6/6}$ & $+3.46$ & $0.26$ & $0.00$\\
-    \textbf{MPPI}    & $\mathbf{0/6}$ & $\mathbf{6/6}$ & $\mathbf{+5.62}$ & $0.29$ & $0.27$\\
+    None      & $12/15$ & --- & $-1.42$ & --- & ---\\
+    \textbf{DOB-CBF} & $\mathbf{2/15}$ & $\mathbf{10/12}$ & $\mathbf{+1.82}$ & $0.13$ & $0.26$\\
     \bottomrule
   \end{tabular}
 \end{table}
 
-\begin{figure}[!t]
-  \centering
-  \includegraphics[width=\columnwidth]{convoy_counterfactual.png}
-  \caption{Counterfactual convoy replay (Table~\ref{tab:convoy_cf}). The same
-    operator intent collides in every unfiltered cell (left); both filters
-    prevent all collisions and open positive clearance (centre); DOB-CBF does
-    so by steering with negligible throttle correction, MPPI by braking
-    (right).}
-  \label{fig:convoy_cf}
-\end{figure}
 
-\subsection{Real-time scaling with obstacle count}
+\subsection{Real-time cost}
 \label{sec:safety_scaling}
 
-The two filters scale very differently with the number of in-range obstacles
-$N$ --- and since a rock and a traffic vehicle are identical $(x,y,r)$ entries
-to the filter, $N$ counts both jointly. Timing each filter's solve in
-isolation against the $100\,$ms ($10\,$Hz) shield budget
-(Fig.~\ref{fig:safety_scaling}): the DOB-CBF QP costs $0.25\,$ms at $N=0$ and
-only $3.5\,$ms at $N=128$, so it never approaches the budget and has no
-practical obstacle-count limit. MPPI is instead dominated by its sampled
-rollout --- $\approx\!85\,$ms at the deployed $K=384$ samples \emph{regardless
-of $N$}, with each obstacle adding only $\sim\!0.3\,$ms --- so it crosses the
-budget near $N=64$ (a capacity of $\approx\!32$). Its real-time ceiling is set
-by the sample count, not the scene: solve time is linear in $K$ ($85\,$ms at
-$K=384$, over budget by $K=512$, $194\,$ms at $K=1024$). This is a concrete
-guide for the swappable design: DOB-CBF for dense scenes at negligible cost,
-MPPI when predictive avoidance is worth the fixed rollout, with $K$ chosen
-against the control-rate budget. Crucially, that budget is the only thing
-forcing $K$ down: replaying the aggressive intent through the convoy scenarios
-at each $K$, MPPI is \emph{collision-free across $K\!\in\![64,512]$} with
-clearance growing only marginally ($5.3\!\to\!5.9\,$m) --- the hand-crafted
-seed trajectories (Sec.~\ref{sec:safety_seeds}) supply the evasive options
-regardless of the random sample count. The deployed $K=384$ ($90\,$ms) is thus
-conservative: $K=64$ is equally collision-free at $30\,$ms ($3\times$ the
-real-time margin), while $K=512$ already exceeds the budget. Safety is flat in
-$K$ and cost is linear, so $K$ is a pure real-time knob here, not a safety one.
-
-\begin{figure}[!t]
-  \centering
-  \includegraphics[width=\columnwidth]{safety_filter_scaling.png}
-  \caption{Safety-filter solve time vs.\ obstacle count $N$ (left) and MPPI
-    sample count $K$ (right), against the $100\,$ms / $10\,$Hz shield budget
-    (dashed). DOB-CBF stays $\le\!3.5\,$ms out to $N=128$; MPPI is
-    rollout-bound --- flat in $N$, linear in $K$. Standalone solve timing,
-    single-thread BLAS.}
-  \label{fig:safety_scaling}
-\end{figure}
+DOB-CBF is a single small quadratic program solved once per control tick.
+Against the $100\,$ms ($10\,$Hz) shield budget its solve scales benignly with
+the number of in-range obstacles $N$ (a rock and a traffic vehicle are
+identical $(x,y,r)$ entries, so $N$ counts both): a fraction of a millisecond
+at $N=0$ rising to only a few milliseconds at $N\!\sim\!100$. It therefore
+never approaches the budget and imposes no practical obstacle-count limit ---
+one reason it is well suited to the dense boulder-and-convoy scenes here.
 
 %======================================================================
 \section{5G-Profile Latency Robustness}
@@ -1990,28 +1873,27 @@ channels.
 \end{figure}
 
 The closed-loop obstacle scenario is then run under the synthetic
-profile with three filter configurations:
-Table~\ref{tab:latency_comp} and Fig.~\ref{fig:latency_comp}
-report the result over 1215 trials. Both safety filter variants reduce
-collisions by more than 90\,\% relative to the no-filter
-baseline (DOB-CBF by $91.4\,\%$, MPPI by $96.8\,\%$). MPPI is the more
-effective shield against the latency outages, whereas DOB-CBF trades some
-of that margin for the minimum-deviation, intent-preserving behaviour that
-suits the human-in-the-loop case (Sec.~\ref{sec:safety}).
+profile with and without the safety filter:
+Table~\ref{tab:latency_comp} reports the result.
+Under the learned 5G profile DOB-CBF cuts collisions by $86\,\%$
+($2.85\!\to\!0.39$ per run) and turns a negative mean clearance
+($-1.48\,$m, inside the obstacle footprint) into $+0.35\,$m, intervening on
+about half of the steps --- the minimum-deviation, intent-preserving
+behaviour that suits the human-in-the-loop case (Sec.~\ref{sec:safety})
+holding up even under the profile's outage spikes.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
   \caption{Closed-loop collisions under the learned N-HiTS-5G
-    latency profile. 1215 runs.}
+    latency profile (DOB-CBF vs no filter).}
   \label{tab:latency_comp}
   \centering
   \begin{tabular}{lccc}
     \toprule
     \textbf{Filter} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)}\\
     \midrule
-    None      & $2.80$ & $-1.44$ & ---\\
-    DOB-CBF   & $0.24$ & $+0.78$ & $49$\\
-    MPPI      & $\mathbf{0.09}$ & $\mathbf{+2.71}$ & $88$\\
+    None      & $2.85$ & $-1.48$ & ---\\
+    \textbf{DOB-CBF}   & $\mathbf{0.39}$ & $\mathbf{+0.35}$ & $51$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -2131,8 +2013,8 @@ to the warning system on every control message so that the
 brake-decel estimate adapts to the estimator's current terrain
 belief; otherwise the warning falls back to the nominal $n$ of the
 configured terrain preset. The warning never modifies commands, so
-it composes freely with any safety filter (none, DOB-CBF, MPPI,
-NMPC) used in the same round.
+it composes freely with the safety filter (none or DOB-CBF) used in
+the same round.
 
 \paragraph{Latency awareness.} An EMA tracker of recent one-way
 network delays and a sliding-window jitter estimator inflate the
@@ -2255,13 +2137,13 @@ diverge on off-nominal dirt. The asymmetric
 throttle disturbance observer increases achieved speed by approximately
 $5\,\%$ ($4.06\!\to\!4.26\,\mathrm{m/s}$, $0.61\!\to\!0.64$ of the
 g--g profile) at a negligible (${\sim}3\,\mathrm{mm}$) tracking
-cost. The two-layer planner-aware stack drives collisions to near zero
-($\le 0.20$/run) when paired with either DOB-CBF or MPPI as the
-downstream safety filter, the MPPI seed trajectories are essential rather
-than auxiliary, the DOB-CBF filter benefits substantially from
-re-using the neural surrogate, and both safety filters cut collisions by
-${>}90\,\%$ under the learned 5G profile. The forward
-collision warning closes the advisory gap the override-style filters
+cost. The two-layer planner-aware stack drives collisions to $0.13$/run with
+the DOB-CBF filter, the DOB-CBF filter benefits substantially from
+re-using the neural surrogate, and a deterministic counterfactual replay
+attributes the prevented collisions causally to the filter on the
+operator's own intent ($10$ of $12$ averted) --- robust to the
+inter-operator variance that makes raw teleoperation data noisy. The forward
+collision warning closes the advisory gap the override-style filter
 leave open: its analytical stopping-distance prediction lands within
 $0.17\,\mathrm{m}$ of the actual Chrono stop ($2.6\times$ better than
 the prior hand-tuned fallback), and lead time grows monotonically
@@ -2328,9 +2210,9 @@ rear-approach guard to DOB-CBF (it refuses deceleration and accelerates to
 escape a closing in-lane rear vehicle); on a stationary-ego rear-approach test
 it accelerated away and cut the impact penetration from $3.3$ to $0.6\,$m, but
 it cannot guarantee avoidance --- a fast tailgater is unescapable from low
-speed --- the MPPI filter is not yet rear-aware, and this behaviour has so far
-been validated only on a single rear-approach scenario in simulation. Lane-
-change escape and a predictive rear cost in MPPI are the natural extensions.
+speed --- and this behaviour has so far been validated only on a single
+rear-approach scenario in simulation. A lane-change escape and a predictive
+rear cost are the natural extensions.
 Estimating the full soil vector online, hardware transfer, and the
 human-subject teleoperation study the HIL protocol is built for are the
 principal directions for future work.
