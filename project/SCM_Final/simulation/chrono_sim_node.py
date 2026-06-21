@@ -1013,6 +1013,8 @@ def run_sim_node(args):
     steer_broken = False    # latched once the front steering/suspension breaks
     applied_steer = 0.0     # physics-rate steering-actuator state (rate-limited cmd)
     STEER_RATE_MAX = 16.0   # ~8 rad/s road wheel; matches the CBF QP's max_steer_rate
+    applied_alpha = 0.0     # physics-rate throttle/brake-actuator state (alpha in [-1,1])
+    ALPHA_RATE_MAX = 8.0    # throttle/brake rate (1/s); matches the CBF QP's max_alpha_rate
     step_count = 0
     sim_diag_file = None
     sim_diag_writer = None
@@ -1253,6 +1255,23 @@ def run_sim_node(args):
         _dmax = STEER_RATE_MAX * step_size
         applied_steer += max(-_dmax, min(_dmax, driver_inputs.m_steering - applied_steer))
         driver_inputs.m_steering = applied_steer
+
+        # --- Throttle/brake actuator (physics-rate) ---
+        # Same treatment for the longitudinal axis: collapse throttle/brake into
+        # one signed pedal (alpha = throttle - brake), rate-limit how fast it can
+        # change every physics step, then split back. This kills the throttle<->
+        # brake chatter (the QP/DOB or a jittery pedal flipping sign) the same way
+        # the steering actuator kills the steering flip-flop. High enough (~8/s)
+        # that a hard brake still applies in ~0.13 s.
+        _alpha_des = driver_inputs.m_throttle - driver_inputs.m_braking
+        _damax = ALPHA_RATE_MAX * step_size
+        applied_alpha += max(-_damax, min(_damax, _alpha_des - applied_alpha))
+        if applied_alpha >= 0.0:
+            driver_inputs.m_throttle = applied_alpha
+            driver_inputs.m_braking = 0.0
+        else:
+            driver_inputs.m_throttle = 0.0
+            driver_inputs.m_braking = -applied_alpha
 
         # Applied command (post delay + safety filter) for the HMI solid trace.
         app_io = (driver_inputs.m_steering, driver_inputs.m_throttle,

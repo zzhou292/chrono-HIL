@@ -287,6 +287,7 @@ class CBFSafetyFilter:
                  nn_casadi=None,
                  max_steering_rate: float = 8.0,
                  steer_tau: float = 0.12,
+                 max_alpha_rate: float = 8.0,
                  cbf_alpha: float = 1.0,
                  cbf_alpha2: float = 0.8,
                  obstacle_buffer: float = 0.25,
@@ -322,6 +323,7 @@ class CBFSafetyFilter:
         self.max_speed = max_speed
         self.max_steer_rate = max_steering_rate
         self.steer_tau = max(steer_tau, 1e-3)   # first-order steering-actuator lag (s)
+        self.max_alpha_rate = max_alpha_rate    # throttle/brake (alpha) rate limit (1/s)
         self.control_dt = control_dt
 
         # Ellipsoidal barrier weights (from reference: w1=1/100, w2=1/9)
@@ -1073,17 +1075,25 @@ class CBFSafetyFilter:
             # the human's command passes through only while the filter is active.)
             s_cur = float(np.clip(self._beta / self.max_road_steer_angle, -1.0, 1.0))
             dmax = self.max_steer_rate * self.control_dt / self.max_road_steer_angle
+            # ...and the same physical rate limit on throttle/brake (alpha) so the
+            # longitudinal command can't chatter between throttle and brake.
+            a_cur = float(np.clip(self._alpha, -1.0, 1.0))
+            da = self.max_alpha_rate * self.control_dt
             A_limits = np.array([
                 [1.0, 0.0],   # steer_out <= 1
                 [-1.0, 0.0],  # -steer_out <= 1
                 [0.0, 1.0],   # alpha_out <= 1
                 [0.0, -1.0],  # -alpha_out <= 1
-                [1.0, 0.0],   # steer_out <= s_cur + dmax  (rate up)
-                [-1.0, 0.0],  # -steer_out <= dmax - s_cur (rate down)
+                [1.0, 0.0],   # steer_out <= s_cur + dmax  (steer rate up)
+                [-1.0, 0.0],  # -steer_out <= dmax - s_cur (steer rate down)
+                [0.0, 1.0],   # alpha_out <= a_cur + da    (alpha rate up)
+                [0.0, -1.0],  # -alpha_out <= da - a_cur   (alpha rate down)
             ])
             b_limits = np.array([1.0, 1.0, 1.0, 1.0,
                                  min(1.0, s_cur + dmax),
-                                 min(1.0, dmax - s_cur)])
+                                 min(1.0, dmax - s_cur),
+                                 min(1.0, a_cur + da),
+                                 min(1.0, da - a_cur)])
 
             A_all = np.vstack([A_ineq, A_limits])
             b_all = np.hstack([b_ineq, b_limits])
