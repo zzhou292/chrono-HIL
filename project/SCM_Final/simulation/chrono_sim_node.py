@@ -1012,7 +1012,7 @@ def run_sim_node(args):
     steer_diverge_t = 0.0   # accumulated time the actual steer angle defies the command
     steer_broken = False    # latched once the front steering/suspension breaks
     applied_steer = 0.0     # physics-rate steering-actuator state (rate-limited cmd)
-    STEER_RATE_MAX = 3.0    # max steering command rate (normalized units / s) -> rad/s = *0.49
+    STEER_RATE_MAX = 16.0   # ~8 rad/s road wheel; matches the CBF QP's max_steer_rate
     step_count = 0
     sim_diag_file = None
     sim_diag_writer = None
@@ -1242,13 +1242,14 @@ def run_sim_node(args):
                 driver_inputs.m_braking = cached.braking
 
         # --- Steering actuator (physics-rate) ---
-        # Hard-limit how fast the steering command sent to the vehicle can change,
-        # EVERY physics step. This is the real fix for "front end breaks when the
-        # steering is changed too quickly": a fast G29 flick -- or the safety
-        # filter's 10 Hz output staircase (which could jump ~0.5 in a single
-        # step) -- otherwise slams the road wheels and impulses the steering
-        # rack/suspension apart. Bounding the rate at the step rate makes that
-        # impossible while staying drivable (full lock in ~0.3 s).
+        # The CBF QP bakes in the same physical steering-rate limit, but it only
+        # solves at ~10 Hz, so its output is a staircase that can still jump in a
+        # single physics step; and a manual G29 flick reaches here whether or not
+        # the filter is engaged. This is the steering actuator that physically
+        # realizes the rate limit EVERY step, so neither a staircase nor a fast
+        # flick can slam the road wheels and impulse the front end apart. The
+        # rate is high (~8 rad/s, same as the CBF) -- it forbids only the
+        # non-physical instantaneous reversal, never an aggressive maneuver.
         _dmax = STEER_RATE_MAX * step_size
         applied_steer += max(-_dmax, min(_dmax, driver_inputs.m_steering - applied_steer))
         driver_inputs.m_steering = applied_steer

@@ -1062,14 +1062,28 @@ class CBFSafetyFilter:
             A_ineq = np.array(A_ineq_list)
             b_ineq = np.array(b_ineq_list)
 
-            # Actuator limits: steer_out in [-1, 1], alpha_out in [-1, 1]
+            # Actuator limits: steer_out in [-1, 1], alpha_out in [-1, 1], PLUS a
+            # physical steering-rate limit baked straight into the QP so the CBF
+            # only ever plans steering it can actually execute (no slamming the
+            # rack). The bound is |steer_out - s_cur| <= max_steer_rate * dt; it
+            # is intentionally high (~max_steer_rate rad/s) so it never blocks an
+            # aggressive avoidance maneuver -- it just forbids the non-physical
+            # instantaneous reversal. (The same physical rate is enforced at the
+            # physics step in the sim node, since the QP only runs at ~10 Hz and
+            # the human's command passes through only while the filter is active.)
+            s_cur = float(np.clip(self._beta / self.max_road_steer_angle, -1.0, 1.0))
+            dmax = self.max_steer_rate * self.control_dt / self.max_road_steer_angle
             A_limits = np.array([
                 [1.0, 0.0],   # steer_out <= 1
                 [-1.0, 0.0],  # -steer_out <= 1
                 [0.0, 1.0],   # alpha_out <= 1
                 [0.0, -1.0],  # -alpha_out <= 1
+                [1.0, 0.0],   # steer_out <= s_cur + dmax  (rate up)
+                [-1.0, 0.0],  # -steer_out <= dmax - s_cur (rate down)
             ])
-            b_limits = np.array([1.0, 1.0, 1.0, 1.0])
+            b_limits = np.array([1.0, 1.0, 1.0, 1.0,
+                                 min(1.0, s_cur + dmax),
+                                 min(1.0, dmax - s_cur)])
 
             A_all = np.vstack([A_ineq, A_limits])
             b_all = np.hstack([b_ineq, b_limits])
