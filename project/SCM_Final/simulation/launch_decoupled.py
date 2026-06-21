@@ -227,9 +227,10 @@ Examples:
     # Safety filter
     p.add_argument("--safety-filter", action="store_true",
                    help="Enable safety filter (flavor selected via --safety-flavor)")
-    p.add_argument("--safety-flavor", type=str, default="mppi",
-                   choices=["mppi", "nmpc", "dob_cbf"],
-                   help="mppi (primary), nmpc (ablation), dob_cbf (legacy).")
+    p.add_argument("--safety-flavor", type=str, default="dob_cbf",
+                   choices=["dob_cbf"],
+                   help="dob_cbf -- the only shipped safety filter (MPPI/NMPC "
+                        "shields archived 2026-06-21).")
     p.add_argument("--no-safety-nn", action="store_true",
                    help="Disable NN tire model inside the sim-side safety filter. "
                         "Useful for DOB-CBF NN ablations.")
@@ -481,29 +482,14 @@ Examples:
         if args.no_safety_nn:
             sim_cmd.append("--no-safety-nn")
         sim_cmd.extend(["--safety-buffer", str(args.safety_buffer)])
-        sim_cmd.extend(["--shield-horizon", str(args.shield_horizon)])
-        if args.safety_flavor == "mppi":
-            sim_cmd.extend(["--mppi-samples", str(args.mppi_samples)])
-            sim_cmd.extend(["--mppi-sigma-steer", str(args.mppi_sigma_steer)])
-            sim_cmd.extend(["--mppi-sigma-alpha", str(args.mppi_sigma_alpha)])
-            sim_cmd.extend(["--mppi-temperature", str(args.mppi_temperature)])
-            if args.mppi_no_seeds:
-                sim_cmd.append("--mppi-no-seeds")
-            if args.shield_no_sigma_gate:
-                sim_cmd.append("--shield-no-sigma-gate")
-            sim_cmd.extend(["--shield-sigma-mode", args.shield_sigma_mode])
-            sim_cmd.extend(["--shield-sigma-buffer-gain",
-                            str(args.shield_sigma_buffer_gain)])
-        elif args.safety_flavor == "nmpc":
-            sim_cmd.extend(["--nmpc-iter", str(args.nmpc_iter)])
-        else:  # dob_cbf legacy
-            sim_cmd.extend(["--cbf-alpha", str(args.cbf_alpha)])
-            sim_cmd.extend(["--delay-steps", str(args.delay_steps)])
-            sim_cmd.extend(["--cbf-w-long", str(args.cbf_w_long)])
-            sim_cmd.extend(["--cbf-w-lat", str(args.cbf_w_lat)])
-            sim_cmd.extend(["--cbf-forward-bias", str(args.cbf_forward_bias)])
-            sim_cmd.extend(["--dob-bandwidth", str(args.dob_bandwidth)])
-            sim_cmd.extend(["--cbf-flavor", args.cbf_flavor])
+        # DOB-CBF is the only filter (MPPI/NMPC shields archived 2026-06-21).
+        sim_cmd.extend(["--cbf-alpha", str(args.cbf_alpha)])
+        sim_cmd.extend(["--delay-steps", str(args.delay_steps)])
+        sim_cmd.extend(["--cbf-w-long", str(args.cbf_w_long)])
+        sim_cmd.extend(["--cbf-w-lat", str(args.cbf_w_lat)])
+        sim_cmd.extend(["--cbf-forward-bias", str(args.cbf_forward_bias)])
+        sim_cmd.extend(["--dob-bandwidth", str(args.dob_bandwidth)])
+        sim_cmd.extend(["--cbf-flavor", args.cbf_flavor])
     # Collision warning passthrough (modular HMI signal)
     if args.collision_warning:
         sim_cmd.append("--collision-warning")

@@ -1,0 +1,15 @@
+[
+  {
+    "label": "terrain1",
+    "yaml": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/terrain_estimator_benchmark_20260513_005153/raw/ood_terrains/terrain1.yaml",
+    "true_n": 0.7283,
+    "coh_scale": 1.056,
+    "phi_delta_deg": 1.91,
+    "preset_proxy": "dirt",
+    "Kphi": 1515595.3,
+    "Kc": 4988.2,
+    "cohesion": 1742.9,
+    "friction_angle": 30.98,
+    "janosi_shear": 0.025
+  }
+]

@@ -52,7 +52,7 @@ SURROGATES = {
     "rig":             "rig_rate_64_32",
     "vehicle":         "vehicle_rate_64_32_lhs",
 }
-FLAVORS = ("none", "dob_cbf", "mppi", "nmpc")
+FLAVORS = ("none", "dob_cbf")
 GEN_COLOR = {"rig": "#d95f02", "vehicle": "#1f78b4"}
 
 
@@ -266,7 +266,7 @@ def main() -> None:
     out_dir = timestamped_result_dir("rig_vs_vehicle_filter_sweep")
     write_manifest(out_dir, args,
                    "Rig vs whole-vehicle tire NN paired with safety-filter "
-                   "flavors {none, dob_cbf, mppi, nmpc}. Sensor noise on. "
+                   "flavors {none, dob_cbf}. Sensor noise on. "
                    "Per-model acados codegen prewarm before parallel pool.")
     print(f"Output: {out_dir}")
 
@@ -374,7 +374,7 @@ def main() -> None:
         "Rig vs whole-vehicle tire NN x safety filter sweep",
         summary,
         ["surrogate axis: rig_rate_64_32 vs vehicle_rate_64_32_lhs",
-         "filter axis: none / dob_cbf / mppi / nmpc",
+         "filter axis: none / dob_cbf",
          "Standard NMPC planner; safety filter intervenes per its own logic",
          "Sensor noise on; rocks placed along the path"],
     )

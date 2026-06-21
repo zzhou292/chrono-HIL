@@ -1,0 +1,27 @@
+key,value
+created_at,2026-05-13T00:50:27
+project_root,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop
+description,Human-in-the-loop manual delay compensation rounds.
+command,paper_scripts/human_delay_compensation_rounds.py --dry-run --quick
+auto_start,False
+base_port,10400
+base_seed,910
+bumpiness,[0]
+delays,[0.0]
+dry_run,True
+filters,['none']
+lead_in,5.0
+manual_mode,'wasd'
+mppi_samples,384
+nmpc_iter,6
+paths,['sinusoidal']
+quick,True
+rocks,5
+rounds,1
+safety_buffer,0.25
+shield_horizon,12
+speeds,[4.0]
+terrains,['clay']
+time,8.0
+timeout,360.0
+vis_mode,'sensor'

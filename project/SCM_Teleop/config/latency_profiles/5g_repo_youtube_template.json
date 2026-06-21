@@ -1,0 +1,32 @@
+{
+  "description": "Template using the 5G-Traffic-Generator open YouTube bitrate trace",
+  "sample_period_s": 0.05,
+  "duration_s": 60.0,
+  "loop": true,
+  "seed": 31,
+  "channels": {
+    "control": {
+      "source": {
+        "kind": "5g_repo_csv",
+        "path": "/tmp/5G-Traffic-Generator/data/youtube_dataset.csv",
+        "direction": "UL_bitrate",
+        "start_index": 0
+      },
+      "base_delay_ms": 20.0,
+      "jitter_ms": 4.0,
+      "min_delay_ms": 4.0,
+      "max_delay_ms": 500.0,
+      "capacity_bps": 35000000.0,
+      "queue_gain_ms": 28.0,
+      "segments": [
+        {"start_s": 0.0, "end_s": 12.0, "regime": "good"},
+        {"start_s": 12.0, "end_s": 22.0, "regime": "poor", "extra_ms": 60.0},
+        {"start_s": 22.0, "end_s": 34.0, "regime": "nominal"},
+        {"start_s": 34.0, "end_s": 42.0, "regime": "outage", "extra_ms": 120.0},
+        {"start_s": 42.0, "end_s": 60.0, "regime": "good"}
+      ]
+    },
+    "manual": {"copy_from": "control"},
+    "camera": {"copy_from": "control", "scale": 1.5, "offset_ms": 10.0}
+  }
+}

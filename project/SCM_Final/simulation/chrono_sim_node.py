@@ -596,58 +596,10 @@ def run_sim_node(args):
 
         flavor = (args.safety_flavor or 'dob_cbf').lower()
         if flavor in ('mppi', 'nmpc'):
-            # Predictive shield needs the live terrain preset dict
-            _preset_internal = (terrain_preset_to_internal(terrain_config)
-                                if terrain_config is not None
-                                else terrain_preset_to_internal(get_terrain_preset(args.terrain)))
-            common_kwargs = dict(
-                max_speed=15.0,
-                # Keep the predictive shield's collision geometry aligned
-                # with CollisionLogger.  The previous 1.0 m radius
-                # under-estimated the HMMWV footprint by 0.5 m, so MPPI/NMPC
-                # selected rollouts that looked safe internally but still
-                # clipped rocks in the benchmark.
-                vehicle_radius=1.5,
-                obstacle_buffer=args.safety_buffer,
-                teleop_delay=initial_control_delay,
-                stale_cmd_timeout=args.stale_cmd_timeout,
-                control_dt=0.1,
-            )
-            if flavor == 'mppi':
-                # --shield-no-sigma-gate is a back-compat alias for
-                # --shield-sigma-mode off; if both are set, off wins.
-                sigma_mode = ("off" if getattr(args, "shield_no_sigma_gate", False)
-                              else getattr(args, "shield_sigma_mode", "inflate"))
-                safety_filter = make_safety_filter(
-                    'mppi', vehicle_params=vehicle_params,
-                    nn_model=_nn_cbf, terrain_params=_preset_internal,
-                    horizon=args.shield_horizon,
-                    n_samples=args.mppi_samples,
-                    sigma_steer=args.mppi_sigma_steer,
-                    sigma_alpha=args.mppi_sigma_alpha,
-                    temperature=args.mppi_temperature,
-                    disable_seeds=args.mppi_no_seeds,
-                    sigma_mode=sigma_mode,
-                    sigma_buffer_gain=args.shield_sigma_buffer_gain,
-                    **common_kwargs,
-                )
-                delay_msg = (f", teleop_delay={initial_control_delay*1000:.0f}ms"
-                             if initial_control_delay > 0 else "")
-                print(f"  [SAFETY] MPPI shield enabled: K={args.mppi_samples}, "
-                      f"H={args.shield_horizon}, sigma=({args.mppi_sigma_steer},"
-                      f"{args.mppi_sigma_alpha}){delay_msg}")
-            else:  # nmpc
-                safety_filter = make_safety_filter(
-                    'nmpc', vehicle_params=vehicle_params,
-                    nn_model=_nn_cbf, terrain_params=_preset_internal,
-                    horizon=args.shield_horizon,
-                    n_iter=args.nmpc_iter,
-                    **common_kwargs,
-                )
-                delay_msg = (f", teleop_delay={initial_control_delay*1000:.0f}ms"
-                             if initial_control_delay > 0 else "")
-                print(f"  [SAFETY] NMPC shield enabled: H={args.shield_horizon}, "
-                      f"maxiter={args.nmpc_iter}{delay_msg}")
+            raise SystemExit(
+                f"--safety-flavor {flavor} was removed on 2026-06-21 (MPPI/NMPC "
+                f"shields archived in archive/2026-06-21_mppi_nmpc_removal/). "
+                f"DOB-CBF is the only safety filter; use --safety-flavor dob_cbf.")
         else:
             safety_filter = make_safety_filter(
                 'dob_cbf', vehicle_params=vehicle_params,
@@ -1243,50 +1195,42 @@ def run_sim_node(args):
                 driver_inputs.m_throttle = cached.throttle
                 driver_inputs.m_braking = cached.braking
 
-        # --- Steering actuator (physics-rate) ---
-        # The CBF QP bakes in the same physical steering-rate limit, but it only
-        # solves at ~10 Hz, so its output is a staircase that can still jump in a
-        # single physics step; and a manual G29 flick reaches here whether or not
-        # the filter is engaged. This is the steering actuator that physically
-        # realizes the rate limit EVERY step, so neither a staircase nor a fast
-        # flick can slam the road wheels and impulse the front end apart. The
-        # rate is high (~8 rad/s, same as the CBF) -- it forbids only the
-        # non-physical instantaneous reversal, never an aggressive maneuver.
-        _dmax = STEER_RATE_MAX * step_size
-        applied_steer += max(-_dmax, min(_dmax, driver_inputs.m_steering - applied_steer))
-        driver_inputs.m_steering = applied_steer
+        # --- Steering + throttle/brake actuator (physics-rate, HIL/replay only) ---
+        # These physically realize the steering/throttle rate limits every step,
+        # so a fast G29 flick (or the safety filter's 10 Hz output staircase)
+        # can't slam the road wheels and impulse the front end apart, and the
+        # throttle/brake can't chatter. Gated to manual/replay because the
+        # autonomous NMPC already rate-limits its own commands (integrates dbeta,
+        # clips to delta +/- dbeta_max*dt); applying this in autonomous mode would
+        # change every cached benchmark. The rates are high (~8 rad/s steer, ~8/s
+        # pedal) so only the non-physical instantaneous slam is forbidden.
+        if _manual_mode:
+            _dmax = STEER_RATE_MAX * step_size
+            applied_steer += max(-_dmax, min(_dmax, driver_inputs.m_steering - applied_steer))
+            driver_inputs.m_steering = applied_steer
 
-        # --- Throttle/brake actuator (physics-rate) ---
-        # Same treatment for the longitudinal axis: collapse throttle/brake into
-        # one signed pedal (alpha = throttle - brake), rate-limit how fast it can
-        # change every physics step, then split back. This kills the throttle<->
-        # brake chatter (the QP/DOB or a jittery pedal flipping sign) the same way
-        # the steering actuator kills the steering flip-flop. High enough (~8/s)
-        # that a hard brake still applies in ~0.13 s.
-        _alpha_des = driver_inputs.m_throttle - driver_inputs.m_braking
-        _damax = ALPHA_RATE_MAX * step_size
-        applied_alpha += max(-_damax, min(_damax, _alpha_des - applied_alpha))
-        if applied_alpha >= 0.0:
-            driver_inputs.m_throttle = applied_alpha
-            driver_inputs.m_braking = 0.0
-        else:
-            driver_inputs.m_throttle = 0.0
-            driver_inputs.m_braking = -applied_alpha
+            _alpha_des = driver_inputs.m_throttle - driver_inputs.m_braking
+            _damax = ALPHA_RATE_MAX * step_size
+            applied_alpha += max(-_damax, min(_damax, _alpha_des - applied_alpha))
+            if applied_alpha >= 0.0:
+                driver_inputs.m_throttle = applied_alpha
+                driver_inputs.m_braking = 0.0
+            else:
+                driver_inputs.m_throttle = 0.0
+                driver_inputs.m_braking = -applied_alpha
 
         # Applied command (post delay + safety filter) for the HMI solid trace.
         app_io = (driver_inputs.m_steering, driver_inputs.m_throttle,
                   driver_inputs.m_braking)
         driver_io = op_io + app_io
 
-        # --- Front steering/suspension break detection ---
+        # --- Front steering/suspension break detection (HIL/replay only) ---
         # Compare the ACTUAL front road-wheel angle (from the vehicle) to what we
         # commanded. A real break makes the wheels stop responding, splay apart,
-        # or snap to an impossible angle. (The earlier in-filter check compared
-        # the command to itself -- it was fed the commanded steering as 'delta',
-        # not the measured angle -- so it could never fire. This runs every step,
-        # filter or not.) A sustained-divergence timer keeps normal steering lag
-        # from false-tripping; the insane-angle checks fire immediately.
-        if not steer_broken:
+        # or snap to an impossible angle. Gated to manual/replay (it is an
+        # operator-facing "discard this round" signal, and gating guarantees the
+        # autonomous benchmark sweeps can't be ended early by it).
+        if _manual_mode and not steer_broken:
             try:
                 _vo = vehicle.GetVehicle()
                 _sa_l = _vo.GetSteeringAngle(0, veh.LEFT)

@@ -1,0 +1,24 @@
+key,value
+created_at,2026-05-14T23:18:58
+project_root,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop
+description,Scripted command-latency compensation sweep with sensor noise enabled.
+command,project/SCM_Teleop/paper_scripts/latency_compensation_sweep.py --filters none dob_cbf mppi --terrains clay sand --paths sinusoidal lane_change --speeds 5 --bumpiness 0 --seeds 1 --time 12 --rocks 5 --base-port 57100 --timeout 260 --latency-profile-json project/SCM_Teleop/config/latency_profiles/5g_good_bad_control.json
+base_port,57100
+base_seed,910
+bumpiness,[0]
+delays,[0.0]
+filters,"['none', 'dob_cbf', 'mppi']"
+latency_profile_json,'/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/config/latency_profiles/5g_good_bad_control.json'
+lead_in,5.0
+mpc_delay_comp,'on'
+mppi_samples,384
+paths,"['sinusoidal', 'lane_change']"
+quick,False
+rocks,5
+safety_buffer,0.5
+seeds,1
+shield_horizon,18
+speeds,[5.0]
+terrains,"['clay', 'sand']"
+time,12.0
+timeout,260.0

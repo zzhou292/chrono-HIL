@@ -1,0 +1,3 @@
+filter,delay_s,mpc_delay_comp,n_runs,n_ok,collisions_mean,min_clearance_m_mean,rms_cte_m_mean,speed_ratio_mean,intervention_rate_pct_mean
+none,0.0,on,1,0,0.0,,,,
+mppi,0.0,on,1,0,0.0,,,,

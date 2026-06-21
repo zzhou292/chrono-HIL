@@ -1,0 +1,17 @@
+key,value
+created_at,2026-05-15T00:47:57
+project_root,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop
+description,MPCC vs standard MPC speed/tracking sweep with sensor noise enabled.
+command,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/mpcc_vs_mpc_speed_tracking.py --quick --base-port 25000
+base_port,25000
+base_seed,200
+bumpiness,[0]
+lead_in,5.0
+paths,['sinusoidal']
+quick,True
+seeds,1
+speeds,[5.0]
+terrains,['clay']
+time,8.0
+timeout,180.0
+variants,"['standard_mpc', 'standard_mpc_soft_speed', 'mpcc_default', 'mpcc_less_speed_cap']"

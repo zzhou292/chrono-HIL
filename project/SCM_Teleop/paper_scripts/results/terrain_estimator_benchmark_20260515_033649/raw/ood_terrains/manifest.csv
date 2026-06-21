@@ -1,0 +1,7 @@
+label,yaml,true_n,coh_scale,phi_delta_deg,preset_proxy,Kphi,Kc,cohesion,friction_angle,janosi_shear
+terrain1,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/terrain_estimator_benchmark_20260515_033649/raw/ood_terrains/terrain1.yaml,0.7283,1.056,1.91,dirt,1515595.3,4988.2,1742.9,30.98,0.025
+terrain2,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/terrain_estimator_benchmark_20260515_033649/raw/ood_terrains/terrain2.yaml,0.7638,1.031,-1.7,dirt,1516339.5,4598.3,1638.2,27.46,0.025
+terrain3,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/terrain_estimator_benchmark_20260515_033649/raw/ood_terrains/terrain3.yaml,0.8824,0.929,-4.88,dirt,1518829.6,3294.0,1283.0,24.58,0.025
+terrain4,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/terrain_estimator_benchmark_20260515_033649/raw/ood_terrains/terrain4.yaml,0.7894,1.036,3.42,dirt,1516877.2,4316.7,1598.4,32.64,0.025
+terrain5,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/terrain_estimator_benchmark_20260515_033649/raw/ood_terrains/terrain5.yaml,0.9641,1.221,1.02,sand,1520545.5,2395.2,1511.2,30.68,0.025
+terrain6,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/terrain_estimator_benchmark_20260515_033649/raw/ood_terrains/terrain6.yaml,0.9248,1.083,-0.88,sand,1519721.4,2826.9,1415.0,28.68,0.025

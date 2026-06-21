@@ -1,0 +1,21 @@
+key,value
+created_at,2026-05-16T02:16:38
+project_root,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop
+description,MPPI seed-trajectory ablation with sensor noise enabled.
+command,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/mppi_seed_ablation.py --quick --base-port 48000
+base_port,48000
+base_seed,850
+bumpiness,[0]
+lead_in,5.0
+mppi_samples,384
+paths,['sinusoidal']
+quick,True
+rocks,5
+safety_buffer,0.5
+seeds,1
+shield_horizon,18
+speeds,[5.0]
+terrains,['clay']
+time,8.0
+timeout,200.0
+variants,"['mppi_with_seeds', 'mppi_no_seeds']"

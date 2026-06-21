@@ -1,0 +1,2 @@
+variant,n_runs,n_ok,collisions_mean,collisions_std,near_misses_mean,near_misses_std,min_clearance_m_mean,min_clearance_m_std,rms_cte_m_mean,rms_cte_m_std,speed_ratio_mean,speed_ratio_std,mean_solve_ms_mean,mean_solve_ms_std,progress_m_mean,progress_m_std
+closed_loop_mlp,2,2,1.5,0.7071067811865476,1.5,0.7071067811865476,-0.6666000000000001,0.10479322497184643,1.4577920324154043,1.6943945728978274,0.8071375073943392,0.05029150668821931,4.419755926946028,2.39659272573314,34.89294056378424,1.610655974852637

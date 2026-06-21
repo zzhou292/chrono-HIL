@@ -1,0 +1,11 @@
+# Terrain Estimator Benchmark
+
+Noise policy: sensor noise enabled in every run.
+The estimator starts from neutral dirt/n=0.7 in every run; OOD terrains are generated into this result directory.
+Estimator tail metrics are averaged after t=4s, or over all finite estimates if a quick run is shorter.
+
+```csv
+distribution,n_runs,n_ok,n_abs_err_tail_mean,n_abs_err_tail_std,rms_cte_m_mean,first_update_time_s_mean
+id,6,6,0.12229628778778784,0.09528680201410246,0.0487489170948848,4.18
+ood,6,6,0.12191214689689688,0.09243957225744094,0.051494919916539074,4.164
+```

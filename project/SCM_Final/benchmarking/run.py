@@ -47,7 +47,7 @@ def parse_args() -> argparse.Namespace:
                         "paper: broad final matrix; stress: high-speed/bumpy safety stress tests.")
     p.add_argument("--only", nargs="+", default=[],
                    help="Subset names: tire_models, safety, safety_planner_aware, "
-                        "dob_cbf_ablation, mppi_seed_ablation, throttle_dob_ablation, "
+                        "dob_cbf_ablation, throttle_dob_ablation, "
                         "autonomous_obstacle_tire, terrain_estimator, terrain_transition, "
                         "latency_profile, latency_compensation, "
                         "tire_model_with_estimator_ablation.")
@@ -149,7 +149,7 @@ def build_commands(args: argparse.Namespace) -> list[SuiteCommand]:
     ports = {name: args.base_port + i * args.port_stride for i, name in enumerate([
         "tire_models", "safety", "dob_cbf_ablation",
         "autonomous_obstacle_tire", "terrain_estimator", "latency_compensation",
-        "throttle_dob_ablation", "mppi_seed_ablation", "safety_planner_aware",
+        "throttle_dob_ablation", "safety_planner_aware",
         "tire_model_with_estimator_ablation", "terrain_transition",
     ])}
     if max(ports.values()) + args.port_stride - 1 > 65535:
@@ -174,7 +174,6 @@ def build_commands(args: argparse.Namespace) -> list[SuiteCommand]:
             ("terrain_estimator", "terrain_estimator_benchmark.py"),
             ("terrain_transition", "terrain_transition_benchmark.py"),
             ("throttle_dob_ablation", "throttle_dob_ablation.py"),
-            ("mppi_seed_ablation", "mppi_seed_ablation.py"),
         ]
         for i, (name, script) in enumerate(smoke_scripts):
             commands.append(SuiteCommand(name, python_cmd(script, "--quick", "--base-port", str(ports.get(name, args.base_port + i * 1000))), 1, "Quick smoke run."))
@@ -202,13 +201,13 @@ def build_commands(args: argparse.Namespace) -> list[SuiteCommand]:
         "Tracking/speed/runtime by tire model.",
     ))
 
-    safety_flavors = ["none", "dob_cbf", "mppi", "nmpc"]
+    safety_flavors = ["none", "dob_cbf"]
     commands.append(SuiteCommand(
         "safety",
         python_cmd("safety_filter_sweep.py", "--flavors", *safety_flavors, *common,
                    "--base-port", str(ports["safety"])),
         count(safety_flavors, m["terrains"], m["paths"], m["speeds"], m["bumps"], seeds),
-        "Obstacle safety shield comparison (planner blind to obstacles).",
+        "Obstacle safety comparison: DOB-CBF vs no-filter (planner blind to obstacles).",
     ))
 
     # Planner-aware variant: lets the NMPC's in-horizon softplus barriers do
@@ -235,10 +234,10 @@ def build_commands(args: argparse.Namespace) -> list[SuiteCommand]:
     commands.append(SuiteCommand(
         "autonomous_obstacle_tire",
         python_cmd("autonomous_obstacle_tire_model_sweep.py", "--models", *tire_models,
-                   "--safety-flavor", "mppi", "--mpc-blind-obstacles", *common,
+                   "--safety-flavor", "dob_cbf", "--mpc-blind-obstacles", *common,
                    "--base-port", str(ports["autonomous_obstacle_tire"])),
         count(tire_models, m["terrains"], m["paths"], m["speeds"], m["bumps"], seeds),
-        "Autonomous obstacle avoidance by MPC tire model under fixed MPPI shield.",
+        "Autonomous obstacle avoidance by MPC tire model under fixed DOB-CBF shield.",
     ))
 
     terrain_speeds = ["5", "7"] if args.tier != "stress" else ["7", "9"]
@@ -286,7 +285,7 @@ def build_commands(args: argparse.Namespace) -> list[SuiteCommand]:
         "Latency profile raw samples and figures.",
     ))
 
-    latency_filters = ["none", "dob_cbf", "mppi"]
+    latency_filters = ["none", "dob_cbf"]
     commands.append(SuiteCommand(
         "latency_compensation",
         python_cmd("latency_compensation_sweep.py", "--filters", *latency_filters,
@@ -309,18 +308,6 @@ def build_commands(args: argparse.Namespace) -> list[SuiteCommand]:
         "Asymmetric throttle DOB on vs off.",
     ))
 
-    # MPPI seed-trajectory ablation: same shield, planner-blind MPC, rocks on;
-    # toggles --mppi-no-seeds so we can attribute collision-rate improvement to
-    # the seed trajectories vs pure Gaussian sampling.
-    mppi_seed_variants = ["mppi_with_seeds", "mppi_no_seeds"]
-    commands.append(SuiteCommand(
-        "mppi_seed_ablation",
-        python_cmd("mppi_seed_ablation.py", "--variants", *mppi_seed_variants,
-                   *common, "--base-port", str(ports["mppi_seed_ablation"])),
-        count(mppi_seed_variants, m["terrains"], m["paths"], m["speeds"],
-              m["bumps"], seeds),
-        "MPPI seed-trajectory ablation.",
-    ))
 
     # Tire model x live terrain estimator: tests the abstract's
     # "order-of-magnitude over Pacejka and TMeasy" claim, which the static

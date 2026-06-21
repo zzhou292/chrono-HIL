@@ -1,0 +1,2 @@
+name,estimated_runs,note,command
+tire_model_with_estimator_ablation,128,Tire model with live terrain estimator on vs static params.,/home/ksha/miniconda3/envs/sim/bin/python -u /home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/tire_model_with_estimator_ablation.py --variants pacejka_static tmeasy_static nn_v3_static nn_v3_estimator --terrains clay sand --paths sinusoidal lane_change --speeds 5 7 --bumpiness 0 4 --seeds 2 --time 12.0 --time 20.0 --metric-start 8.0 --base-port 60000

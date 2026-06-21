@@ -389,6 +389,7 @@ class CBFSafetyFilter:
         """Set estimated one-way teleop network delay (seconds)."""
         self._teleop_delay = max(delay_s, 0.0)
         self._delay_ema = max(delay_s, 0.0)
+        self._teleop_enabled = self._teleop_delay > 0.0
 
     def update_command_age(self, cmd_wall_time: float):
         """
@@ -1273,3 +1274,60 @@ class CBFSafetyFilter:
             'last_active_constraints': result.active_constraints if result else 0,
             'last_dob_norm': result.dob_norm if result else 0.0,
         }
+
+
+# ============================================================================
+# Predictive shield (MPPI primary, NMPC ablation) — see predictive_shield.py
+# ============================================================================
+
+from .predictive_shield import MPPIShield, NMPCShield  # noqa: E402
+
+SAFETY_FLAVORS = ('mppi', 'nmpc', 'dob_cbf')
+
+
+def make_safety_filter(flavor: str,
+                       vehicle_params: dict,
+                       nn_model=None,
+                       terrain_params: dict | None = None,
+                       **flavor_kwargs):
+    """Factory for the three safety-filter flavors.
+
+    Args:
+        flavor: one of ``SAFETY_FLAVORS``.  ``'mppi'`` is the primary
+            predictive shield; ``'nmpc'`` is the gradient-based ablation;
+            ``'dob_cbf'`` is the legacy single-step CBF filter.
+        vehicle_params: dict with ``M, Lf, Lr, Izz, ...``.
+        nn_model: a loaded ``NNTireModel`` (required for ``mppi`` and
+            ``nmpc``; optional for ``dob_cbf`` — falls back to kinematic).
+        terrain_params: terrain preset dict (``Kphi, Kc, n, c, phi`` in
+            **degrees**, ``k``).  Required for ``mppi`` and ``nmpc``.
+        **flavor_kwargs: forwarded verbatim to the chosen filter's
+            constructor.  The caller is responsible for using
+            flavor-appropriate keys (see each class docstring).
+
+    Returns:
+        A filter instance exposing ``.filter(...)``,
+        ``.update_command_age(...)``, ``.set_teleop_delay(...)``,
+        and ``.get_diagnostics()`` — interchangeable across flavors.
+    """
+    f = (flavor or '').lower()
+    if f in ('mppi', 'mppi_shield'):
+        if nn_model is None or terrain_params is None:
+            raise ValueError("flavor='mppi' requires nn_model and terrain_params")
+        return MPPIShield(vehicle_params=vehicle_params,
+                          nn_model=nn_model,
+                          terrain_params=terrain_params,
+                          **flavor_kwargs)
+    if f in ('nmpc', 'nmpc_shield'):
+        if nn_model is None or terrain_params is None:
+            raise ValueError("flavor='nmpc' requires nn_model and terrain_params")
+        return NMPCShield(vehicle_params=vehicle_params,
+                          nn_model=nn_model,
+                          terrain_params=terrain_params,
+                          **flavor_kwargs)
+    if f in ('dob_cbf', 'cbf', 'legacy', 'dob-cbf'):
+        return CBFSafetyFilter(vehicle_params=vehicle_params,
+                               nn_casadi=nn_model,
+                               **flavor_kwargs)
+    raise ValueError(f"Unknown safety flavor {flavor!r}; "
+                     f"expected one of {SAFETY_FLAVORS}")

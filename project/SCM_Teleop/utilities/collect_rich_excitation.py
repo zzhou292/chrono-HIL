@@ -121,10 +121,10 @@ def collect_one_rich(*, label: str, preset_proxy: str,
         "--no-wait-for-controller",
         "--terrain-config", str(yaml_path),
     ]
-    sim_cmd = [
-        "/home/kyle/miniconda3/bin/conda", "run", "--no-capture-output",
-        "-n", "sim", "python", *base_args,
-    ]
+    # Use the interpreter that is already running this collector (the `sim`
+    # conda env). The previous hard-coded conda path was machine-specific
+    # and broke on any host whose user is not `kyle`.
+    sim_cmd = [sys.executable, *base_args]
 
     print(f"  launching sim: {preset_proxy} n={n_true:.2f} "
           f"phi={phi_true:.1f} seed={seed}")

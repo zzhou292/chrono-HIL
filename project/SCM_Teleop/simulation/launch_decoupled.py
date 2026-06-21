@@ -78,6 +78,14 @@ Examples:
                    help="Disable real-time pacing (fast-forward; breaks MPC sync)")
     p.add_argument("--no-noise", action="store_true",
                    help="Disable sensor noise (noise ON by default)")
+    p.add_argument("--sim-diag-csv", default="",
+                   help="Write sim-side state/control diagnostics to this CSV. "
+                        "Useful for manual/HIL rounds where no controller diag exists.")
+    p.add_argument("--latency-profile-json", default="",
+                   help="JSON profile for time-varying 5G-like one-way latency. "
+                        "Forwarded to the sim for control/manual/camera channels.")
+    p.add_argument("--latency-profile-log", default="",
+                   help="Optional CSV path for logging active latency samples from the sim.")
 
     # IMU sensor (Chrono sensor module)
     p.add_argument("--no-imu", action="store_true",
@@ -92,12 +100,38 @@ Examples:
                    help="Gyroscope noise stdev in rad/s (default 0.001)")
 
     # Controller-specific
+    p.add_argument("--controller-mode", default="standard",
+                   choices=["standard", "mpcc"],
+                   help="standard: reference-tracking MPC with curvature-derived v_ref. "
+                        "mpcc: Model Predictive Contouring Control — drops the speed "
+                        "reference, optimizer picks its own path-progress velocity "
+                        "subject to a soft curvature speed cap.")
+    p.add_argument("--mpcc-N", type=int, default=20)
+    p.add_argument("--mpcc-dt", type=float, default=0.1)
+    p.add_argument("--mpcc-w-contour", type=float, default=3000.0)
+    p.add_argument("--mpcc-w-lag", type=float, default=2000.0)
+    p.add_argument("--mpcc-w-progress", type=float, default=0.5)
+    p.add_argument("--mpcc-w-delta-dot", type=float, default=80.0)
+    p.add_argument("--mpcc-w-speed-cap", type=float, default=300.0)
+    p.add_argument("--mpcc-friction-ellipse", action="store_true")
+    p.add_argument("--mpcc-vtheta-max", type=float, default=5.0)
+    p.add_argument("--mpcc-diag-csv", default="",
+                   help="(MPCC only) path to write per-step diagnostic CSV.")
     p.add_argument("--model", default="nn",
                    choices=["nn", "pacejka", "pacejka-oracle", "tmeasy"],
                    help="MPC tire model: nn, pacejka (rigid-terrain defaults), "
                         "pacejka-oracle (terrain-fitted params, oracle upper bound), "
                         "or tmeasy")
-    p.add_argument("--nn-model", default="paper_v2_mlp_16_4")
+    p.add_argument("--speed-weight", type=float, default=70.0,
+                   help="Standard-MPC speed tracking weight. Lower values reduce "
+                        "reference-speed chasing in turns.")
+    p.add_argument("--speed-cost-mode", choices=["symmetric", "overspeed"],
+                   default="symmetric",
+                   help="Standard-MPC speed cost: track v_ref symmetrically or "
+                        "treat v_ref as an overspeed cap.")
+    p.add_argument("--obstacle-weight", type=float, default=5e3,
+                   help="Standard-MPC soft obstacle-barrier weight.")
+    p.add_argument("--nn-model", default="closed_loop_v2_both_axles_rate_32_16")
     p.add_argument("--kappa", default="measured", choices=["zero", "approx", "measured"])
     p.add_argument("--no-lat-transfer", action="store_true")
     p.add_argument("--no-delay-comp", action="store_true")
@@ -134,6 +168,12 @@ Examples:
         help="Forward to controller: append MPC-aligned tire training rows (see tire_input_features.py)",
     )
     p.add_argument(
+        "--log-rich-tire-csv",
+        default=None,
+        metavar="PATH",
+        help="Forward to controller: append rich sensor-realistic tire training rows.",
+    )
+    p.add_argument(
         "--log-scenario-id",
         type=int,
         default=0,
@@ -156,7 +196,33 @@ Examples:
 
     # Safety filter
     p.add_argument("--safety-filter", action="store_true",
-                   help="Enable DOB-CBF safety filter")
+                   help="Enable safety filter (flavor selected via --safety-flavor)")
+    p.add_argument("--safety-flavor", type=str, default="mppi",
+                   choices=["mppi", "nmpc", "dob_cbf"],
+                   help="mppi (primary), nmpc (ablation), dob_cbf (legacy).")
+    p.add_argument("--no-safety-nn", action="store_true",
+                   help="Disable NN tire model inside the sim-side safety filter. "
+                        "Useful for DOB-CBF NN ablations.")
+    p.add_argument("--mppi-samples", type=int, default=384)
+    p.add_argument("--mppi-sigma-steer", type=float, default=0.35)
+    p.add_argument("--mppi-sigma-alpha", type=float, default=0.35)
+    p.add_argument("--mppi-temperature", type=float, default=1.0)
+    p.add_argument("--mppi-no-seeds", action="store_true",
+                   help="Ablation: disable hand-crafted MPPI seed trajectories.")
+    p.add_argument("--shield-no-sigma-gate", action="store_true",
+                   help="Ablation: zero out phi_sigma at the sim-node hop (equivalent to mode=off).")
+    p.add_argument("--shield-sigma-mode", type=str, default="off",
+                   choices=["tighten", "inflate", "both", "off"],
+                   help="How shield uses phi_sigma. Default off: shield runs on "
+                        "initial terrain (paper Sec. IX-B). tighten/inflate/both "
+                        "retained for the sigma_gate_ablation experiment only.")
+    p.add_argument("--shield-sigma-buffer-gain", type=float, default=0.05,
+                   help="Metres of extra obstacle buffer per degree of phi_sigma.")
+    p.add_argument("--nmpc-iter", type=int, default=6)
+    p.add_argument("--shield-horizon", type=int, default=12)
+    p.add_argument("--mpc-blind-obstacles", action="store_true",
+                   help="Make the MPC controller ignore obstacles — safety shield "
+                        "becomes the sole collision-avoider.")
     p.add_argument("--cbf-alpha", type=float, default=1.0)
     p.add_argument("--safety-buffer", type=float, default=0.25)
     p.add_argument("--delay-steps", type=int, default=5)
@@ -186,6 +252,14 @@ Examples:
                    help="Manual control with G29 steering wheel (no MPC controller)")
     p.add_argument("--wasd", action="store_true",
                    help="Manual control with WASD keyboard (no MPC controller)")
+    p.add_argument("--manual-honor-time", action="store_true",
+                   help="In manual mode, stop automatically at --time instead of "
+                        "requiring the driver to close the window.")
+    p.add_argument("--manual-input-delay", type=float, default=0.0,
+                   help="Apply a fixed actuation delay to manual steering/throttle/brake inputs.")
+    p.add_argument("--camera-input-delay", type=float, default=0.0,
+                   help="Apply a fixed lag to the driver POV camera feed (models "
+                        "downlink video latency to the operator).")
 
     # Terrain classifier
     p.add_argument("--terrain-classifier", action="store_true",
@@ -213,7 +287,7 @@ Examples:
     p.add_argument("--te-min-confidence", type=float, default=0.3)
     p.add_argument("--learned-terrain-model-dir", default=None,
                    help="Path to the retained sliding-window terrain-estimator checkpoint "
-                        "(defaults to nn_models/terrain_window_mlp_v3_cl)")
+                        "(defaults to nn_models/terrain_window_mlp)")
     p.add_argument("--te-verbose", action="store_true",
                    help="Print verbose terrain-estimator predictions in the "
                         "controller (useful for offline log parsing)")
@@ -261,6 +335,9 @@ Examples:
     args = p.parse_args()
     script_dir = Path(__file__).resolve().parent
     project_root = script_dir.parent
+    if args.latency_profile_json:
+        profile_path = Path(args.latency_profile_json).expanduser()
+        args.latency_profile_json = str(profile_path.resolve())
     if args.use_prediction:
         args.terrain_classifier = True
     # Default lead-in for sinusoidal path (cold-start infeasibility without it)
@@ -302,10 +379,25 @@ Examples:
         sim_cmd.append("--no-rt")
     if args.no_noise:
         sim_cmd.append("--no-noise")
+    if args.sim_diag_csv:
+        sim_cmd.extend(["--sim-diag-csv", args.sim_diag_csv])
+    if args.latency_profile_json:
+        sim_cmd.extend(["--latency-profile-json", args.latency_profile_json])
+    if args.latency_profile_log:
+        sim_cmd.extend(["--latency-profile-log", args.latency_profile_log])
     if args.manual:
         sim_cmd.append("--manual")
     if args.wasd:
         sim_cmd.append("--wasd")
+    if args.manual_honor_time:
+        sim_cmd.append("--manual-honor-time")
+    if args.manual_input_delay > 0:
+        sim_cmd.extend(["--manual-input-delay", str(args.manual_input_delay)])
+    if args.camera_input_delay > 0:
+        sim_cmd.extend(["--camera-input-delay", str(args.camera_input_delay)])
+    if args.teleop_delay > 0:
+        sim_cmd.extend(["--teleop-delay", str(args.teleop_delay)])
+        sim_cmd.extend(["--stale-cmd-timeout", str(args.stale_cmd_timeout)])
     if args.terrain_config:
         sim_cmd.extend(["--terrain-config", args.terrain_config])
     # Rock obstacles
@@ -318,17 +410,33 @@ Examples:
     # Safety filter
     if args.safety_filter:
         sim_cmd.append("--safety-filter")
-        sim_cmd.extend(["--cbf-alpha", str(args.cbf_alpha)])
+        sim_cmd.extend(["--safety-flavor", args.safety_flavor])
+        if args.no_safety_nn:
+            sim_cmd.append("--no-safety-nn")
         sim_cmd.extend(["--safety-buffer", str(args.safety_buffer)])
-        sim_cmd.extend(["--delay-steps", str(args.delay_steps)])
-        sim_cmd.extend(["--cbf-w-long", str(args.cbf_w_long)])
-        sim_cmd.extend(["--cbf-w-lat", str(args.cbf_w_lat)])
-        sim_cmd.extend(["--cbf-forward-bias", str(args.cbf_forward_bias)])
-        sim_cmd.extend(["--dob-bandwidth", str(args.dob_bandwidth)])
-        sim_cmd.extend(["--cbf-flavor", args.cbf_flavor])
-        if args.teleop_delay > 0:
-            sim_cmd.extend(["--teleop-delay", str(args.teleop_delay)])
-            sim_cmd.extend(["--stale-cmd-timeout", str(args.stale_cmd_timeout)])
+        sim_cmd.extend(["--shield-horizon", str(args.shield_horizon)])
+        if args.safety_flavor == "mppi":
+            sim_cmd.extend(["--mppi-samples", str(args.mppi_samples)])
+            sim_cmd.extend(["--mppi-sigma-steer", str(args.mppi_sigma_steer)])
+            sim_cmd.extend(["--mppi-sigma-alpha", str(args.mppi_sigma_alpha)])
+            sim_cmd.extend(["--mppi-temperature", str(args.mppi_temperature)])
+            if args.mppi_no_seeds:
+                sim_cmd.append("--mppi-no-seeds")
+            if args.shield_no_sigma_gate:
+                sim_cmd.append("--shield-no-sigma-gate")
+            sim_cmd.extend(["--shield-sigma-mode", args.shield_sigma_mode])
+            sim_cmd.extend(["--shield-sigma-buffer-gain",
+                            str(args.shield_sigma_buffer_gain)])
+        elif args.safety_flavor == "nmpc":
+            sim_cmd.extend(["--nmpc-iter", str(args.nmpc_iter)])
+        else:  # dob_cbf legacy
+            sim_cmd.extend(["--cbf-alpha", str(args.cbf_alpha)])
+            sim_cmd.extend(["--delay-steps", str(args.delay_steps)])
+            sim_cmd.extend(["--cbf-w-long", str(args.cbf_w_long)])
+            sim_cmd.extend(["--cbf-w-lat", str(args.cbf_w_lat)])
+            sim_cmd.extend(["--cbf-forward-bias", str(args.cbf_forward_bias)])
+            sim_cmd.extend(["--dob-bandwidth", str(args.dob_bandwidth)])
+            sim_cmd.extend(["--cbf-flavor", args.cbf_flavor])
     # IMU sensor args
     if args.no_imu:
         sim_cmd.append("--no-imu")
@@ -341,96 +449,150 @@ Examples:
     if args.imu_gyro_stdev != 0.001:
         sim_cmd.extend(["--imu-gyro-stdev", str(args.imu_gyro_stdev)])
 
-    ctrl_cmd = [
-        sys.executable, str(script_dir / "acados_mpc_controller_node.py"),
-        "--model", args.model,
-        "--nn-model", args.nn_model,
-        "--kappa", args.kappa,
-        "--path", args.path,
-        "--speed", str(args.speed),
-        "--terrain", args.terrain,
-        "--time", str(args.time),
-        "--sine-amplitude", str(args.sine_amplitude),
-        "--sine-wavelength", str(args.sine_wavelength),
-        "--lead-in", str(args.lead_in),
-        "--sim-host", "localhost",
-        "--sim-port", str(args.sim_port),
-        "--ctrl-port", str(args.ctrl_port),
-        "--rms-time-start", str(args.rms_time_start),
-        "--plot-dir", args.plot_dir,
-        "--dob-ki", str(args.dob_ki),
-        "--dob-max", str(args.dob_max),
-        "--dob-bleed", str(args.dob_bleed),
-    ]
-    if args.no_delay_comp:
-        ctrl_cmd.append("--no-delay-comp")
-    if args.no_lat_transfer:
-        ctrl_cmd.append("--no-lat-transfer")
-    if args.no_path_reindex:
-        ctrl_cmd.append("--no-path-reindex")
-    if args.no_temporal_staged:
-        ctrl_cmd.append("--no-temporal-staged")
-    if args.symbolic_rates:
-        ctrl_cmd.append("--symbolic-rates")
+    # Controller selection: standard reference-tracking MPC, or MPCC
+    # (Model Predictive Contouring Control) — the path-progress
+    # formulation that lets the optimizer pick its own speed.
+    use_mpcc = (args.controller_mode == 'mpcc')
+    if use_mpcc:
+        ctrl_cmd = [
+            sys.executable, str(script_dir / "acados_mpcc_controller_node.py"),
+            "--nn-model", args.nn_model,
+            "--path", args.path,
+            "--speed", str(args.speed),
+            "--terrain", args.terrain,
+            "--sine-amplitude", str(args.sine_amplitude),
+            "--sine-wavelength", str(args.sine_wavelength),
+            "--lead-in", str(args.lead_in),
+            "--sim-port", str(args.sim_port),
+            "--ctrl-port", str(args.ctrl_port),
+            "--N", str(args.mpcc_N),
+            "--dt", str(args.mpcc_dt),
+            "--w-contour", str(args.mpcc_w_contour),
+            "--w-lag", str(args.mpcc_w_lag),
+            "--w-progress", str(args.mpcc_w_progress),
+            "--w-delta-dot", str(args.mpcc_w_delta_dot),
+            "--w-speed-cap", str(args.mpcc_w_speed_cap),
+            "--vtheta-max", str(args.mpcc_vtheta_max),
+        ]
+        if args.mpcc_friction_ellipse:
+            ctrl_cmd.append("--friction-ellipse")
+        if args.mpcc_diag_csv:
+            ctrl_cmd.extend(["--diag-csv", args.mpcc_diag_csv])
+        if args.live_plot:
+            ctrl_cmd.append("--live-plot")
+            ctrl_cmd.extend(["--live-plot-every", str(args.live_plot_every)])
     else:
-        ctrl_cmd.append("--no-symbolic-rates")
-    if args.no_plot:
-        ctrl_cmd.append("--no-plot")
-    if args.live_plot:
-        ctrl_cmd.append("--live-plot")
-        ctrl_cmd.extend(["--live-plot-every", str(args.live_plot_every)])
-    if args.no_csv:
-        ctrl_cmd.append("--no-csv")
-    if args.log_tire_csv:
-        ctrl_cmd.extend(["--log-tire-csv", args.log_tire_csv])
-        ctrl_cmd.extend(["--log-scenario-id", str(args.log_scenario_id)])
-    if args.terrain_classifier:
-        ctrl_cmd.append("--terrain-classifier")
-        ctrl_cmd.extend(["--tc-port", str(args.tc_port)])
-    if args.use_prediction:
-        ctrl_cmd.append("--use-prediction")
-    if args.prediction_min_confidence > 0.0:
-        ctrl_cmd.extend(["--prediction-min-confidence", str(args.prediction_min_confidence)])
-    if args.terrain_estimator:
-        ctrl_cmd.append("--terrain-estimator")
-        ctrl_cmd.extend(["--te-window", str(args.te_window)])
-        ctrl_cmd.extend(["--te-update-interval", str(args.te_update_interval)])
-        ctrl_cmd.extend(["--te-lr", str(args.te_lr)])
-        ctrl_cmd.extend(["--te-steps", str(args.te_steps)])
-        ctrl_cmd.extend(["--te-min-excitation", str(args.te_min_excitation)])
-        ctrl_cmd.extend(["--te-min-confidence", str(args.te_min_confidence)])
-        if args.learned_terrain_model_dir:
-            ctrl_cmd.extend(["--learned-terrain-model-dir",
-                             str(args.learned_terrain_model_dir)])
-        if args.te_verbose:
-            ctrl_cmd.append("--te-verbose")
+        ctrl_cmd = [
+            sys.executable, str(script_dir / "acados_mpc_controller_node.py"),
+            "--model", args.model,
+            "--nn-model", args.nn_model,
+            "--kappa", args.kappa,
+            "--path", args.path,
+            "--speed", str(args.speed),
+            "--terrain", args.terrain,
+            "--time", str(args.time),
+            "--sine-amplitude", str(args.sine_amplitude),
+            "--sine-wavelength", str(args.sine_wavelength),
+            "--lead-in", str(args.lead_in),
+            "--sim-host", "localhost",
+            "--sim-port", str(args.sim_port),
+            "--ctrl-port", str(args.ctrl_port),
+            "--rms-time-start", str(args.rms_time_start),
+            "--plot-dir", args.plot_dir,
+            "--dob-ki", str(args.dob_ki),
+            "--dob-max", str(args.dob_max),
+            "--dob-bleed", str(args.dob_bleed),
+        ]
+    # The flag plumbing below is for the standard MPC node only.  When
+    # MPCC mode is selected we skip it entirely (the MPCC node has its
+    # own much shorter CLI and doesn't accept DOB / kappa / temporal /
+    # GP / terrain-estimator flags).
+    if not use_mpcc and args.no_delay_comp:
+        ctrl_cmd.append("--no-delay-comp")
+    if not use_mpcc and args.no_lat_transfer:
+        ctrl_cmd.append("--no-lat-transfer")
+    if not use_mpcc and args.no_path_reindex:
+        ctrl_cmd.append("--no-path-reindex")
+    if not use_mpcc:
+        ctrl_cmd.extend(["--speed-weight", str(args.speed_weight)])
+        ctrl_cmd.extend(["--speed-cost-mode", args.speed_cost_mode])
+        ctrl_cmd.extend(["--obstacle-weight", str(args.obstacle_weight)])
+        if args.no_temporal_staged:
+            ctrl_cmd.append("--no-temporal-staged")
+        if args.symbolic_rates:
+            ctrl_cmd.append("--symbolic-rates")
+        else:
+            ctrl_cmd.append("--no-symbolic-rates")
+        if args.no_plot:
+            ctrl_cmd.append("--no-plot")
+        if args.live_plot:
+            ctrl_cmd.append("--live-plot")
+            ctrl_cmd.extend(["--live-plot-every", str(args.live_plot_every)])
+        if args.no_csv:
+            ctrl_cmd.append("--no-csv")
+        if args.mpc_blind_obstacles:
+            ctrl_cmd.append("--mpc-blind-obstacles")
+        if args.log_tire_csv:
+            ctrl_cmd.extend(["--log-tire-csv", args.log_tire_csv])
+            ctrl_cmd.extend(["--log-scenario-id", str(args.log_scenario_id)])
+        if args.log_rich_tire_csv:
+            ctrl_cmd.extend(["--log-rich-tire-csv", args.log_rich_tire_csv])
+            ctrl_cmd.extend(["--log-scenario-id", str(args.log_scenario_id)])
+        if args.terrain_classifier:
+            ctrl_cmd.append("--terrain-classifier")
+            ctrl_cmd.extend(["--tc-port", str(args.tc_port)])
+        if args.use_prediction:
+            ctrl_cmd.append("--use-prediction")
+        if args.prediction_min_confidence > 0.0:
+            ctrl_cmd.extend(["--prediction-min-confidence", str(args.prediction_min_confidence)])
+        if args.terrain_estimator:
+            ctrl_cmd.append("--terrain-estimator")
+            ctrl_cmd.extend(["--te-window", str(args.te_window)])
+            ctrl_cmd.extend(["--te-update-interval", str(args.te_update_interval)])
+            ctrl_cmd.extend(["--te-lr", str(args.te_lr)])
+            ctrl_cmd.extend(["--te-steps", str(args.te_steps)])
+            ctrl_cmd.extend(["--te-min-excitation", str(args.te_min_excitation)])
+            ctrl_cmd.extend(["--te-min-confidence", str(args.te_min_confidence)])
+            if args.learned_terrain_model_dir:
+                ctrl_cmd.extend(["--learned-terrain-model-dir",
+                                 str(args.learned_terrain_model_dir)])
+            if args.te_verbose:
+                ctrl_cmd.append("--te-verbose")
 
-    if args.force_residual:
-        ctrl_cmd.append("--force-residual")
-        ctrl_cmd.extend(["--force-residual-checkpoint", str(args.force_residual_checkpoint)])
-        if args.force_residual_online:
-            ctrl_cmd.append("--force-residual-online")
-        ctrl_cmd.extend(["--force-residual-clip", str(args.force_residual_clip)])
-        ctrl_cmd.extend(["--force-residual-gain", str(args.force_residual_gain)])
-        ctrl_cmd.extend(["--force-residual-online-lr", str(args.force_residual_online_lr)])
+        if args.force_residual:
+            ctrl_cmd.append("--force-residual")
+            ctrl_cmd.extend(["--force-residual-checkpoint", str(args.force_residual_checkpoint)])
+            if args.force_residual_online:
+                ctrl_cmd.append("--force-residual-online")
+            ctrl_cmd.extend(["--force-residual-clip", str(args.force_residual_clip)])
+            ctrl_cmd.extend(["--force-residual-gain", str(args.force_residual_gain)])
+            ctrl_cmd.extend(["--force-residual-online-lr", str(args.force_residual_online_lr)])
 
-    if args.dynamics_gp:
-        ctrl_cmd.append("--dynamics-gp")
-        ctrl_cmd.extend(["--dynamics-gp-state", str(args.dynamics_gp_state)])
-        ctrl_cmd.extend(["--dynamics-gp-clip", str(args.dynamics_gp_clip)])
-        ctrl_cmd.extend(["--dynamics-gp-gain", str(args.dynamics_gp_gain)])
-        if args.gp_uncertainty_speed:
-            ctrl_cmd.append("--gp-uncertainty-speed")
-            ctrl_cmd.extend(["--gp-speed-scale-min", str(args.gp_speed_scale_min)])
-        if args.gp_terrain_gate:
-            ctrl_cmd.extend(["--gp-terrain-gate"] + args.gp_terrain_gate)
+        if args.dynamics_gp:
+            ctrl_cmd.append("--dynamics-gp")
+            ctrl_cmd.extend(["--dynamics-gp-state", str(args.dynamics_gp_state)])
+            ctrl_cmd.extend(["--dynamics-gp-clip", str(args.dynamics_gp_clip)])
+            ctrl_cmd.extend(["--dynamics-gp-gain", str(args.dynamics_gp_gain)])
+            if args.gp_uncertainty_speed:
+                ctrl_cmd.append("--gp-uncertainty-speed")
+                ctrl_cmd.extend(["--gp-speed-scale-min", str(args.gp_speed_scale_min)])
+            if args.gp_terrain_gate:
+                ctrl_cmd.extend(["--gp-terrain-gate"] + args.gp_terrain_gate)
 
-    if args.dynamics_gp:
-        ctrl_cmd.extend(["--gp-max-inducing", str(args.gp_max_inducing)])
-        ctrl_cmd.extend(["--gp-noise-var", str(args.gp_noise_var)])
+        if args.dynamics_gp:
+            ctrl_cmd.extend(["--gp-max-inducing", str(args.gp_max_inducing)])
+            ctrl_cmd.extend(["--gp-noise-var", str(args.gp_noise_var)])
 
-    ctrl_cmd.extend(["--ax-filter-tau", str(args.ax_filter_tau)])
-    ctrl_cmd.extend(["--vel-filter-tau", str(args.vel_filter_tau)])
+        ctrl_cmd.extend(["--ax-filter-tau", str(args.ax_filter_tau)])
+        ctrl_cmd.extend(["--vel-filter-tau", str(args.vel_filter_tau)])
+    else:
+        # MPCC mode: pass through CSV logs if requested.
+        if args.log_tire_csv:
+            ctrl_cmd.extend(["--log-tire-csv", args.log_tire_csv])
+            ctrl_cmd.extend(["--log-scenario-id", str(args.log_scenario_id)])
+        if args.log_rich_tire_csv:
+            ctrl_cmd.extend(["--log-rich-tire-csv", args.log_rich_tire_csv])
+            ctrl_cmd.extend(["--log-scenario-id", str(args.log_scenario_id)])
 
     # ---- Terrain classifier command ----
     tc_cmd = [

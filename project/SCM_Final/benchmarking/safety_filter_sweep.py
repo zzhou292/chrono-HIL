@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Paper experiment: safety-filter obstacle avoidance comparison.
 
-One thing tested: obstacle avoidance performance of no filter, DOB-CBF,
-MPPI, and gradient NMPC safety filters. The optional blind-MPC mode makes
-the shield the sole avoider. Sensor noise is enabled in every run.
+One thing tested: obstacle avoidance performance of no filter vs DOB-CBF.
+The optional blind-MPC mode makes the filter the sole avoider. Sensor noise
+is enabled in every run. (MPPI/NMPC shields archived 2026-06-21.)
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from common import (  # noqa: E402
 )
 
 
-FLAVORS = ("none", "dob_cbf", "mppi", "nmpc")
+FLAVORS = ("none", "dob_cbf")
 
 
 def parse_args() -> argparse.Namespace:

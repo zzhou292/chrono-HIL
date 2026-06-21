@@ -1,0 +1,14 @@
+# MPCC vs Standard MPC Speed/Tracking
+
+Noise policy: sensor noise enabled in every run.
+MPC speed-weight interpretation: if `standard_mpc_soft_speed` reduces CTE without a large speed-ratio loss, the paper baseline should use the softer speed cost rather than force the tracker to chase v_ref in turns.
+Troubleshooting interpretation: if relaxed MPCC variants do not improve speed ratio without CTE growth, the current MPCC is limited by missing baseline features/model mismatch rather than just conservative vtheta/cap settings.
+Variant notes: standard_mpc: Baseline reference-tracking MPC with the closed-loop NN surrogate.; mpcc_default: Current MPCC defaults.; mpcc_balanced_tracking: Middle-ground MPCC tuning between the fast default and the tight-tracking variant.; mpcc_tight_tracking: Conservative MPCC tuning that prioritizes path adherence; tests whether default contour/lag weights are too weak.
+
+```csv
+variant,n_runs,n_ok,rms_cte_m_mean,rms_cte_m_std,speed_ratio_mean,speed_ratio_std,mean_speed_mps_mean,mean_speed_mps_std,mean_solve_ms_mean,mean_solve_ms_std,progress_m_mean,progress_m_std
+standard_mpc,8,8,0.10301751329169308,0.031766953698680385,0.679167,0.16008872626376083,3.395835,0.8004436313188045,4.349762754369421,1.1931464467804156,22.140875744219606,5.178095967079273
+mpcc_default,8,8,0.23885221551984787,0.07594225181025113,0.845877365,0.010471769973757369,4.229386825,0.05235884986878657,0.7740713213213214,0.09974324809806673,27.2993625,0.3794648221508809
+mpcc_balanced_tracking,8,8,1.5468338167426927,3.776405391680406,0.8365159499999999,0.03002961558712902,4.1825797499999995,0.1501480779356449,0.8459024024024024,0.10914350758508919,23.77265,9.609331686290304
+mpcc_tight_tracking,8,8,0.235620094579651,0.06827819089390381,0.84684545,0.010272463742930815,4.23422725,0.05136231871465441,0.8071248123123123,0.1031920908235392,27.330312499999998,0.39234167484659144
+```

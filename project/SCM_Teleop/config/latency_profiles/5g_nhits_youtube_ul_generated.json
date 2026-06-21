@@ -1,0 +1,39 @@
+{
+  "description": "N-HiTS-5G generated YouTube UL traffic mapped to scheduled latency",
+  "sample_period_s": 0.05,
+  "duration_s": 60.0,
+  "loop": true,
+  "seed": 41,
+  "channels": {
+    "control": {
+      "source": {
+        "kind": "5g_repo_csv",
+        "path": "../../data/5g_generated/scm_youtube_ul_smoke/generated_traffic.csv",
+        "direction": "UL_bitrate",
+        "start_index": 0
+      },
+      "traffic_scale": 45.0,
+      "base_delay_ms": 18.0,
+      "jitter_ms": 3.0,
+      "min_delay_ms": 4.0,
+      "max_delay_ms": 450.0,
+      "capacity_bps": 9000000.0,
+      "queue_gain_ms": 20.0,
+      "segments": [
+        {"start_s": 0.0, "end_s": 8.0, "regime": "good"},
+        {"start_s": 8.0, "end_s": 16.0, "regime": "poor", "extra_ms": 60.0},
+        {"start_s": 16.0, "end_s": 24.0, "regime": "good"},
+        {"start_s": 24.0, "end_s": 30.0, "regime": "outage", "extra_ms": 120.0},
+        {"start_s": 30.0, "end_s": 60.0, "regime": "nominal"}
+      ]
+    },
+    "manual": {
+      "copy_from": "control"
+    },
+    "camera": {
+      "copy_from": "control",
+      "scale": 1.45,
+      "offset_ms": 8.0
+    }
+  }
+}

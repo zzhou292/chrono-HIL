@@ -1,0 +1,9 @@
+base_port: 20000
+continue_on_error: True
+dry_run: False
+latency_profile_json: '/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/config/latency_profiles/5g_nhits_youtube_ul_scm_youtube_ul_smoke.json'
+no_publish: False
+only: ['throttle_dob_ablation', 'mppi_seed_ablation', 'safety_planner_aware']
+port_stride: 4000
+tier: 'pilot'
+train_5g: False

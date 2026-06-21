@@ -1,0 +1,14 @@
+# MPCC vs Standard MPC Speed/Tracking
+
+Noise policy: sensor noise enabled in every run.
+MPC speed-weight interpretation: if `standard_mpc_soft_speed` reduces CTE without a large speed-ratio loss, the paper baseline should use the softer speed cost rather than force the tracker to chase v_ref in turns.
+Troubleshooting interpretation: if relaxed MPCC variants do not improve speed ratio without CTE growth, the current MPCC is limited by missing baseline features/model mismatch rather than just conservative vtheta/cap settings.
+Variant notes: standard_mpc_soft_speed: Same MPC with weaker speed tracking so turns prioritize path tracking over v_ref recovery.; standard_mpc_overspeed_cap: Treats v_ref as a speed cap instead of a command, avoiding acceleration just to erase underspeed.; mpcc_balanced_tracking: Middle-ground MPCC tuning between the fast default and the tight-tracking variant.; mpcc_less_speed_cap: Tests whether MPCC is being boxed in by vtheta_max and the soft curvature speed cap.
+
+```csv
+variant,n_runs,n_ok,rms_cte_m_mean,rms_cte_m_std,speed_ratio_mean,speed_ratio_std,mean_speed_mps_mean,mean_speed_mps_std,mean_solve_ms_mean,mean_solve_ms_std,progress_m_mean,progress_m_std
+standard_mpc_soft_speed,32,32,0.06299938084619387,0.010369841798343694,0.5146650813539702,0.08441912646846172,3.0260961922268907,0.38854126032525377,5.704245678562598,0.5649617651593998,32.02089793418217,4.177866656287868
+standard_mpc_overspeed_cap,32,32,0.06385937473404846,0.01514833979156799,0.3623067864645858,0.06834811229527067,2.1160893269807923,0.20309781422508566,5.881510994704625,0.6892211391456081,22.84444692629077,2.263299226833335
+mpcc_balanced_tracking,32,32,0.3397605521632017,0.2711855169387309,0.7173510286614646,0.1844834900012698,4.162444916716686,0.8001363339650532,0.975382225975976,0.10942030806584663,43.316184375,8.355881734678965
+mpcc_less_speed_cap,32,32,0.5747654827672674,0.38891734885767026,0.8848517118633168,0.2943537662757756,5.183055008253302,1.4379173867670345,1.0513760322822823,0.12010160084420445,54.231928125,14.547297740734212
+```

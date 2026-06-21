@@ -1,0 +1,35 @@
+{
+  "description": "5G-like control profile with scheduled good, poor, and outage windows",
+  "sample_period_s": 0.05,
+  "duration_s": 60.0,
+  "loop": true,
+  "seed": 23,
+  "channels": {
+    "control": {
+      "base_delay_ms": 18.0,
+      "jitter_ms": 3.5,
+      "min_delay_ms": 4.0,
+      "max_delay_ms": 450.0,
+      "capacity_bps": 42000000.0,
+      "queue_gain_ms": 22.0,
+      "synthetic_mean_bps": 14000000.0,
+      "synthetic_log_sigma": 0.70,
+      "segments": [
+        {"start_s": 0.0, "end_s": 8.0, "regime": "good"},
+        {"start_s": 8.0, "end_s": 15.0, "regime": "poor", "extra_ms": 80.0},
+        {"start_s": 15.0, "end_s": 24.0, "regime": "good"},
+        {"start_s": 24.0, "end_s": 30.0, "regime": "outage", "extra_ms": 150.0},
+        {"start_s": 30.0, "end_s": 60.0, "regime": "nominal"}
+      ]
+    },
+    "manual": {
+      "copy_from": "control",
+      "scale": 1.0
+    },
+    "camera": {
+      "copy_from": "control",
+      "scale": 1.45,
+      "offset_ms": 8.0
+    }
+  }
+}

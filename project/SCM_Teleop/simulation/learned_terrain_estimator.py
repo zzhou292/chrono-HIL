@@ -229,6 +229,19 @@ class LearnedTerrainEstimator:
         self._confidence = 0.0
         self._mu_ema = 0.15
 
+        # Residual-variance proxy for estimator uncertainty: EMA of squared
+        # (n_raw - n_smooth) deviations. Acts as a model-free stand-in for the
+        # ensemble disagreement that the abstract describes; it captures the
+        # same "how noisy is the current estimate" signal at near-zero cost.
+        self._n_resid_var_ema = 0.0
+        self._n_resid_var_alpha = 0.05  # ~20-sample horizon at 5 Hz updates
+        # Slope d_phi / d_n derived from the canonical clay/dirt/sand presets:
+        # phi spans ~7° across n ∈ [0.5, 1.5], so a 1.0 swing in n maps to
+        # ~7° of phi uncertainty. Same slope used for the abstract's
+        # phi_uncertainty signal so the gate is a calibrated quantity, not a
+        # raw RMS.
+        self._dphi_dn_deg = self._compute_dphi_dn_deg()
+
         # omega-dot estimator (API compat with downstream code)
         self._omega_hist: deque = deque(maxlen=7)
         self._omega_time: deque = deque(maxlen=7)
@@ -341,6 +354,12 @@ class LearnedTerrainEstimator:
         }
         n_pred = float(np.clip(pred_map["n"], _PRED_BOUNDS[0], _PRED_BOUNDS[1]))
         self._n_raw = n_pred
+        # Track raw/smooth disagreement before the smoother absorbs the new
+        # sample, so high-noise periods inflate the residual EMA promptly.
+        n_resid = n_pred - self._n_smooth
+        self._n_resid_var_ema += self._n_resid_var_alpha * (
+            n_resid * n_resid - self._n_resid_var_ema
+        )
         self._n_smooth += self._n_smooth_alpha * (n_pred - self._n_smooth)
 
         phi_pred = None
@@ -393,6 +412,41 @@ class LearnedTerrainEstimator:
         if self._phi_smooth is None:
             return float(self._estimated_params["phi"])
         return float(self._phi_smooth)
+
+    @staticmethod
+    def _compute_dphi_dn_deg() -> float:
+        ns = [float(p["n"]) for p in _PRESET_INTERNAL.values()]
+        phis_deg = [float(p["phi"]) for p in _PRESET_INTERNAL.values()]
+        if len(ns) < 2:
+            return 7.0
+        # Least-squares |d phi / d n| over the preset (n, phi-deg) cloud.
+        # ``_PRESET_INTERNAL`` already stores phi in degrees (see
+        # param_consistency.terrain_preset_to_internal), so the slope is
+        # already in degrees-per-unit-n — no math.degrees() conversion.
+        n_arr = np.asarray(ns, dtype=float)
+        phi_arr = np.asarray(phis_deg, dtype=float)
+        n_mean = n_arr.mean()
+        denom = float(np.sum((n_arr - n_mean) ** 2))
+        if denom < 1e-9:
+            return 7.0
+        slope_deg_per_n = float(
+            np.sum((n_arr - n_mean) * (phi_arr - phi_arr.mean())) / denom
+        )
+        return abs(slope_deg_per_n)
+
+    def get_n_uncertainty(self) -> float:
+        """Estimator-disagreement proxy: sqrt(EMA of (n_raw - n_smooth)^2).
+
+        Acts as the model-free stand-in for ensemble disagreement; ≈0 when
+        the smoother absorbs samples without drift, grows under high-noise
+        or regime-shift periods.
+        """
+        return float(math.sqrt(max(self._n_resid_var_ema, 0.0)))
+
+    def get_phi_uncertainty_deg(self) -> float:
+        """phi uncertainty in degrees, derived from sigma_n via the preset
+        n -> phi slope. Wired into the MPPI shield's friction-cone gate."""
+        return float(self.get_n_uncertainty() * self._dphi_dn_deg)
 
     @property
     def mu_estimate(self) -> float: return self._mu_ema

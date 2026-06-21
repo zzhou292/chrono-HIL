@@ -115,11 +115,9 @@ SPECS: list[PublishSpec] = [
         plotter_module="dob_cbf_nn_ablation",
     ),
     # autonomous_obstacle_tire_model_sweep encodes the safety flavor in its
-    # output prefix (e.g. ``_mppi_mpc_blind``, ``_barrier_only``).  List the
-    # variants we expect from the orchestrator; whichever ran most recently
-    # for that exact prefix is what gets published.
+    # output prefix (now ``_dob_cbf_mpc_blind`` -- DOB-CBF is the only shield).
     PublishSpec(
-        prefix="autonomous_obstacle_tire_model_sweep_mppi_mpc_blind",
+        prefix="autonomous_obstacle_tire_model_sweep_dob_cbf_mpc_blind",
         figures={
             "autonomous_obstacle_tire_model_summary.png":
                 "autonomous_obstacle_tire_summary.png",
@@ -224,21 +222,7 @@ SPECS: list[PublishSpec] = [
         },
         plotter_module="throttle_dob_ablation",
     ),
-    PublishSpec(
-        prefix="mppi_seed_ablation",
-        figures={
-            "mppi_seed_ablation_summary.png": "mppi_seed_ablation_summary.png",
-            "mppi_seed_ablation_collision_heatmap.png":
-                "mppi_seed_ablation_collision_heatmap.png",
-            "mppi_seed_ablation_metric_distributions.png":
-                "mppi_seed_ablation_distributions.png",
-        },
-        extra_files={
-            "results.csv": "mppi_seed_ablation_results.csv",
-            "summary_by_variant.csv": "mppi_seed_ablation_summary.csv",
-        },
-        plotter_module="mppi_seed_ablation",
-    ),
+    # (mppi_seed_ablation removed 2026-06-21 with the MPPI shield.)
     PublishSpec(
         prefix="tire_model_with_estimator_ablation",
         figures={

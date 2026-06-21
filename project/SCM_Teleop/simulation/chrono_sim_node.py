@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import csv
 import math
 import os
 import sys
@@ -28,6 +29,12 @@ import numpy as np
 # Chrono imports (must be available in environment)
 import pychrono as chrono
 import pychrono.vehicle as veh
+
+# Driver-view camera pose shared by Irrlicht and Chrono Sensor visualization.
+# Chrono sensor cameras look forward along the local +X axis.
+DRIVER_CAM_POS_LOCAL = chrono.ChVector3d(0.53, 0.7, 1.0)
+DRIVER_CAM_ROT_LOCAL = chrono.ChQuaterniond(1, 0, 0, 0)
+DRIVER_CAM_LOOKAHEAD_DISTANCE = 12.0
 
 # Sensor imports (optional — only needed for sensor visualization mode)
 try:
@@ -60,8 +67,9 @@ from g29_controller import ManualDriver
 
 # Safety filter + obstacles (optional)
 from sensors.obstacles import add_rock_obstacles, get_rock_positions, get_rock_radii
-from safety import CBFSafetyFilter
+from safety import make_safety_filter
 from collision_detector import CollisionLogger
+from latency_profile import LatencyProfile
 
 # NN tire model for terrain-aware CBF traction limits
 try:
@@ -102,6 +110,87 @@ class ExternalDriver(veh.ChDriver):
 
     def GetBraking(self):
         return self.m_braking
+
+
+def get_driver_camera_view(vehicle):
+    """Return Irrlicht eye and look-at points matching the sensor driver POV."""
+    chassis = vehicle.GetChassisBody()
+    chassis_pos = chassis.GetPos()
+    chassis_rot = chassis.GetRot()
+    eye = chassis_pos + chassis_rot.Rotate(DRIVER_CAM_POS_LOCAL)
+
+    # Sensor camera orientation is defined by DRIVER_CAM_ROT_LOCAL.  Irrlicht
+    # uses a look-at target, so convert the same local +X camera direction into
+    # a point in front of the camera.
+    camera_forward_local = DRIVER_CAM_ROT_LOCAL.Rotate(chrono.ChVector3d(1, 0, 0))
+    lookahead_local = chrono.ChVector3d(
+        camera_forward_local.x * DRIVER_CAM_LOOKAHEAD_DISTANCE,
+        camera_forward_local.y * DRIVER_CAM_LOOKAHEAD_DISTANCE,
+        camera_forward_local.z * DRIVER_CAM_LOOKAHEAD_DISTANCE,
+    )
+    target = eye + chassis_rot.Rotate(lookahead_local)
+    return eye, target
+
+
+def update_irrlicht_driver_camera(vis, vehicle):
+    """Keep the Irrlicht camera at the same chassis-fixed pose as DriverPOV."""
+    eye, target = get_driver_camera_view(vehicle)
+    # Match the standalone Irrlicht demo: drive the active camera explicitly.
+    # The vehicle visual system's chase-camera wrapper can otherwise keep
+    # restoring chase behavior on Synchronize/Advance in some PyChrono builds.
+    if hasattr(vis, "SetChaseCameraPosition"):
+        vis.SetChaseCameraPosition(eye, target)
+    vis.SetCameraPosition(eye)
+    vis.SetCameraTarget(target)
+
+
+def set_z_up_if_available(vis):
+    """Use Chrono's Z-up camera convention when exposed by the local bindings."""
+    if hasattr(chrono, "CameraVerticalDir_Z"):
+        vis.SetCameraVertical(chrono.CameraVerticalDir_Z)
+
+
+def set_visual_color(item, color):
+    """Set color on all visual shapes owned by a Chrono item, if exposed."""
+    def color_shape(shape):
+        shape.SetColor(color)
+        try:
+            for i in range(shape.GetNumMaterials()):
+                material = shape.GetMaterial(i)
+                material.SetAmbientColor(color)
+                material.SetDiffuseColor(color)
+        except Exception:
+            pass
+
+    try:
+        model = item.GetVisualModel()
+    except Exception:
+        model = None
+
+    if model:
+        try:
+            for i in range(model.GetNumShapes()):
+                color_shape(model.GetShape(i))
+            return
+        except Exception:
+            pass
+
+    try:
+        shape_count = item.GetNumVisualShapes()
+    except Exception:
+        shape_count = 0
+
+    for i in range(shape_count):
+        try:
+            color_shape(item.GetVisualShape(i))
+        except Exception:
+            pass
+
+
+def color_hmmwv(vehicle):
+    """Apply explicit colors for Irrlicht builds that do not load HMMWV materials."""
+    body_color = chrono.ChColor(0.88, 0.82, 0.66)
+    set_visual_color(vehicle.GetChassisBody(), body_color)
 
 
 # =============================================================================
@@ -304,6 +393,15 @@ def run_sim_node(args):
         use_irrlicht = True
         any_vis = True
 
+    latency_profile = None
+    if args.latency_profile_json:
+        latency_profile = LatencyProfile.from_json(args.latency_profile_json)
+        print(f"  Latency profile: {latency_profile.describe()}")
+    initial_control_delay = (
+        latency_profile.delay(0.0, "control") if latency_profile is not None
+        else float(args.teleop_delay)
+    )
+
     # ------------------------------------------------------------------
     # Setup vehicle
     # ------------------------------------------------------------------
@@ -321,6 +419,9 @@ def run_sim_node(args):
         terrain_preset=args.terrain, terrain_config=terrain_config,
         bumpiness=args.bumpiness,
     )
+
+    if any_vis:
+        color_hmmwv(vehicle)
 
     # ------------------------------------------------------------------
     # Rock obstacles
@@ -352,7 +453,9 @@ def run_sim_node(args):
         # Uses the same model as the MPC controller for consistency.
         # Falls back to kinematic/linear if NN unavailable (import failed or model missing).
         _nn_cbf = None
-        if load_nn_tire_model is not None:
+        if args.no_safety_nn:
+            print("  [CBF] NN tire model disabled by --no-safety-nn; using kinematic fallback")
+        elif load_nn_tire_model is not None:
             try:
                 _preset = terrain_config if terrain_config else get_terrain_preset(args.terrain)
                 _tp = terrain_preset_to_internal(_preset)
@@ -362,24 +465,80 @@ def run_sim_node(args):
             except Exception as _e:
                 print(f"  [CBF] NN load failed ({_e}), using kinematic fallback")
 
-        safety_filter = CBFSafetyFilter(
-            vehicle_params=vehicle_params,
-            nn_casadi=_nn_cbf,
-            cbf_alpha=args.cbf_alpha,
-            obstacle_buffer=args.safety_buffer,
-            delay_steps=args.delay_steps,
-            control_dt=0.1,  # Match MPC rate (10 Hz)
-            w_long=args.cbf_w_long,
-            w_lat=args.cbf_w_lat,
-            forward_bias=args.cbf_forward_bias,
-            dob_bandwidth=args.dob_bandwidth,
-            cbf_flavor=args.cbf_flavor,
-            teleop_delay=args.teleop_delay,
-            stale_cmd_timeout=args.stale_cmd_timeout,
-        )
-        delay_msg = f", teleop_delay={args.teleop_delay*1000:.0f}ms" if args.teleop_delay > 0 else ""
-        print(f"  [SAFETY] DOB-CBF filter enabled: alpha={args.cbf_alpha}, "
-              f"buffer={args.safety_buffer}m, flavor={args.cbf_flavor}{delay_msg}")
+        flavor = (args.safety_flavor or 'dob_cbf').lower()
+        if flavor in ('mppi', 'nmpc'):
+            # Predictive shield needs the live terrain preset dict
+            _preset_internal = (terrain_preset_to_internal(terrain_config)
+                                if terrain_config is not None
+                                else terrain_preset_to_internal(get_terrain_preset(args.terrain)))
+            common_kwargs = dict(
+                max_speed=15.0,
+                # Keep the predictive shield's collision geometry aligned
+                # with CollisionLogger.  The previous 1.0 m radius
+                # under-estimated the HMMWV footprint by 0.5 m, so MPPI/NMPC
+                # selected rollouts that looked safe internally but still
+                # clipped rocks in the benchmark.
+                vehicle_radius=1.5,
+                obstacle_buffer=args.safety_buffer,
+                teleop_delay=initial_control_delay,
+                stale_cmd_timeout=args.stale_cmd_timeout,
+                control_dt=0.1,
+            )
+            if flavor == 'mppi':
+                # --shield-no-sigma-gate is a back-compat alias for
+                # --shield-sigma-mode off; if both are set, off wins.
+                sigma_mode = ("off" if getattr(args, "shield_no_sigma_gate", False)
+                              else getattr(args, "shield_sigma_mode", "inflate"))
+                safety_filter = make_safety_filter(
+                    'mppi', vehicle_params=vehicle_params,
+                    nn_model=_nn_cbf, terrain_params=_preset_internal,
+                    horizon=args.shield_horizon,
+                    n_samples=args.mppi_samples,
+                    sigma_steer=args.mppi_sigma_steer,
+                    sigma_alpha=args.mppi_sigma_alpha,
+                    temperature=args.mppi_temperature,
+                    disable_seeds=args.mppi_no_seeds,
+                    sigma_mode=sigma_mode,
+                    sigma_buffer_gain=args.shield_sigma_buffer_gain,
+                    **common_kwargs,
+                )
+                delay_msg = (f", teleop_delay={initial_control_delay*1000:.0f}ms"
+                             if initial_control_delay > 0 else "")
+                print(f"  [SAFETY] MPPI shield enabled: K={args.mppi_samples}, "
+                      f"H={args.shield_horizon}, sigma=({args.mppi_sigma_steer},"
+                      f"{args.mppi_sigma_alpha}){delay_msg}")
+            else:  # nmpc
+                safety_filter = make_safety_filter(
+                    'nmpc', vehicle_params=vehicle_params,
+                    nn_model=_nn_cbf, terrain_params=_preset_internal,
+                    horizon=args.shield_horizon,
+                    n_iter=args.nmpc_iter,
+                    **common_kwargs,
+                )
+                delay_msg = (f", teleop_delay={initial_control_delay*1000:.0f}ms"
+                             if initial_control_delay > 0 else "")
+                print(f"  [SAFETY] NMPC shield enabled: H={args.shield_horizon}, "
+                      f"maxiter={args.nmpc_iter}{delay_msg}")
+        else:
+            safety_filter = make_safety_filter(
+                'dob_cbf', vehicle_params=vehicle_params,
+                nn_model=_nn_cbf,
+                cbf_alpha=args.cbf_alpha,
+                obstacle_buffer=args.safety_buffer,
+                delay_steps=args.delay_steps,
+                control_dt=0.1,
+                w_long=args.cbf_w_long,
+                w_lat=args.cbf_w_lat,
+                forward_bias=args.cbf_forward_bias,
+                dob_bandwidth=args.dob_bandwidth,
+                cbf_flavor=args.cbf_flavor,
+                teleop_delay=initial_control_delay,
+                stale_cmd_timeout=args.stale_cmd_timeout,
+            )
+            delay_msg = (f", teleop_delay={initial_control_delay*1000:.0f}ms"
+                         if initial_control_delay > 0 else "")
+            print(f"  [SAFETY] DOB-CBF filter enabled: alpha={args.cbf_alpha}, "
+                  f"buffer={args.safety_buffer}m, flavor={args.cbf_flavor}{delay_msg}")
 
     # ------------------------------------------------------------------
     # Trajectory markers (visual only)
@@ -417,15 +576,23 @@ def run_sim_node(args):
         try:
             vis = veh.ChWheeledVehicleVisualSystemIrrlicht()
             vis.SetWindowTitle("Chrono Sim Node (decoupled)")
-            vis.SetWindowSize(int(args.irrlicht_window_size[0]),
-                              int(args.irrlicht_window_size[1]))
-            vis.SetChaseCamera(chrono.ChVector3d(0, 0, 1.5), 6.0, 0.5)
+            vis.SetWindowSize(5760, 720)
+            set_z_up_if_available(vis)
             vis.Initialize()
-            vis.AddLightDirectional()
+            vis.AddLogo(chrono.GetChronoDataFile("logo_chrono_alpha.png"))
+            vis.AddLightDirectional(
+                45.0,
+                120.0,
+                chrono.ChColor(0.28, 0.28, 0.28),
+                chrono.ChColor(0.08, 0.08, 0.08),
+                chrono.ChColor(0.68, 0.68, 0.68),
+            )
             vis.AddSkyBox()
             vis.AttachVehicle(vehicle.GetVehicle())
+            update_irrlicht_driver_camera(vis, vehicle)
             if args.wasd:
                 vis.AttachDriver(driver)
+            print("  Irrlicht: driver POV camera active")
         except Exception as e:
             print(f"Warning: Irrlicht visualization failed: {e}")
             vis = None
@@ -452,21 +619,21 @@ def run_sim_node(args):
             # Driver POV camera attached to chassis
             # Eye-point matches HMMWV left-hand-drive seat position
             cam_offset = chrono.ChFramed(
-                chrono.ChVector3d(0.4, 0.7, 1.0),
-                chrono.ChQuaterniond(1, 0, 0, 0),
+                DRIVER_CAM_POS_LOCAL,
+                DRIVER_CAM_ROT_LOCAL,
             )
             driver_cam = sens.ChCameraSensor(
                 vehicle.GetChassisBody(),  # attached body
                 30,                        # update rate (Hz) — matches C++ SCM teleop
                 cam_offset,                # offset pose
-                4320,                      # image width
+                5760,                      # image width
                 1080,                      # image height
                 1.92,                      # horizontal FOV (~110° ultrawide)
             )
             driver_cam.SetName("DriverPOV")
-            driver_cam.SetLag(0.0)
+            driver_cam.SetLag(latency_profile.delay(0.0, "camera") if latency_profile is not None else 0.0)
             driver_cam.PushFilter(sens.ChFilterVisualize(
-                4320, 1080, "Driver POV", False
+                5760, 1080, "Driver POV", False
             ))
             sensor_manager.AddSensor(driver_cam)
             print("  Chrono Sensor: driver POV camera active")
@@ -657,13 +824,52 @@ def run_sim_node(args):
     start_wall = wall_time.time()
     cmd_count = 0
     cmd_buffer = []
+    cmd_seq = 0
+    terrain_update_count = 0
+    last_terrain_seq = -1
+    manual_cmd_buffer = []
+    delayed_manual_inputs = [0.0, 0.0, 0.0]
     step_count = 0
+    sim_diag_file = None
+    sim_diag_writer = None
+    sim_diag_interval = 0.1
+    last_sim_diag_time = -sim_diag_interval
+    if args.sim_diag_csv:
+        diag_path = Path(args.sim_diag_csv)
+        diag_path.parent.mkdir(parents=True, exist_ok=True)
+        sim_diag_file = diag_path.open("w", newline="")
+        sim_diag_writer = csv.writer(sim_diag_file)
+        sim_diag_writer.writerow([
+            "time", "x", "y", "z", "speed", "vx_local", "vy_local", "omega_z",
+            "steering", "throttle", "braking", "collisions", "near_misses",
+            "nearest_clearance_m", "latency_control_s", "latency_manual_s", "latency_camera_s",
+        ])
+        print(f"  Sim diagnostic CSV: {diag_path}")
+
+    latency_log_file = None
+    latency_log_writer = None
+    latency_log_interval = 0.05
+    last_latency_log_time = -latency_log_interval
+    if args.latency_profile_log:
+        latency_log_path = Path(args.latency_profile_log)
+        latency_log_path.parent.mkdir(parents=True, exist_ok=True)
+        latency_log_file = latency_log_path.open("w", newline="")
+        latency_log_writer = csv.writer(latency_log_file)
+        latency_log_writer.writerow(["time", "control_delay_s", "manual_delay_s", "camera_delay_s"])
+        print(f"  Latency profile log: {latency_log_path}")
 
     noise_cfg = None if args.no_noise else DEFAULT_MEAS_NOISE
     print(f"  Sensor noise: {'OFF' if noise_cfg is None else 'ON'}")
     print(f"  Physics step: {step_size * 1000:.0f}ms, state rate: {args.state_rate} Hz")
     if _manual_mode:
-        print(f"  Manual mode: close window to exit")
+        if args.manual_honor_time:
+            print(f"  Manual mode: automatic stop after {args.time}s")
+        else:
+            print(f"  Manual mode: close window to exit")
+        if args.manual_input_delay > 0:
+            print(f"  Manual input actuation delay: {args.manual_input_delay:.3f}s")
+        elif latency_profile is not None:
+            print(f"  Manual input actuation delay: profile-driven")
     else:
         print(f"  Running {args.time}s simulation...")
 
@@ -677,8 +883,18 @@ def run_sim_node(args):
     while True:
         _t_loop_start = wall_time.time()
         time_chrono = vehicle.GetSystem().GetChTime()
+        if latency_profile is not None:
+            control_delay_s = latency_profile.delay(time_chrono, "control")
+            manual_delay_s = latency_profile.delay(time_chrono, "manual")
+            camera_delay_s = latency_profile.delay(time_chrono, "camera")
+        else:
+            control_delay_s = float(args.teleop_delay)
+            manual_delay_s = float(args.manual_input_delay)
+            camera_delay_s = float(args.camera_input_delay)
+        if safety_filter is not None:
+            safety_filter.set_teleop_delay(control_delay_s)
 
-        if not _manual_mode and time_chrono >= args.time:
+        if (not _manual_mode or args.manual_honor_time) and time_chrono >= args.time:
             break
         if vis is not None and not vis.Run():
             break
@@ -686,6 +902,7 @@ def run_sim_node(args):
         # --- Render Irrlicht (frame-skipped) ---
         if vis is not None and (time_chrono - last_render_time >= render_interval):
             _tw = wall_time.time()
+            update_irrlicht_driver_camera(vis, vehicle)
             vis.BeginScene()
             vis.Render()
             vis.EndScene()
@@ -698,18 +915,49 @@ def run_sim_node(args):
             if result is not None:
                 topic, msg = result
                 if isinstance(msg, ControlCommand):
-                    if args.teleop_delay > 0:
-                        cmd_buffer.append((wall_time.time() + args.teleop_delay, msg))
+                    if control_delay_s > 0:
+                        cmd_seq += 1
+                        cmd_buffer.append((wall_time.time() + control_delay_s, cmd_seq, msg))
+                        cmd_buffer.sort(key=lambda item: (item[0], item[1]))
                     else:
                         driver.apply(msg)
                         cmd_count += 1
                         # Feed command age to safety filter for teleop delay est.
                         if safety_filter is not None and msg.wall_time > 0:
                             safety_filter.update_command_age(msg.wall_time)
+                    # Live terrain estimate piggybacks on ControlCommand.
+                    # Dispatch to the shield whenever the controller's
+                    # terrain_update_seq advances; --shield-no-sigma-gate
+                    # zeroes sigma so the shield ignores estimator
+                    # disagreement (the abstract's ablation).
+                    if (safety_filter is not None
+                            and getattr(msg, "terrain_n", None) is not None
+                            and msg.terrain_update_seq > last_terrain_seq):
+                        last_terrain_seq = int(msg.terrain_update_seq)
+                        sigma_deg = (0.0 if getattr(args, "shield_no_sigma_gate", False)
+                                     else float(msg.terrain_phi_sigma_deg or 0.0))
+                        tp = {
+                            "Kphi": float(msg.terrain_Kphi or 0.0),
+                            "Kc":   float(msg.terrain_Kc or 0.0),
+                            "n":    float(msg.terrain_n),
+                            "c":    float(msg.terrain_c or 0.0),
+                            "phi":  float(msg.terrain_phi_deg),
+                            "k":    float(msg.terrain_k or 0.0),
+                        }
+                        try:
+                            safety_filter.update_terrain(tp, phi_uncertainty_deg=sigma_deg)
+                        except TypeError:
+                            safety_filter.update_terrain(tp)
+                        terrain_update_count += 1
+                        if terrain_update_count == 1 or terrain_update_count % 50 == 0:
+                            print(f"  [SHIELD-TERRAIN] update #{terrain_update_count}: "
+                                  f"n={msg.terrain_n:.3f} phi={msg.terrain_phi_deg:.2f}° "
+                                  f"sigma_phi={sigma_deg:.2f}° "
+                                  f"class={msg.terrain_class}", flush=True)
 
             now = wall_time.time()
             while cmd_buffer and cmd_buffer[0][0] <= now:
-                _, msg = cmd_buffer.pop(0)
+                _, _, msg = cmd_buffer.pop(0)
                 driver.apply(msg)
                 cmd_count += 1
                 if safety_filter is not None and msg.wall_time > 0:
@@ -723,6 +971,19 @@ def run_sim_node(args):
         driver_inputs.m_steering = driver.GetSteering()
         driver_inputs.m_throttle = driver.GetThrottle()
         driver_inputs.m_braking = driver.GetBraking()
+        if _manual_mode and manual_delay_s > 0:
+            manual_cmd_buffer.append((
+                wall_time.time() + manual_delay_s,
+                driver_inputs.m_steering,
+                driver_inputs.m_throttle,
+                driver_inputs.m_braking,
+            ))
+            now_manual = wall_time.time()
+            while manual_cmd_buffer and manual_cmd_buffer[0][0] <= now_manual:
+                _, delayed_manual_inputs[0], delayed_manual_inputs[1], delayed_manual_inputs[2] = manual_cmd_buffer.pop(0)
+            driver_inputs.m_steering = delayed_manual_inputs[0]
+            driver_inputs.m_throttle = delayed_manual_inputs[1]
+            driver_inputs.m_braking = delayed_manual_inputs[2]
         _t_driver += wall_time.time() - _tw
 
         # --- Safety Filter ---
@@ -802,6 +1063,14 @@ def run_sim_node(args):
 
         # --- Update Chrono Sensor manager (gated to camera FPS) ---
         if sensor_manager is not None and (time_chrono - last_sensor_time >= sensor_interval):
+            # Apply camera lag whenever a non-zero delay is active, whether it
+            # comes from the time-varying latency profile or the fixed
+            # --camera-input-delay flag used by the HIL delay sweep.
+            if driver_cam is not None and camera_delay_s > 0.0:
+                try:
+                    driver_cam.SetLag(camera_delay_s)
+                except Exception:
+                    pass
             _tw = wall_time.time()
             sensor_manager.Update()
             _dt_s = wall_time.time() - _tw
@@ -865,6 +1134,45 @@ def run_sim_node(args):
             _veh_spd = vehicle.GetVehicle().GetSpeed()
             collision_logger.check(time_chrono, _veh_cg.x, _veh_cg.y, _veh_spd)
 
+        if sim_diag_writer is not None and time_chrono - last_sim_diag_time >= sim_diag_interval:
+            chassis = vehicle.GetChassisBody()
+            pos = chassis.GetPos()
+            rot = chassis.GetRot()
+            vel_loc = rot.RotateBack(chassis.GetPosDt())
+            nearest_clearance = math.nan
+            if args.rocks > 0 and rocks:
+                _rpos = get_rock_positions(rocks)
+                _rrad = get_rock_radii(rocks)
+                if len(_rpos):
+                    _d = np.sqrt((_rpos[:, 0] - pos.x) ** 2 + (_rpos[:, 1] - pos.y) ** 2)
+                    nearest_clearance = float(np.min(_d - _rrad - 1.5))
+            sim_diag_writer.writerow([
+                f"{time_chrono:.6f}",
+                f"{pos.x:.6f}", f"{pos.y:.6f}", f"{pos.z:.6f}",
+                f"{vehicle.GetVehicle().GetSpeed():.6f}",
+                f"{vel_loc.x:.6f}", f"{vel_loc.y:.6f}",
+                f"{chassis.GetAngVelLocal().z:.6f}",
+                f"{driver_inputs.m_steering:.6f}",
+                f"{driver_inputs.m_throttle:.6f}",
+                f"{driver_inputs.m_braking:.6f}",
+                collision_logger.total_collisions if collision_logger is not None else 0,
+                collision_logger.total_near_misses if collision_logger is not None else 0,
+                f"{nearest_clearance:.6f}" if math.isfinite(nearest_clearance) else "",
+                f"{control_delay_s:.6f}",
+                f"{manual_delay_s:.6f}",
+                f"{camera_delay_s:.6f}",
+            ])
+            last_sim_diag_time = time_chrono
+
+        if latency_log_writer is not None and time_chrono - last_latency_log_time >= latency_log_interval:
+            latency_log_writer.writerow([
+                f"{time_chrono:.6f}",
+                f"{control_delay_s:.6f}",
+                f"{manual_delay_s:.6f}",
+                f"{camera_delay_s:.6f}",
+            ])
+            last_latency_log_time = time_chrono
+
         # --- Progress report ---
         if time_chrono - last_report_time >= 2.0:
             last_report_time = time_chrono
@@ -905,6 +1213,10 @@ def run_sim_node(args):
     # ------------------------------------------------------------------
     if collision_logger is not None:
         collision_logger.close()
+    if sim_diag_file is not None:
+        sim_diag_file.close()
+    if latency_log_file is not None:
+        latency_log_file.close()
 
     if state_pub is not None:
         stop_msg = SimStatus(event="stop", time=time_chrono, wall_time=wall_time.time())
@@ -976,6 +1288,8 @@ def main():
                    help="Vehicle state publish rate (Hz)")
     p.add_argument("--no-noise", action="store_true",
                    help="Disable sensor noise (noise ON by default)")
+    p.add_argument("--sim-diag-csv", default="",
+                   help="Write sim-side state/control diagnostics to this CSV.")
 
     # IMU sensor (Chrono sensor module)
     p.add_argument("--no-imu", action="store_true",
@@ -1010,6 +1324,19 @@ def main():
                    help="Manual control with G29 steering wheel (no MPC controller)")
     p.add_argument("--wasd", action="store_true",
                    help="Manual control with WASD keyboard (no MPC controller)")
+    p.add_argument("--manual-honor-time", action="store_true",
+                   help="In manual mode, stop automatically after --time seconds.")
+    p.add_argument("--manual-input-delay", type=float, default=0.0,
+                   help="Fixed actuation delay applied to manual steering/throttle/brake inputs.")
+    p.add_argument("--camera-input-delay", type=float, default=0.0,
+                   help="Fixed lag applied to the driver POV camera feed. Models "
+                        "downlink video latency to the operator. Overridden by the "
+                        "camera channel of --latency-profile-json when supplied.")
+    p.add_argument("--latency-profile-json", default="",
+                   help="JSON profile for time-varying 5G-like one-way latency. "
+                        "Overrides fixed --teleop-delay/--manual-input-delay per channel.")
+    p.add_argument("--latency-profile-log", default="",
+                   help="Optional CSV path for logging active control/manual/camera latency samples.")
 
     # Rock obstacles
     p.add_argument("--rocks", type=int, default=0,
@@ -1021,7 +1348,42 @@ def main():
 
     # Safety filter
     p.add_argument("--safety-filter", action="store_true",
-                   help="Enable DOB-CBF safety filter")
+                   help="Enable the safety filter (flavor controlled by --safety-flavor)")
+    p.add_argument("--safety-flavor", type=str, default="mppi",
+                   choices=["mppi", "nmpc", "dob_cbf"],
+                   help="Filter flavor: mppi (primary predictive shield), "
+                        "nmpc (gradient ablation), dob_cbf (legacy DOB-CBF-QP).")
+    # MPPI shield parameters
+    p.add_argument("--mppi-samples", type=int, default=384,
+                   help="MPPI rollouts per step (K).")
+    p.add_argument("--mppi-sigma-steer", type=float, default=0.35,
+                   help="Stddev of steering-norm noise per MPPI sample.")
+    p.add_argument("--mppi-sigma-alpha", type=float, default=0.35,
+                   help="Stddev of throttle-norm noise per MPPI sample.")
+    p.add_argument("--mppi-temperature", type=float, default=1.0,
+                   help="MPPI temperature lambda (smaller = sharper weighting).")
+    p.add_argument("--mppi-no-seeds", action="store_true",
+                   help="Ablation: disable the hand-crafted MPPI seed trajectories "
+                        "(passthrough/brake/evade). Rollouts then rely solely on "
+                        "Gaussian sampling around the operator command.")
+    p.add_argument("--shield-no-sigma-gate", action="store_true",
+                   help="Ablation: zero out the controller's phi_sigma_deg before "
+                        "the shield sees it (equivalent to --shield-sigma-mode off).")
+    p.add_argument("--shield-sigma-mode", type=str, default="off",
+                   choices=["tighten", "inflate", "both", "off"],
+                   help="How estimator phi-uncertainty acts on the shield. "
+                        "Default off: the shield runs on its initial terrain "
+                        "(paper Sec. IX-B ablation showed every live-terrain "
+                        "gate underperforms). tighten/inflate/both retained "
+                        "only for the sigma_gate_ablation experiment.")
+    p.add_argument("--shield-sigma-buffer-gain", type=float, default=0.05,
+                   help="Metres of extra obstacle buffer per degree of phi_sigma.")
+    # NMPC shield parameters
+    p.add_argument("--nmpc-iter", type=int, default=6,
+                   help="L-BFGS-B iteration cap for the NMPC shield ablation.")
+    # Common shield params
+    p.add_argument("--shield-horizon", type=int, default=12,
+                   help="Prediction horizon steps (latency adds more dynamically).")
     p.add_argument("--cbf-alpha", type=float, default=5.0)
     p.add_argument("--safety-buffer", type=float, default=0.25)
     p.add_argument("--delay-steps", type=int, default=5)
@@ -1031,8 +1393,12 @@ def main():
     p.add_argument("--dob-bandwidth", type=float, default=10.0)
     p.add_argument("--cbf-flavor", type=str, default="balance",
                    choices=["balance", "steer_priority", "throttle_priority"])
-    p.add_argument("--nn-model", type=str, default="paper_v2_mlp_16_4",
+    p.add_argument("--nn-model", type=str, default="closed_loop_v2_both_axles_rate_32_16",
                    help="NN model version directory for CBF traction limits")
+    p.add_argument("--no-safety-nn", action="store_true",
+                   help="Disable the NN tire model inside the safety filter. "
+                        "DOB-CBF then uses its kinematic fallback; predictive "
+                        "MPPI/NMPC shields still require NN dynamics and will fail fast.")
     p.add_argument("--teleop-delay", type=float, default=0.0,
                    help="Initial one-way teleop delay estimate in seconds "
                         "(0 = local, auto-measured from cmd timestamps)")

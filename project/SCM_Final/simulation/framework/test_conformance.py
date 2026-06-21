@@ -76,9 +76,9 @@ def main() -> None:
                 nn_model=None,
             )
         except Exception as exc:                       # noqa: BLE001
-            # mppi/nmpc require an nn_model; skip if missing — the
-            # *interface* check is the one we care about for swap-ability,
-            # not the construction-time policy.
+            # A filter that needs an nn_model at construction is skipped if one
+            # isn't supplied — the *interface* check is what matters for
+            # swap-ability, not the construction-time policy.
             print(f"  skip {flavor!r}: requires NN ({exc})")
             continue
         _check(flavor, instance, SafetyFilter)

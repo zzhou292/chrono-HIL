@@ -1,0 +1,2 @@
+name,estimated_runs,note,command
+sigma_gate_ablation,160,MPPI shield sigma-gate ablation (estimator -> phi_sigma -> shield).,/home/ksha/miniconda3/envs/sim/bin/python -u /home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/sigma_gate_ablation.py --variants sigma_inflate sigma_tighten sigma_both sigma_off no_live_terrain --terrains clay sand --paths sinusoidal lane_change --speeds 5 7 --bumpiness 0 4 --seeds 2 --time 12.0 --base-port 58500

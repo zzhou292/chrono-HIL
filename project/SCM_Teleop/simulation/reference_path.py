@@ -417,6 +417,74 @@ class ReferencePath:
         return self.s[self._last_idx] >= (self.s_max - threshold)
 
     # ------------------------------------------------------------------
+    # MPCC interface — sample path at arbitrary arc-length values
+    # ------------------------------------------------------------------
+
+    def sample_at_theta(self, theta: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Sample ``(x_p(θ), y_p(θ), ψ_p(θ))`` at the given arc-length values.
+
+        MPCC needs per-stage path samples each solve.  The caller passes
+        the predicted θ trajectory (warm-started from the previous solve)
+        and gets back the four MPCC parameters per stage:
+        ``(x_p_k, y_p_k, ψ_p_k)``.
+
+        Behaviour past the end of the path is to clamp θ to ``s_max`` —
+        the vehicle should be stopping there anyway (end-of-path ramp in
+        the speed profile, which the standard MPC uses; MPCC has its
+        own ``-w_progress · vθ`` reward, but the controller still needs
+        a valid path sample to compute contour error).
+
+        Args:
+            theta: ``(K,)`` arc-length values, in metres along the path.
+
+        Returns:
+            ``(K, 2)`` array of ``(x, y)`` samples and ``(K,)`` heading
+            angles in radians.
+        """
+        theta = np.asarray(theta, dtype=float).reshape(-1)
+        s_clamped = np.clip(theta, 0.0, self.s_max)
+        x = np.asarray(self.cs_x(s_clamped), dtype=float)
+        y = np.asarray(self.cs_y(s_clamped), dtype=float)
+        dx_ds = self.cs_x(s_clamped, 1)
+        dy_ds = self.cs_y(s_clamped, 1)
+        psi = np.arctan2(dy_ds, dx_ds)
+        xy = np.stack([x, y], axis=1)
+        return xy, psi
+
+    def v_max_at_theta(self, theta: np.ndarray) -> np.ndarray:
+        """Return curvature-derived speed cap at each θ.
+
+        Re-uses the same cubic-spline speed profile ``_cs_v_profile``
+        that the standard MPC tracks as ``v_ref``.  MPCC uses this as
+        a *soft cap* (one-sided quadratic penalty), not a reference,
+        so the vehicle is free to go slower if the optimizer prefers
+        (e.g. when contour cost dominates).
+        """
+        theta = np.asarray(theta, dtype=float).reshape(-1)
+        s_clamped = np.clip(theta, 0.0, self.s_max)
+        v = np.asarray(self._cs_v_profile(s_clamped), dtype=float)
+        return np.clip(v, 0.5, self.v_target)
+
+    def theta_at_xy(self, x_q: float, y_q: float) -> float:
+        """Return the arc-length θ of the closest point on the path to
+        ``(x_q, y_q)``.  Used to initialise the MPCC θ state for the
+        very first solve, when there is no warm-start.
+
+        This is a simple "nearest sample" search restricted to the
+        progress window we already track in ``self._last_idx``.
+        """
+        search_back = 10
+        search_fwd = 200
+        lo = max(0, self._last_idx - search_back)
+        hi = min(self.n_pts, self._last_idx + search_fwd)
+        sub_x = self.x_pts[lo:hi]
+        sub_y = self.y_pts[lo:hi]
+        d2 = (sub_x - x_q) ** 2 + (sub_y - y_q) ** 2
+        idx = lo + int(np.argmin(d2))
+        self._last_idx = idx
+        return float(self.s[idx])
+
+    # ------------------------------------------------------------------
     # Point evaluation (for analytics / error computation)
     # ------------------------------------------------------------------
 

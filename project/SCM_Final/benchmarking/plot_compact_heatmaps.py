@@ -26,8 +26,7 @@ TERRAINS = ["clay", "dirt", "sand"]
 SPECS = [
     ("safety_filter_sweep", "safety_filter_collision_heatmap.png", "collisions", "RdYlGn_r", "mean obstacles hit", True),
     ("dob_cbf_nn_ablation", "dob_cbf_nn_ablation_heatmap.png", "collisions", "RdYlGn_r", "mean obstacles hit", True),
-    ("mppi_seed_ablation", "mppi_seed_ablation_collision_heatmap.png", "collisions", "RdYlGn_r", "mean obstacles hit", True),
-    ("autonomous_obstacle_tire_model_sweep_mppi_mpc_blind", "autonomous_obstacle_collision_heatmap.png", "collisions", "RdYlGn_r", "mean obstacles hit", True),
+    ("autonomous_obstacle_tire_model_sweep_dob_cbf_mpc_blind", "autonomous_obstacle_collision_heatmap.png", "collisions", "RdYlGn_r", "mean obstacles hit", True),
     ("latency_compensation_sweep", "latency_compensation_collision_heatmap.png", "collisions", "RdYlGn_r", "mean obstacles hit", True),
     ("throttle_dob_ablation", "throttle_dob_ablation_speed_heatmap.png", "speed_ratio", "RdYlGn", "speed retention", False),
 ]

@@ -1,0 +1,16 @@
+# Autonomous Obstacle Avoidance by Tire Model
+
+Noise policy: sensor noise enabled in every run.
+No downstream safety filter is used; the standard MPC's obstacle barrier is the only autonomous obstacle-avoidance mechanism.
+Standard-MPC speed-weight is 15 so obstacle avoidance is not confounded by aggressive v_ref chasing in turns.
+Standard-MPC speed-cost-mode is symmetric.
+Standard-MPC obstacle-weight is 5000.
+MPC blind to obstacles: False.
+Safety buffer: 0.5 m.
+
+```csv
+variant,n_runs,n_ok,collisions_mean,collisions_std,near_misses_mean,near_misses_std,min_clearance_m_mean,min_clearance_m_std,rms_cte_m_mean,rms_cte_m_std,speed_ratio_mean,speed_ratio_std,mean_solve_ms_mean,mean_solve_ms_std,progress_m_mean,progress_m_std
+pacejka,1,1,0.0,,0.0,,19.482287,,0.06153024833219837,,0.36443888,,2.077617602427921,,11.379368721279297,
+tmeasy,1,1,0.0,,0.0,,19.691178,,0.05687322036164297,,0.35629456,,2.0552959028831563,,11.158770238778047,
+closed_loop_mlp,1,1,0.0,,0.0,,16.749521,,0.06639195472772284,,0.42725563999999994,,4.212185128983308,,14.139725705620878,
+```

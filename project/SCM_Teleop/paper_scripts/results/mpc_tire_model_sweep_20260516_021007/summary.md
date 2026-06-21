@@ -1,0 +1,11 @@
+# Standard MPC Tire-Model Sweep
+
+Noise policy: sensor noise enabled in every run.
+Raw per-run logs and diagnostic CSV files are under `raw/`.
+
+```csv
+variant,n_runs,n_ok,rms_cte_m_mean,rms_cte_m_std,mean_abs_cte_m_mean,mean_abs_cte_m_std,speed_ratio_mean,speed_ratio_std,mean_speed_mps_mean,mean_speed_mps_std,mean_solve_ms_mean,mean_solve_ms_std,progress_m_mean,progress_m_std
+pacejka,1,1,0.08008436512856926,,0.06826528200000001,,0.42041892000000003,,2.1020946,,2.247799696509863,,13.05548249463393,
+tmeasy,1,1,0.07437402976992709,,0.062090785999999995,,0.41500912,,2.0750456,,3.009064856711916,,12.91890686600702,
+closed_loop_mlp,1,1,0.06954682215303587,,0.058082421999999995,,0.48215623999999996,,2.4107811999999997,,4.227040971168437,,15.00694940795669,
+```

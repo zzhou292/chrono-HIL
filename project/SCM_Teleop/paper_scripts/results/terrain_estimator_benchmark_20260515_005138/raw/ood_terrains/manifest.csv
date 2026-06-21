@@ -1,0 +1,2 @@
+label,yaml,true_n,coh_scale,phi_delta_deg,preset_proxy,Kphi,Kc,cohesion,friction_angle,janosi_shear
+terrain1,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/terrain_estimator_benchmark_20260515_005138/raw/ood_terrains/terrain1.yaml,0.7283,1.056,1.91,dirt,1515595.3,4988.2,1742.9,30.98,0.025

@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
                    help="Use 'overspeed' to treat v_ref as a cap instead of a command.")
     p.add_argument("--obstacle-weight", type=float, default=5e3,
                    help="Standard-MPC soft obstacle-barrier weight.")
-    p.add_argument("--safety-flavor", choices=["none", "dob_cbf", "mppi", "nmpc"], default="none",
+    p.add_argument("--safety-flavor", choices=["none", "dob_cbf"], default="none",
                    help="Optional fixed downstream safety filter used for every tire model.")
     p.add_argument("--shield-horizon", type=int, default=18)
     p.add_argument("--mppi-samples", type=int, default=384)

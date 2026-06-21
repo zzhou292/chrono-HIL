@@ -1,0 +1,8 @@
+key,value
+created_at,2026-05-14T23:13:34
+project_root,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop
+description,Sampled 5G-like latency profile for paper figures.
+command,project/SCM_Teleop/paper_scripts/latency_profile_figure.py --duration 12 --dt 0.05
+dt,0.05
+duration,12.0
+profile_json,'/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/config/latency_profiles/5g_good_bad_control.json'

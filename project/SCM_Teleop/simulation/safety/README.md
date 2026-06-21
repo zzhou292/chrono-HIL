@@ -1,13 +1,33 @@
-# Safety Module — NN-Informed CBF Safety Filter
+# Safety Module — Predictive MPPI Shield (primary) + Legacy DOB-CBF
 
-Control Barrier Function (CBF) safety filter that prevents collisions and 
-enforces terrain-aware speed limits during manual or autonomous driving.
+Two safety-filter flavors share the same `filter(...) -> SafetyFilterResult`
+API and are selectable via `--safety-flavor`:
 
-## Architecture
+- **`mppi` (default, primary):** Model Predictive Path Integral shield over
+  an NN-surrogate-based vehicle rollout.  Terrain- and latency-aware; uses
+  the same tire surrogate the planning NMPC uses, so the filter "thinks"
+  about consequences with the same dynamics the planner does.
+- **`nmpc`:** Gradient-based (scipy SLSQP) finite-horizon NMPC over the
+  identical rollout.  Provided as an ablation against the sampling
+  approach.
+- **`dob_cbf`:** Legacy single-step DOB-CBF-QP filter (kept for
+  back-compat / benchmarking).
 
-Inspired by the DOB-CBF (Disturbance Observer Control Barrier Function) from 
-the ROS2 bridge (`DobCBFHelper.py`), adapted for off-road driving with 
-deformable terrain.
+The MPPI / NMPC flavors share `surrogate_dynamics.py` (numpy-vectorized
+batched bicycle model with sub-stepping and a low-speed kinematic blend
+for stability) and a common cost in `predictive_shield.py`.
+
+## MPPI / NMPC architecture
+
+Inspired by sampling-based MPC for off-road driving (e.g., Williams et al.)
+but adapted to a *safety filter* setting: the operator/autonomous command
+is the *reference*, and the shield projects onto a safe set defined by the
+NN-surrogate rollout cost.
+
+## Legacy DOB-CBF architecture
+
+Inspired by the DOB-CBF (Disturbance Observer Control Barrier Function)
+from the ROS2 bridge (`DobCBFHelper.py`).  Kept for ablation.
 
 ### Safety Constraints
 

@@ -1,0 +1,19 @@
+key,value
+created_at,2026-05-13T00:31:48
+project_root,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop
+description,DOB-CBF NN-on versus NN-off ablation with sensor noise enabled.
+command,project/SCM_Teleop/paper_scripts/dob_cbf_nn_ablation.py --quick --time 3 --timeout 120
+aware,False
+base_port,8600
+base_seed,45
+bumpiness,[0]
+lead_in,5.0
+paths,['sinusoidal']
+quick,True
+rocks,5
+seeds,1
+speeds,[5.0]
+terrains,['clay']
+time,3.0
+timeout,120.0
+variants,"['no_filter', 'dob_cbf_nn', 'dob_cbf_no_nn']"

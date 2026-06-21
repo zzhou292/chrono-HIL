@@ -82,6 +82,22 @@ def kappa_from_wheel_speed(
     return float(np.clip(kappa, -0.8, 0.8))
 
 
+def kappa_from_wheel_pair(
+    wheel_omega_left: float,
+    wheel_omega_right: float,
+    u_body: float,
+    tire_radius: float = HMMWV_TIRE_RADIUS_M,
+) -> float:
+    """Axle-specific longitudinal slip ratio from left/right wheel encoders."""
+    omega_avg = 0.5 * (wheel_omega_left + wheel_omega_right)
+    Vw = tire_radius * abs(omega_avg)
+    u_abs = abs(u_body)
+    if max(u_abs, Vw) < 0.5:
+        return 0.0
+    denom = max(u_abs, Vw)
+    return float(np.clip((Vw - u_abs) / denom, -0.8, 0.8))
+
+
 def compute_bicycle_operating_point(
     steering_angle_rad: float,
     u_body: float,
@@ -188,6 +204,52 @@ def write_vehicle_tire_csv_header() -> List[str]:
     ]
 
 
+def write_rich_vehicle_tire_csv_header() -> List[str]:
+    """Header for sensor-realistic rich vehicle tire training rows.
+
+    Inputs are restricted to conventional vehicle sensing / state-estimation:
+    GPS/INS/IMU, steering encoder, wheel encoders, known commands, fixed
+    geometry-derived load-transfer estimates, and terrain estimates.  Chrono
+    tire forces remain labels only.
+    """
+    return [
+        "scenario_id",
+        "timestep",
+        "axle_id",             # 0=front, 1=rear
+        "slip_ratio",
+        "slip_angle",
+        "velocity",
+        "vertical_load",
+        "steering_rate",
+        "steering_angle",
+        "u_body",
+        "v_body",
+        "yaw_rate",
+        "ax_imu",
+        "ay_imu",
+        "measured_kappa",
+        "axle_kappa",
+        "wheel_omega_axle",
+        "wheel_omega_left",
+        "wheel_omega_right",
+        "dFz_lateral_kin",
+        "dFz_lateral_imu",
+        "throttle_cmd",
+        "brake_cmd",
+        "accel_cmd",
+        "jerk_cmd",
+        "bekker_Kphi",
+        "bekker_Kc",
+        "bekker_n",
+        "mohr_cohesion",
+        "mohr_friction",
+        "janosi_shear",
+        "mesh_spacing",
+        "Fx",
+        "Fy",
+    ]
+
+
 def pack_vehicle_tire_csv_row(
     scenario_id: int,
     timestep: float,
@@ -212,6 +274,73 @@ def pack_vehicle_tire_csv_row(
         float(u_safe),
         float(Fz_f),
         float(steering_rate),
+        *ter6,
+        float(mesh_spacing),
+        float(fx_label),
+        float(fy_label),
+    ]
+
+
+def pack_rich_vehicle_tire_csv_row(
+    scenario_id: int,
+    timestep: float,
+    axle_id: int,
+    kappa: float,
+    alpha: float,
+    u_safe: float,
+    Fz: float,
+    steering_rate: float,
+    steering_angle: float,
+    u_body: float,
+    v_body: float,
+    yaw_rate: float,
+    ax_imu: float,
+    ay_imu: float,
+    measured_kappa: float,
+    axle_kappa: float,
+    wheel_omega_axle: float,
+    wheel_omega_left: float,
+    wheel_omega_right: float,
+    dFz_lateral_kin: float,
+    dFz_lateral_imu: float,
+    throttle_cmd: float,
+    brake_cmd: float,
+    accel_cmd: float,
+    jerk_cmd: float,
+    terrain_params: Dict[str, float],
+    fx_label: float,
+    fy_label: float,
+    *,
+    mesh_spacing: float = 0.04,
+) -> List[float]:
+    """One rich row: sensor-realistic inputs + Chrono force labels."""
+    ter6 = terrain_internal_to_bekker_columns(terrain_params)
+    return [
+        int(scenario_id),
+        float(timestep),
+        int(axle_id),
+        float(kappa),
+        float(alpha),
+        float(u_safe),
+        float(Fz),
+        float(steering_rate),
+        float(steering_angle),
+        float(u_body),
+        float(v_body),
+        float(yaw_rate),
+        float(ax_imu),
+        float(ay_imu),
+        float(measured_kappa),
+        float(axle_kappa),
+        float(wheel_omega_axle),
+        float(wheel_omega_left),
+        float(wheel_omega_right),
+        float(dFz_lateral_kin),
+        float(dFz_lateral_imu),
+        float(throttle_cmd),
+        float(brake_cmd),
+        float(accel_cmd),
+        float(jerk_cmd),
         *ter6,
         float(mesh_spacing),
         float(fx_label),

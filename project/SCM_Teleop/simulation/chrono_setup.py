@@ -186,8 +186,14 @@ def setup_scm_terrain(system, vehicle=None, visualize=True, terrain_preset='sand
     
     # Initialize terrain - flat or bumpy
     if bump_amplitude > 0:
-        # Generate Perlin noise heightmap
-        heightmap_file = tempfile.gettempdir() + '/scm_heightmap.bmp'
+        # Generate Perlin noise heightmap.  Parallel collectors must not share
+        # a fixed /tmp filename because Chrono may read while another worker is
+        # overwriting the BMP.
+        heightmap_tmp = tempfile.NamedTemporaryFile(
+            prefix="scm_heightmap_", suffix=".bmp", delete=False
+        )
+        heightmap_file = heightmap_tmp.name
+        heightmap_tmp.close()
         # Image resolution: ~1 pixel per 0.5m for reasonable detail
         img_width = int(length * 2)
         img_height = int(width * 2)

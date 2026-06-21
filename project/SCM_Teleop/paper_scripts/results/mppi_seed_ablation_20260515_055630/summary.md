@@ -1,0 +1,12 @@
+# MPPI Seed-Trajectory Ablation
+
+Noise policy: sensor noise enabled in every run.
+Safety buffer: 0.5 m beyond the hard collision footprint.
+Planner-blind MPC: shield is the sole collision avoider.
+Variant notes: mppi_with_seeds: Default MPPI shield with all hand-crafted seed trajectories enabled.; mppi_no_seeds: MPPI shield with seed trajectories disabled; pure Gaussian sampling around operator command.
+
+```csv
+variant,n_runs,n_ok,collisions_mean,collisions_std,near_misses_mean,near_misses_std,min_clearance_m_mean,min_clearance_m_std,intervention_rate_pct_mean,intervention_rate_pct_std,mean_abs_dsteer_mean,mean_abs_dsteer_std,mean_abs_dthrottle_mean,mean_abs_dthrottle_std,rms_cte_m_mean,rms_cte_m_std
+mppi_with_seeds,32,32,0.03125,0.17677669529663687,2.5625,0.8775883376176901,0.10928750000000008,0.1803195850204172,63.709375,14.650142779773239,0.34120711595124775,0.1830764892213012,0.1993513539056218,0.16445322060227882,1.093779372369796,1.0702049293911964
+mppi_no_seeds,32,32,1.34375,1.3821296097199118,3.1875,0.8206016675429032,-0.742334375,0.9153473850030134,64.215625,14.316246340231562,0.24767822317081511,0.08912702256314958,0.13329307628243037,0.07125518868909812,0.7745213707613847,0.7664744342222204
+```

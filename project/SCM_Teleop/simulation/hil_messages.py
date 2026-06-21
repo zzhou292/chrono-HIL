@@ -107,6 +107,21 @@ class ControlCommand:
     # Controller diagnostics
     solve_time_ms: float = 0.0
     mpc_cost: float = 0.0
+    # Optional live terrain estimate forwarded to the sim-side safety
+    # shield. Piggybacked on ControlCommand because the ctrl ZMQ socket is
+    # conflated (latest-only); a separate TerrainUpdate channel would be
+    # dropped under CONFLATE whenever ControlCommands arrived between
+    # estimator ticks. ``terrain_n=None`` means "no live estimate yet".
+    terrain_n: Optional[float] = None
+    terrain_phi_deg: Optional[float] = None
+    terrain_phi_sigma_deg: Optional[float] = None
+    terrain_Kphi: Optional[float] = None
+    terrain_Kc: Optional[float] = None
+    terrain_c: Optional[float] = None
+    terrain_k: Optional[float] = None
+    terrain_class: Optional[str] = None
+    terrain_confidence: Optional[float] = None
+    terrain_update_seq: int = 0  # monotone counter; shield acts on change
 
     def to_bytes(self) -> bytes:
         d = asdict(self)
@@ -134,6 +149,36 @@ class SimStatus:
         return cls(**{k: d[k] for k in cls.__dataclass_fields__ if k in d})
 
 
+@dataclass
+class TerrainUpdate:
+    """Live terrain-estimator output, controller -> sim-side safety shield.
+
+    The shield reads this each tick to (a) re-condition its NN surrogate's
+    terrain context and (b) tighten the friction-cone gate by phi_sigma_deg.
+    Sent on the existing controller-publishing ZMQ socket, multiplexed on
+    the ``terrain_update`` topic.
+    """
+    time: float
+    wall_time: float
+    n: float
+    phi_deg: float
+    phi_sigma_deg: float      # ensemble/EMA-residual uncertainty
+    terrain_class: str = "estimated"
+    confidence: float = 0.0
+    Kphi: float = 0.0
+    Kc: float = 0.0
+    c: float = 0.0
+    k: float = 0.0
+
+    def to_bytes(self) -> bytes:
+        d = asdict(self)
+        return _topic_frame(b"terrain_update", _serialize(d))
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TerrainUpdate":
+        return cls(**{k: d[k] for k in cls.__dataclass_fields__ if k in d})
+
+
 # =============================================================================
 # ZMQ topic framing helpers
 # =============================================================================
@@ -153,6 +198,7 @@ def parse_message(raw: bytes):
         "vehicle_state": VehicleState,
         "control_cmd": ControlCommand,
         "sim_status": SimStatus,
+        "terrain_update": TerrainUpdate,
     }
 
     # Check extended registry (terrain classifier, etc.)
@@ -176,13 +222,29 @@ class ZMQPublisher:
     """Publish messages on a ZMQ PUB socket."""
 
     def __init__(self, endpoint: str = "tcp://*:5555"):
+        import time as _time
         import zmq as _zmq
         self._zmq = _zmq
         self._ctx = _zmq.Context.instance()
         self._sock = self._ctx.socket(_zmq.PUB)
         self._sock.setsockopt(_zmq.SNDHWM, 2)  # Drop old messages if consumer is slow
         self._sock.setsockopt(_zmq.LINGER, 0)   # Release port immediately on close
-        self._sock.bind(endpoint)
+        # Bind retries with linear backoff. The orchestrated sweeps reuse port
+        # blocks rapidly; a freshly-closed socket can leave the port in
+        # TIME_WAIT for a few seconds, so retry up to ~8s before giving up.
+        # Without this, every long sweep loses ~1% of runs to flaky bind
+        # failures even though the port is logically free.
+        last_err = None
+        for attempt in range(16):
+            try:
+                self._sock.bind(endpoint)
+                last_err = None
+                break
+            except _zmq.error.ZMQError as e:
+                last_err = e
+                _time.sleep(0.5)
+        if last_err is not None:
+            raise last_err
         self.endpoint = endpoint
 
     def send(self, msg) -> None:

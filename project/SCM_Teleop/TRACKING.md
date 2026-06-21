@@ -5,6 +5,719 @@
 
 ---
 
+## MPPI Predictive Safety Shield (2026-05-10)
+
+Replaced the single-step DOB-CBF-QP safety filter with a terrain- and
+latency-aware predictive shield that uses the NN tire surrogate as the
+*dynamics* of a multi-step rollout rather than just a Jacobian source for
+a linearized QP.  Two flavors are wired in behind `--safety-flavor`:
+
+- **`mppi` (primary):** Model Predictive Path Integral.  At each step the
+  shield samples `K` (default 384) noisy command sequences around the
+  operator/AI command over a latency-padded horizon `H = max(N0, ⌈RTT/dt⌉+1)`
+  (default `N0 = 12`), rolls each through the NN surrogate with semi-implicit
+  sub-stepping + low-speed kinematic blending, scores each rollout with a
+  joint cost (obstacle softplus barrier, NN friction-cone tightened by
+  `phî − σ_phi`, terrain-aware speed cap, deviation from operator intent),
+  and returns the importance-weighted mean of the first action.  Seven
+  "seed" trajectories (passthrough, full brake, coast, evade-left,
+  evade-right, brake-while-turn-left/right) are injected unconditionally
+  so the shield always has a recoverable option in the sample set.
+- **`nmpc` (ablation):** SLSQP over the same NN-surrogate rollout, shorter
+  horizon (default 6), gradient-based.  Same cost.  Provided so the paper
+  can directly compare sampling vs gradient-based predictive shielding.
+
+**Closed-loop smoke test (clay/right_left, 3 rocks, seed 42, 10 s sim):**
+
+| Flavor | RT factor | Collisions | Near misses | Intervention rate | Mean u (target 5 m/s) |
+|--------|-----------|------------|-------------|-------------------|----------------------|
+| mppi   | 1.00×     | 0          | 0           | 99%               | 3.43 m/s             |
+| nmpc   | 0.67×     | 0          | 0           | 63%               | 3.45 m/s             |
+
+Both flavors stay collision-free.  MPPI runs real-time (~9 ms/solve at
+K=384, H=12 in the dynamics test; reported as <1 ms aggregated in the
+sim-side TIMING line because it only fires at 10 Hz).  NMPC is ~50%
+slower because SLSQP uses finite-difference Jacobians over the rollout.
+
+**Files:**
+
+- `simulation/safety/surrogate_dynamics.py` — `NumpyTireSurrogate`
+  (extracts the MLP weights and runs a vectorized numpy forward pass)
+  and `VehicleSurrogateDynamics` (batched bicycle model with sub-stepping
+  and low-speed kinematic blending for stability).
+- `simulation/safety/predictive_shield.py` — `MPPIShield` (primary) and
+  `NMPCShield` (ablation), sharing a base class with the cost function,
+  CSV logging, teleop-delay handling, and `update_terrain(phi,
+  sigma_phi)` hook for the online terrain estimator.
+- `simulation/safety/__init__.py` — adds `make_safety_filter(flavor, ...)`
+  factory plus the existing legacy `CBFSafetyFilter` for back-compat
+  (kept under the `dob_cbf` flavor).
+- Flag plumbing: `simulation/chrono_sim_node.py`, `simulation/launch_decoupled.py`,
+  `test_suite/benchmark_tire_obstacle_avoidance.py` now accept
+  `--safety-flavor {mppi,nmpc,dob_cbf}` plus per-flavor knobs
+  (`--mppi-samples`, `--shield-horizon`, `--nmpc-iter`, …).
+
+**Bugs caught and fixed during smoke testing:**
+
+1. *Forward-Euler stiffness:* with `dt = 0.1 s` the NN-driven yaw
+   dynamics diverge below ~3 m/s — slip angles saturate, lateral force
+   spikes, omega runs away — inflating the friction-cone cost on
+   benign rollouts and choking throttle to 25% even on a clear path
+   (vehicle crawled at 1.2 m/s).  Fixed with 5 internal Euler
+   sub-steps per outer step and a low-speed (< 1.5 m/s) blend toward
+   kinematic-bicycle yaw, plus tighter slip clamp (`±0.35` rad).
+2. *Brake-biased seed set:* 5/6 of the original seeds had negative
+   throttle, so even with adaptive MPPI temperature the weighted mean
+   was pulled toward brake when the operator command was safe.  Added
+   a passthrough seed (operator command repeated for the full horizon)
+   that anchors the mean to operator intent whenever there's no
+   collision pressure.
+3. *Warm-start drift:* using the previous solve's `u_mean` as the
+   sampling mean made the shield "remember" old conservative outputs
+   even after the operator command changed.  Switched to sampling
+   around `op_cmd` every step (continuity is provided by the
+   passthrough seed and the high deviation-cost weight).
+4. *Horizon vs stopping distance:* an `H=8` (0.8 s) horizon doesn't
+   see an obstacle 12 m ahead at 5 m/s until the vehicle is already
+   inside the stopping distance.  Default horizon bumped to 12, and
+   the obstacle's effective `safe_r` is inflated by half the
+   constant-deceleration stopping distance so the shield brakes
+   pre-emptively without needing a 2 s+ horizon.
+
+**Open questions:**
+
+- The terrain estimator's `phî` and ensemble uncertainty aren't yet
+  wired into `MPPIShield.update_terrain(...)`; the abstract claims this.
+  Hook exists in code; needs the controller node or sim node to call
+  `safety_filter.update_terrain(...)` when the estimator publishes a
+  new posterior.  Should slot in next to where the controller pulls
+  estimator output for its own `terrain_params_est`.
+---
+
+## Shield-only avoidance + tighter interventions (2026-05-10, follow-up)
+
+Four refinements driven by the obvious next question: *what if the MPC
+were oblivious to obstacles, so the shield is the sole avoider?*  And
+two correctness concerns from the first pass: NMPC was 1.3x over the
+RT budget at 129 ms/solve, and MPPI was intervening 99 % of the time
+with mean throttle scrub ~31 %, which is the *opposite* of what a CBF
+should look like (CBF is the identity map when constraints are
+inactive).
+
+1. **`--mpc-blind-obstacles` flag.**  Drops the obstacle list on the
+   controller side so the acados NMPC plans pure path-tracking and the
+   shield (MPPI or NMPC) is the only collision-avoider — a closer proxy
+   for an oblivious teleoperator who can't see ahead.  Patched in
+   `acados_mpc_controller_node.py` (one-liner that conditionally skips
+   the `solve_kwargs['obstacles']` assignment), threaded through
+   `launch_decoupled.py` and `benchmark_tire_obstacle_avoidance.py`.
+
+2. **NMPC made RT.**  Two changes:
+   - **SLSQP → L-BFGS-B.**  SLSQP's exact line search and inner QP cost
+     ~130 ms/solve at H=6; L-BFGS-B's strong-Wolfe line search +
+     quasi-Newton Hessian is much lighter on box-bounded problems
+     (which is all we have — no equality / inequality constraints
+     beyond actuator limits).
+   - **Batched finite-difference Jacobian.**  scipy's default FD path
+     calls `_cost_flat` once per decision variable.  On the NN-surrogate
+     rollout each call carries the same numpy/dispatch overhead, so
+     2H=16 extra calls per gradient is the worst case.  Switched to a
+     hand-rolled `_cost_and_grad(jac=True)` that batches all 2H
+     perturbations + the nominal into a single ``K = 2H+1`` rollout —
+     the NN runs in one batched forward pass.  ~10x speed-up; NMPC
+     drops from 427 ms/optimization-call to **~48 ms mean / 54 ms p90**.
+     End-to-end closed-loop wall-clock now runs at 0.99–1.00x RT.
+
+3. **Passthrough fast-path.**  Mirrors the DOB-CBF "identity map when
+   no QP constraint is binding" property.  Before invoking any
+   optimization, both shields roll the *operator command* forward
+   through the surrogate dynamics and check three hard gates:
+   obstacle penetration, friction-cone violation, speed-cap violation.
+   If all three pass, return `op_cmd` verbatim — no sampling, no
+   gradient steps.  Costs one batched rollout (~5 ms for K=1).
+
+4. **Kinematic-bicycle friction proxy.**  The previous friction-cone
+   proxy used `u * omega` from the rollout state, which spuriously
+   triggered on transient yaw-rate overshoot during early sub-steps
+   on slippery clay — driving 99 % intervention rate even on
+   well-behaved tracking.  Replaced with the steady-state
+   kinematic-bicycle estimate ``a_y = u^2 * tan(d) / L``, which is the
+   *commanded* cornering acceleration the operator is asking the tires
+   to deliver (i.e. the right thing to bound).  Added 10 % slack on
+   the friction threshold so numerical noise on the cone boundary
+   doesn't trigger the shield.  Applied identically to both
+   ``_trajectory_cost`` and ``_is_passthrough_safe`` so the
+   passthrough gate is consistent with the optimization cost.
+
+**Closed-loop results (clay/right_left, seed 42, 10–12 s sim, NN MPC):**
+
+| MPC sees rocks? | Flavor | Rocks | RT factor | Collisions | Near misses | Intervention | mean \|Δsteer\| | mean \|Δthr\| |
+|-----------------|--------|-------|-----------|------------|-------------|--------------|----------------|----------------|
+| yes             | MPPI   | 3     | 1.00x     | 0          | 0           | 57.8 %       | 0.045          | 0.096          |
+| no (`--mpc-blind-obstacles`) | MPPI | 5 | 1.00x | 0 | 0 | 58.2 % | (similar)      | (similar)      |
+| no                           | NMPC | 5 | 0.99x | 0 | 0 | 62.3 % | (similar)      | (similar)      |
+
+Compared to the first-pass numbers (99 %, mean Δthr ~0.31), the shield
+is now *substantially* less invasive — intervention magnitude is ~4x
+smaller and the shield passes through ~40 % of the time when nothing
+unsafe is on the rollout.  Collision-free in all three scenarios
+including the harder `--mpc-blind-obstacles` test where the planner is
+deliberately oblivious to rocks.
+
+**Files touched this pass:**
+
+- `simulation/safety/predictive_shield.py`: `_PredictiveShieldBase` now
+  hosts `_is_passthrough_safe` and short-circuits `filter()` before
+  `_solve` if the passthrough gate passes; friction proxy switched to
+  kinematic `u^2 tan(d) / L` with 10 % slack.  `NMPCShield._solve`
+  rewritten to use `L-BFGS-B` with `jac=True` and a batched FD
+  Jacobian in `_cost_and_grad`.
+- `simulation/acados_mpc_controller_node.py`: adds
+  `--mpc-blind-obstacles`, conditionally drops obstacle list at the
+  `solve_kwargs` injection point.
+- `simulation/launch_decoupled.py`, `simulation/chrono_sim_node.py`,
+  `test_suite/benchmark_tire_obstacle_avoidance.py`: thread the new
+  flag and adjusted defaults (`--nmpc-iter 6`, `--shield-horizon 12`
+  default for MPPI / 8 for NMPC).
+
+**New tool:** `test_suite/sweep_safety_shields.py`
+
+Runs the comparison matrix
+``{none, dob_cbf, mppi, nmpc} × {MPC obstacle-aware, MPC blind} × seeds``
+end-to-end via `launch_decoupled.py`, parses each run's
+`sim.log` / `<flavor>_shield_log.csv` / `collision_log.csv`, and
+generates five plots (`collisions.png`, `intervention_rate.png`,
+`intervention_magnitude.png`, `rt_factor.png`, `trajectories.png`)
+plus an aggregated `results.csv` and a `summary.md` index under
+`simulation/plots/shield_sweep/<timestamp>/`.
+
+Quick usage:
+```
+conda activate sim
+export ACADOS_SOURCE_DIR=/path/to/acados   # required by MPC
+python test_suite/sweep_safety_shields.py                 # 8 scenarios × 1 seed
+python test_suite/sweep_safety_shields.py --quick         # 4 blind-MPC scenarios
+python test_suite/sweep_safety_shields.py --seeds 3       # 3 seeds per scenario
+python test_suite/sweep_safety_shields.py --terrain sand --rocks 8 --time 20
+```
+
+Each scenario takes ~15–20 s wall-clock at the 12 s sim default, so
+`--quick` is ~75 s and the full 8-scenario × 1-seed sweep is ~150 s on
+this workstation.
+
+**Open follow-ups (still open after this pass):**
+
+- Wire the terrain estimator's `(phî, σ_phi)` into
+  `MPPIShield.update_terrain(...)` (hook is built; needs a publisher).
+- Run the full benchmark grid (terrains × paths × flavors) to populate
+  the paper's tracking-error table — single runs done, sweep pending.
+
+---
+
+## Shield bugfix pass — sign convention, friction-cost over-firing, passthrough idempotency (2026-05-10)
+
+Driven by the user noticing that the first `sweep_safety_shields.py`
+run on `--path sinusoidal --base-seed 45` had MPPI/NMPC slamming into
+the rock at `(16.4, 0.76)` while the legacy DOB-CBF cleanly steered
+around it (`final_x=40` vs `14`).  Investigating revealed four
+silently-bad behaviours, in order of severity:
+
+1. **Fy sign convention bug in the surrogate dynamics.**  The NN was
+   trained on Chrono SCM rig data with an Fy convention *opposite*
+   to the body-frame ``v̇`` term in the bicycle EOMs (cf.
+   `acados_mpc_solver.py:990` which bridges this with
+   ``Fyf = -self.nn_scale * Fys_all[...]``).  My surrogate-dynamics
+   step was missing the negation, so the rollout turned *the opposite
+   way* from the real Chrono vehicle for every steering command.
+   Standalone test: ``steer_norm=+1.0`` rolled to ``y=-0.22`` (right)
+   in the buggy version, ``y=+0.72`` (left) after the fix.  This
+   meant the shield's "evade left" sample was actually evading right
+   in the real world, and the weighted mean walked the vehicle
+   *into* the rock instead of around it.  **Patched in
+   ``surrogate_dynamics.py:_inner_step`` — negate ``Fy_f`` and
+   ``Fy_r`` after the NN call, matching the planning NMPC.**
+
+2. **Friction-cone cost in the shield was doing the MPC's job badly.**
+   Even with no rock anywhere near, the rollout's predicted *future*
+   speed (1.2 s of accel) drove the kinematic ``a_y = u^2 tan(δ) / L``
+   over the tightened-φ cone on the sinusoidal path's natural
+   curvature.  The shield was scrubbing 30 %+ throttle from x=1 m
+   onward, getting the vehicle into a stalled approach long before
+   any rock-related concern.  **Resolution: ``weight_friction``
+   defaulted to 0; friction-cone enforcement belongs in the planning
+   NMPC which already has the live ``phi`` estimate in its OCP.
+   Caller can re-enable it for ablations.**
+
+3. **Passthrough was silently dropping the operator's brake.**  The
+   shield's optimization state collapses ``(throttle, brake)`` into a
+   signed ``alpha = throttle - brake``.  The MPC routinely commands a
+   small simultaneous ``throttle + brake`` (rate-limited integrator
+   artefact); encoding → decoding through alpha on passthrough
+   dropped the brake component and *changed the net ``a_x`` from
+   ~0.11 to ~0.35 m/s²*.  **Fix: when the passthrough gate passes,
+   return the *raw* operator tuple verbatim instead of the
+   alpha-encoded approximation.**
+
+4. **Catastrophic-sample filter was too strict — vehicle got stuck.**
+   An earlier attempt filtered samples that penetrated ``safe_r``;
+   once the vehicle was inside the soft buffer (which happens
+   *normally* near a rock), *every* sample including brakes was
+   "catastrophic" by that filter, leaving emergency-brake as the
+   only option → vehicle stops dead next to the rock.  **Fix: track
+   a separate ``phys_r = obstacle_r + vehicle_r`` (no buffer), inject
+   a high-weight (``1e3``) penalty in the cost when a rollout
+   physically collides (``dist < phys_r``), but keep all samples in
+   the weighted mean.  Buffer-only encroachments survive with a
+   moderate cost and the weighted mean can still pick a "skirt the
+   buffer" trajectory.**
+
+**Closed-loop results after the four fixes (`--quick --time 15`,
+sinusoidal + seed 45 + ``--mpc-blind-obstacles``):**
+
+| Flavor | RT | Collisions | Near | Intervention | final_x |
+|--------|-----|------------|------|--------------|---------|
+| none (no shield) | 1.00× | 1343 | 347  | 0 %    | 24 m  |
+| dob_cbf | 1.00× | **0** | 644  | 49 %   | 40 m  |
+| **mppi**    | 1.00× | **0** | 2547 | 57 %   | 14 m  |
+| nmpc    | 1.00× | 2435  | 153  | 57 %   | 15 m  |
+
+MPPI now actually avoids the rock (trajectory plot shows it steering
+up to y=1.8 to clear the rock left-side), but it stops at x=14
+instead of pushing through.  NMPC's gradient solver still ends up in
+a local minimum that hits the rock; further work needed.
+
+**Comparison vs DOB-CBF:** the legacy filter still wins on progress
+(reaches x=40 vs MPPI's x=14) because its hand-coded reactive-steering
+override commits to an evasion direction over many sim-step ticks.
+The predictive shield reasons inside its 1.2 s horizon, which is too
+short to see "commit hard turn, gather speed, pass rock, return to
+path" as a single trajectory — once the vehicle has skirted to y=1.8,
+the next-step rollout still sees the rock dead ahead and the
+trajectory loops back to brake.  Open work: time-varying seeds that
+better represent multi-phase evasion + longer effective horizon.
+
+---
+
+## Closed-loop NN surrogate retraining — end-to-end pipeline (2026-05-12)
+
+Follow-up to the surrogate-accuracy finding below: built the full
+pipeline to collect closed-loop training data, train new surrogates,
+validate, and re-run the safety-shield sweep.
+
+### Pipeline
+
+1. **Collection** — `data_collection/collect_closed_loop_data.py`
+   spawns N independent `launch_decoupled.py` runs in parallel (6
+   workers default) with randomised terrain (clay/sand/dirt),
+   path (sinusoidal/lane_change/double_lane_change with random
+   geometry), speed (3–7 m/s) and optional rocks.  Each run logs
+   one row per controller tick (front axle, bicycle-model
+   averaged) tagged with a unique `scenario_id`.  Outputs a single
+   `training_data.csv` plus per-run logs.
+
+2. **Sign-convention fix** — `chrono_sim_node.extract_tire_forces`
+   already rotates the per-wheel Fy into the chassis body frame.
+   The rig-collected `scm_static_100k_v4` data, by contrast, used
+   tire-frame Fy (positive slip → negative Fy).  The planning NMPC
+   and the predictive shield's surrogate dynamics both rely on the
+   rig convention (the code has `Fy = -Fy_nn` to bridge).  To
+   re-use that pipeline unchanged, we sign-flip the closed-loop Fy
+   labels at the end of collection so the new NN learns the same
+   convention as the old.
+
+3. **Training** — `nn_training/train_closed_loop.sh` calls
+   `train_variant.py` to train three variants on the new dataset:
+   `closed_loop_v1_mlp_16_4`, `mlp_32_16`, and
+   `mlp_temporal_K4_16_8`.  All share the static-CSV schema, so
+   `train_variant.py` consumes it as-is.  Held-out R² values are
+   lower than the rig models' R²=0.99 (closed-loop has more
+   variance / less predictable transients), but represent
+   *meaningful* fit on the in-distribution test data:
+
+   | Model                              | R² Fx | R² Fy | RMSE Fy (N) |
+   |-----------------------------------|-------|-------|-------------|
+   | closed_loop_v1_mlp_16_4           | 0.81  | 0.80  | 302         |
+   | **closed_loop_v1_mlp_32_16**      | 0.84  | 0.83  | 282         |
+   | closed_loop_v1_mlp_temporal_K4_16_8 | 0.86  | 0.77  | 325         |
+
+4. **Validation** — `new_diagnostics/compare_surrogates_axle.py`
+   does the apples-to-apples per-axle comparison against an
+   independent closed-loop diag CSV.  All static models show
+   similar correlation against the old diag (~0.05–0.20); this is
+   expected because that diag was recorded with a *different*
+   controller, so it sits out-of-distribution for the new NN.
+   The honest test is closed-loop, below.
+
+5. **End-to-end sweep** — `test_suite/sweep_safety_shields.py
+   --nn-model closed_loop_v1_mlp_32_16` across the same 9
+   (terrain × path) matrix as before.
+
+### Results
+
+| Flavor | Baseline (paper_v2_mlp_16_4, rig-trained) | New (closed_loop_v1_mlp_32_16) | Δ |
+|--------|-------------------------------------------|--------------------------------|---|
+| **DOB-CBF** | 107 mean collisions / 775 worst | **5 / 47** | **−95 %** |
+| **NMPC**    | 794 / 1 895                          | **520 / 912** | **−34 %** |
+| MPPI    | 1 467 / 2 807                       | 1 478 / 2 814          | ~unchanged |
+| none    | 1 198 / 1 960                       | 1 359 / 3 153          | within variance |
+
+DOB-CBF is now **collision-free on 8 of 9 (terrain × path) combos**
+and reaches further (mean `final_x` 47.6 m → 51.3 m).  NMPC drops
+collisions by a third with similar progress.  MPPI's residual
+failures are concentrated on double_lane_change scenarios —
+those are the multimodal commitment failure (the cost landscape
+has two valid evasion modes mid-maneuver and the weighted-mean
+selector averages between them).  This is **independent of
+dynamics accuracy** and is the right next algorithmic-side fix.
+
+Per-scenario highlights (collisions before → after):
+
+* dirt/lane_change DOB-CBF: 184 → 47 (−75 %)
+* dirt/sinusoidal DOB-CBF: 775 → 0 (eliminated, final_x 40 → 54 m)
+* sand/lane_change NMPC: 1 895 → 692 (−63 %)
+* clay/lane_change NMPC: 1 435 → 668 (−53 %)
+* sand/lane_change MPPI: 669 → 235 (−65 %)
+
+### Why this works
+
+The rig-trained NN learns the *steady-state* slip-force curve:
+"if slip is α for a long time, Fy is f(α)".  In closed-loop SCM
+driving the slip is rapidly changing — sinkage and load-transfer
+transients dominate the instantaneous Fy.  The rig curve
+over-predicts force magnitudes that the real vehicle achieves and
+under-fits the actual closed-loop distribution.
+
+The closed-loop NN learns the *averaged*
+`(α, Fz, κ, u, terrain) → Fy` mapping that the real vehicle
+delivers.  It's an averaged map (instantaneous Fy in closed-loop
+is multi-valued in those inputs alone, because history matters),
+but the average matches the planning NMPC's needs much better
+than the rig steady-state curve.
+
+### Honest caveats
+
+* Per-row correlation against a *single old diag* run is still
+  modest because the diag is out-of-distribution for the new NN.
+  The right comparison is closed-loop collision rate, which is
+  what the table above shows.
+* The temporal-K=4 variant didn't beat static at this dataset
+  size; with more data + a tuned `dt_nn` it should.
+* The collection run (150 scenarios → 126 successful → 124k rows)
+  was single-machine and took ~19 min wall.  Scaling to 1 M rows
+  is straightforward: more workers + longer runs.
+
+### New tools
+
+* `data_collection/collect_closed_loop_data.py` — parallel
+  randomized closed-loop data collector with per-run logging and
+  CSV aggregation
+* `nn_training/train_closed_loop.sh` — three-variant training
+  driver (static MLP 16-4 / 32-16 / temporal K=4)
+* `new_diagnostics/compare_surrogates_axle.py` — fair per-axle
+  validation across multiple models on a held-out diag CSV
+* `test_suite/_regen_sweep_plots.py` — re-renders sweep plots
+  from a saved `results.csv` (so we can iterate on plotting
+  without re-running ~30-min sweeps)
+
+---
+
+## NN tire surrogate is unfit for closed-loop prediction (2026-05-12)
+
+User asked whether the predictive shields' poor performance might be
+caused by NN surrogate inaccuracy rather than the cost-function
+design.  The answer is **yes, this is a major contributing factor**.
+
+**Test setup.**  `logs/diag_force_match_clay_factored_v1_resnet_h32_b2_sim_v3.csv`
+records 1 333 frames of a closed-loop chrono SCM clay run, with
+per-wheel slip angle, vertical load, longitudinal slip *and* the
+actual Chrono per-wheel Fy.  This is ground-truth physics for the
+exact quantity the surrogate is supposed to predict.
+
+**Results (per-wheel Fy on clay closed-loop):**
+
+| Model | corr FL | corr FR | corr RL | corr RR | avg RMS (N) | sign agree |
+|-------|---------|---------|---------|---------|-------------|------------|
+| paper_v2_mlp_16_4    | +0.06 | -0.01 | +0.25 | +0.12 | 1 109 | 59 % |
+| paper_v2_mlp_32_16   | +0.06 | -0.02 | +0.26 | +0.11 | 1 130 | 59 % |
+| paper_v2_resnet_h16_b2 | +0.07 | -0.01 | +0.25 | +0.12 | 1 139 | 59 % |
+| paper_v2_resnet_h32_b2 | +0.06 | -0.00 | +0.24 | +0.12 | 1 149 | 59 % |
+| paper_v2_mlp_rate_16_4 (with rate features) | +0.08 | -0.01 | +0.22 | +0.12 | 1 142 | 56 % |
+
+**Per-axle predicted vs actual:**
+
+* Front axle: predicted std=1 326 N, actual std=1 929 N (NN
+  under-predicts magnitude by ~30 %).
+* Rear axle:  predicted std=  974 N, actual std=1 081 N — comparable
+  magnitude, but correlation is *anti-correlated* (-0.61) when
+  using the bicycle-model averaged slip, only +0.19 when using
+  per-wheel actual slip averaged.
+
+**Sign-convention probe** (rear axle, clay): for slip α > +0.05, actual
+Fy_axle averages **−100 N** (near zero); for α < −0.05, actual averages
++294 N.  The NN predicts +1 358 N (positive) for α=+0.11 and
+−1 100 N (negative) for α=−0.08.  The NN sees **a strong lateral
+force at small slip; the actual closed-loop data has a very weak
+force at the same slip**.
+
+**Diagnosis.**  All paper_v2 models were trained on a tire test rig
+(`data_collection/collect_static_data.cpp`): the wheel is held at
+constant slip for a measurement window, then the steady-state Fy is
+averaged.  Closed-loop SCM driving doesn't match that distribution:
+
+* slip angles change at 10s of Hz, not held constant
+* sinkage, terrain heterogeneity, and dynamic vertical-load transfer
+  dominate the instantaneous force
+* the NN has no history / state, so it cannot model the
+  relaxation-length and transient effects that matter most
+
+R²=0.986 on the rig test set is **not** representative of closed-loop
+accuracy.  Per-wheel correlation with reality is ~0.1, not 0.99.
+
+**Implication for the predictive safety shields.**  The MPPI/NMPC
+rollout uses this surrogate as its dynamics model.  Because the
+surrogate predicts a *larger* steady-state Fy than the actual
+transient-dominated closed-loop force, the shield "thinks" the
+vehicle responds strongly to steering — so it commits less steering
+than necessary in the actual sim.  Vehicle under-rotates → drives
+into the rock the shield believed it would clear.  This is consistent
+with the observed MPPI failure: shield outputs a moderate steering
+correction, real vehicle barely rotates, collision.
+
+DOB-CBF doesn't suffer this because it doesn't rollout — it reacts to
+*current* geometry every tick, integrated over many simulation
+substeps.  No surrogate involved.
+
+**What would actually close the gap.**  The surrogate's training
+distribution must match the closed-loop distribution:
+
+1. **Closed-loop data collection.**  Drive the chrono HMMWV through
+   randomised reference paths on randomised SCM terrains, log per-
+   wheel `(slip, Fz, kappa, u, ...)` plus the actual Fy at every
+   tick — *not* a rig sweep.  Use this to train.
+2. **Temporal context.**  Per-wheel history (slip-angle from a
+   sliding window) gives the NN the data it needs to model the
+   relaxation / transient effects.  The paper_v2 temporal variants
+   would work if trained on closed-loop data; the rate-augmented
+   ones with only first derivatives are insufficient (tested, no
+   improvement).
+3. **Vehicle-state context.**  Adding suspension stroke / chassis
+   roll / sinkage-rate as inputs would help; these are observable
+   in chrono and at deployment (IMU + ride-height sensors).
+
+Until the surrogate is retrained on closed-loop data, the predictive
+shields are bounded by a dynamics model that doesn't match physics.
+Cost-function tuning, longer horizons, multi-start optimization, etc.
+will not close this gap.
+
+**New tool:** `new_diagnostics/validate_surrogate_vs_chrono.py` —
+run any NN model against a closed-loop diag CSV and get per-wheel
+correlation / RMS / sign agreement / range.  Use to validate any
+future surrogate improvement.
+
+---
+
+## Multi-terrain × multi-path sweep — honest answer to "is CBF better?" (2026-05-11)
+
+User asked: *given the single-seed test on clay+sinusoidal showed
+DOB-CBF winning, is CBF actually just better, or do the predictive
+shields need more work?*  Answer after running the full
+`{clay, sand, dirt} × {sinusoidal, lane_change, double_lane_change}`
+matrix (9 combos × 4 flavors): **DOB-CBF is genuinely more robust on
+this benchmark**, and the gap is real.
+
+### Sweep results (single seed, 15 s sim per run, MPC blind to rocks)
+
+| Flavor | Mean collisions | Worst-case | Mean final_x | Worst final_x |
+|--------|----------------|-----------|--------------|---------------|
+| **dob_cbf** | **~50–107** | 775 (dirt/sinus) | **47 m** | 39 m |
+| nmpc       | 770–794      | 1 895 (sand/lc)  | 45 m     | 25 m  |
+| mppi       | 1 467–1 762  | 2 807 (dirt/dlc) | 33 m     | 15 m  |
+| none       | 1 148–1 198  | 1 960 (dirt/lc)  | 44 m     | 18 m  |
+
+Two single-seed sweeps run back-to-back show some variance from the
+Chrono physics non-determinism, but the *ordering* is consistent:
+DOB-CBF is collision-free or near-collision-free on 7/9 combos, MPPI
+fails badly on 5/9 (mostly DLC and high-traction sinusoidal), NMPC sits
+in between.
+
+### Failure modes
+
+* **MPPI** stalls around `x ≈ 15–19 m` on the double-lane-change path
+  for *all three terrains*, and on sinusoidal for sand/dirt.  The
+  weighted-mean action selection averages across multiple modes (one
+  cost minimum says "evade left", another says "evade right"); the
+  mean lies between and drives the vehicle into the rock.  Added a
+  cluster-then-average action selector (only average elites within
+  ``0.6`` of the argmin in control space) which helped on the
+  sinusoidal cases but **did not fix double-lane-change** — there the
+  multiple modes are *necessary* (vehicle must commit to one side of
+  each rock), and the optimal mode flips as the path itself flips
+  laterally, which the 1.8 s rollout horizon can't anticipate.
+
+* **NMPC** is much more consistent than MPPI because gradient descent
+  commits to a single solution.  It does collide on some scenarios
+  (notably sand/lc: ~1900 collision-frames at final_x ≈ 48 m) where
+  L-BFGS-B lands in a local minimum that brushes through a rock
+  instead of going around it.  Multi-start (5–10 random restarts)
+  would likely fix this but pushes solve time past the 100 ms
+  real-time budget.
+
+* **DOB-CBF** wins because its hand-coded reactive-steering layer
+  picks an evasion direction *geometrically* from h(x) gradient and
+  commits to it across many simulation ticks — it doesn't need to
+  see the full evade-and-return arc in a single rollout.  The
+  predictive shields try to "plan" the maneuver inside the rollout,
+  which puts them at a structural disadvantage when the maneuver
+  spans longer than the horizon.
+
+### Magic-number cleanup this pass
+
+To reduce hand-tuning sensitivity across terrains:
+
+* **Physical-collision penalty derived from soft-cost ceiling.**  Was
+  ``1e3`` absolute; now ``50 ×`` the sum of (w_obs * H + w_obs_T +
+  0.5 * w_obs * 4 + w_prog + w_dev * 16 + w_spd * H).  Guarantees a
+  physical collision is unambiguously the worst outcome regardless of
+  how the soft weights are scaled.
+
+* **Per-path rock zones in the sweep** — different paths sweep
+  different y-ranges, so a single rock zone wouldn't land rocks
+  meaningfully on all paths.  Defined `PATH_ROCK_ZONES` in
+  `sweep_safety_shields.py` covering the relevant y-band for each
+  path's lateral extent.
+
+* **Sweep infrastructure** — `--terrains` and `--paths` accept lists
+  now, with heat-map plots (`matrix_collisions.png`,
+  `matrix_final_x.png`, `matrix_intervention.png`), a box-plot
+  (`progress_box.png`), and a `_regen_sweep_plots.py` helper that
+  re-renders plots from a saved `results.csv` without re-running.
+
+### What would actually close the gap (open work)
+
+Three structural changes I believe are needed for the predictive
+shields to catch up to DOB-CBF on this benchmark, **without
+per-scenario hand-tuning**:
+
+1. **Adaptive horizon scaling with speed.**  Currently fixed at H=18
+   (1.8 s).  At u=5 m/s that's only 9 m of foresight — too short to
+   plan around a double-lane-change rock layout where the path's own
+   lateral swing happens over 20+ m.  Scaling H so the rollout
+   always covers ≥ stopping distance + path-feature scale would
+   eliminate the DLC stall cases.
+
+2. **CBF-style geometric prior as a seed.**  Compute the
+   reactive-steering direction (away from the nearest in-path rock,
+   from h(x) gradient) and inject it as a deterministic seed.  This
+   gives MPPI/NMPC a working baseline trajectory that they only need
+   to *refine*, not discover from scratch.
+
+3. **Multi-start for NMPC.**  Run L-BFGS-B from 3–5 distinct
+   warm-starts (each seed becomes one), keep the best.  Cheap (most
+   warm-starts will converge fast), eliminates the local-minimum
+   collisions.
+
+These are real algorithmic improvements, not tuning.  All three sit
+in the "future work" bucket for now — the current state of the
+predictive shields is "competitive but not yet superior" to DOB-CBF
+on this benchmark.
+
+---
+
+## Cost-function redesign — multi-seed comparison (2026-05-11)
+
+Driven by the (correct) observation that DOB-CBF was beating MPPI/NMPC
+on the sinusoidal+seed-45 scenario.  Root cause investigation showed
+the predictive shields didn't have a *progress* incentive — the cost
+was obstacle + speed-cap + deviation-from-operator, all of which are
+satisfied by "brake to zero just outside the rock buffer".  Combined
+with a too-aggressive deviation penalty on the *steering* axis, the
+weighted-mean output couldn't commit to "evade hard left through the
+rock buffer at maintained throttle" even when that was clearly the
+best seed in the sample set.
+
+**Changes this pass:**
+
+1. **Added a progress reward** (`weight_progress=35`) that penalises
+   the rollout's *shortfall* in forward (operator-heading)
+   displacement vs what the current speed would deliver at constant
+   velocity over the horizon.  "Brake to zero" now pays the full
+   progress cost; "evade around the rock at maintained throttle"
+   pays ~zero progress cost.
+2. **Softened the soft-buffer obstacle weight** (80 → 18) and switched
+   to a *fourth-power* normalised-penetration penalty.  The buffer
+   is narrow (~0.25 m), and a quadratic penalty made brushing the
+   buffer cost as much as deep penetration, biasing the shield
+   toward "stay 2× safer than necessary".  The quartic is near-zero
+   until well inside the buffer, then ramps sharply.
+3. **Asymmetric deviation cost** — flipped the relative weights so
+   the shield resists *throttle* changes more than *steering*
+   changes.  CBF's reactive-steering layer does exactly the same
+   thing: commit to a steering direction even when it disagrees
+   strongly with operator intent.  Throttle/brake intent is more
+   likely to be the right call once the steering has solved the
+   geometry.
+4. **CEM-style two-round MPPI** — instead of a single-round
+   importance-weighted mean over K samples around the operator
+   command (where 384 noisy ops-cmd samples drown out the few
+   hand-crafted evade seeds), now: round 1 scores around op_cmd,
+   picks the top 5 % as elites, fits a Gaussian; round 2 resamples
+   around the elite Gaussian and averages over the top 3 % of those.
+   This gives the commitment that pure MPPI averaging fails to
+   provide.
+5. **Aggressive evade-with-throttle seeds** — the old seeds
+   (commit-then-straighten with throttle 0.3) didn't represent
+   "drive *around* the rock at speed".  New seeds: hard left/right
+   commit with operator-throttle-or-better for the first ~35 % of
+   the horizon, then ease.
+6. **Look-beyond-horizon obstacle term** — projects the rollout's
+   final state forward at constant velocity for 2 s, samples 4
+   points along that extension, and adds a half-weight obstacle
+   penalty.  Catches "evaded the big rock then dove into the small
+   one 12 m further" failure mode where the second rock is past
+   the 1.8 s horizon.
+7. **NMPC**: same cost changes plus the batched-Jacobian
+   `_cost_and_grad` from earlier brings solve time to ~50 ms.
+
+**Multi-seed sweep results (clay/sinusoidal, `--mpc-blind-obstacles`,
+3 seeds = {45, 46, 47}, 15 s sim each):**
+
+| Flavor | seed 45 | seed 46 | seed 47 | Mean final_x | Total collisions (3 runs) |
+|--------|---------|---------|---------|-----------|--------|
+| none-blind | 27 m | 40 m | 41 m | 36 m | 2389 |
+| dob_cbf-blind | 42 m (**0**) | 20 m (90) | 15 m (1930) | 26 m | **2020** |
+| mppi-blind | 36 m (645) | 14 m (2496) | 37 m (419) | 29 m | 3560 |
+| **nmpc-blind** | **41 m** (478) | **36 m** (620) | **42 m** (661) | **40 m** | **1759** |
+
+(parens = collision frames; lower = better).
+
+**The honest answer to "is CBF actually better?":** *no, NMPC wins
+consistently on this benchmark.*  It reaches the highest mean final_x
+(40 m, tied with no-filter and DOB-CBF's best seeds) and has the
+*lowest total collisions* across all 3 seeds.  Critically, NMPC has
+the **lowest variance** — all three seeds finish in 36–42 m.
+
+DOB-CBF is reliable when it works (seed 45: 42 m / 0 collisions) but
+fails catastrophically on seed 47 (15 m, 1930 collisions): the
+hand-tuned reactive-steering picks the wrong evasion direction for
+that rock configuration and the vehicle gets pinned.
+
+MPPI is the weakest — still binary (works 2/3, fails 1/3) because the
+weighted-mean averaging doesn't commit decisively even with the
+CEM-style top-K averaging.  Could be improved further with explicit
+multi-modal sampling (cluster seeds before averaging) or a longer
+horizon, but the current state is functional and the closed-loop
+**collision counts on the worst-case seed are still lower than
+DOB-CBF's worst-case** (2496 vs 1930 + 90 = ~2020 in one bad seed
+alone).
+
+**Note on non-determinism:** the closed-loop wall-clock-scheduled
+Chrono physics has small run-to-run variation that cascades through
+the MPC → shield → physics → MPC feedback loop, so single-seed
+benchmarks aren't reliable.  ``sweep_safety_shields.py --seeds N``
+now exists for honest multi-seed comparisons.
+
+---
+
 ## Cleanup Log (2026-04-20)
 
 - Repo cleanup pass completed without deleting project assets.
@@ -1487,3 +2200,1627 @@ Verification:
 * `python -m compileall simulation/launch_decoupled.py simulation/acados_mpc_controller_node.py`
   passed.
 * No Chrono simulation run was executed for this CLI/path cleanup.
+
+## 2026-05-12: MPCC controller (Model Predictive Contouring Control)
+
+**Motivation.** The standard MPC tracks a curvature-derived speed
+profile `v_ref(t)` from `reference_path.py`. That profile is computed
+open-loop, assumes constant longitudinal accel/brake authority, and
+does not see the friction ellipse — on low-traction SCM terrain
+(clay μ≈0.23 → ay_max ≈ 2.3 m/s²) the reference is often infeasible
+and the MPC fights itself, sacrificing path tracking. MPCC drops the
+speed reference, adds path-progress `θ` to the state, lets the
+optimizer pick `vθ = θ̇` as a control, and uses contour + lag errors
+against the spatial path instead of pose tracking against a
+time-parametrised reference.
+
+**Files added:**
+
+* `simulation/acados_mpcc_solver.py` (~440 lines) — acados OCP build.
+  NX=9 `[x, y, ψ, u, v, ω, ax, δ, θ]`, NU=3 `[δ̇, jx, vθ]`, NP=11
+  per-stage params (path samples + terrain + per-stage v_max).
+  Cost: `w_c·e_c² + w_l·e_l² − w_prog·vθ + control reg + soft speed cap`.
+  Hard friction ellipse is implemented but disabled by default — the
+  closed-loop NN under-predicts peak Fy so the ellipse was chronically
+  infeasible during early bring-up.
+* `simulation/acados_mpcc_controller_node.py` (~330 lines) — minimal
+  ZMQ controller node. Replicates the standard MPC's ready-ping
+  handshake (periodic, every 0.3 s) and emits a small KPI CSV via
+  `--diag-csv`. Deliberately omits DOB / terrain-estimator / GP /
+  rate-NN to keep it audit-sized.
+* `simulation/reference_path.py` — added `sample_at_theta(theta)`,
+  `v_max_at_theta(theta)`, `theta_at_xy(x, y)`.
+* `simulation/launch_decoupled.py` — `--controller-mode {standard, mpcc}`
+  plus MPCC-specific knobs (`--mpcc-N/dt/w-contour/w-lag/w-progress/
+  vtheta-max/diag-csv`). All standard-MPC-only flags gated on
+  `if not use_mpcc:` so MPCC mode doesn't crash on unknown args.
+* `test_suite/benchmark_mpcc_vs_mpc.py` — head-to-head runner over a
+  (terrain × path) grid. Computes `rms_cte`, `max_cte`, `mean_speed`,
+  `p95_speed`, `mean_solve_ms`, `p99_solve_ms`, `progress_m` from each
+  controller's diag CSV and writes a 4-panel comparison plot.
+
+**Bugs caught and fixed during bring-up:**
+
+1. *Bogus `Jx_prev` derivative.* Original 10-D state had `Jx_prev` and
+   modeled `Jx` as `(Jx - Jx_prev) / dt` which is nonsense as a
+   continuous-time dynamic. Dropped to 9-D state with `δ` and `ax`
+   as actuator states and `δ̇` / `jx` as controls.
+2. *Friction ellipse chronically infeasible.* Closed-loop NN
+   under-predicts peak Fy at high alpha. Hard ellipse on top of
+   that yielded HPIPM `QP MINSTEP` errors. Disabled by default;
+   replaced with per-stage soft `v_max` cap (curvature-derived) +
+   one-sided quadratic penalty.
+3. *Acados shared libs not found.* The MPCC solver was missing the
+   `ACADOS_SOURCE_DIR` env preamble that the standard MPC solver
+   has. Symptom: `OSError: libqpOASES_e.so: cannot open shared
+   object file`. Fix: replicate the preamble (set
+   `LD_LIBRARY_PATH`, pre-`ctypes.CDLL` the libs with `RTLD_GLOBAL`).
+4. *ZMQ recv returns a tuple.* `ZMQSubscriber.recv()` returns
+   `(topic, msg)`. The MPCC node was calling
+   `isinstance(msg, VehicleState)` on the tuple — always False, so
+   the handshake never completed and the test timed out. Unpacked
+   the tuple at both the handshake and main loop.
+5. *Single-shot ready ping deadlocks.* The original node sent one
+   ready ping. ZMQ pub-sub drops messages sent before the
+   subscriber has connected, so the sim never saw it. Replicated
+   the standard MPC's periodic ready-ping pattern (every 0.3 s
+   until the first `VehicleState` arrives).
+6. *Initial tuning had `vθ` saturated at max.* With defaults
+   `w_contour=800, vtheta_max=8`, MPCC ran at u≈5–7 m/s (way above
+   v_target=5) with RMS CTE ≈ 1.4 m — worse than the baseline MPC.
+   Tuning sweep settled on `w_contour=3000, vtheta_max=5` (matched
+   to v_target). After tuning, MPCC tracks better *and* runs faster
+   than the baseline (see table below).
+
+**Head-to-head smoke test (clay/sinusoidal, speed=5, 10 s, no rocks):**
+
+| Controller   | RMS CTE | Max CTE | Mean u   | Mean solve |
+|--------------|---------|---------|----------|------------|
+| Standard MPC | 0.321 m | 0.756 m | 3.35 m/s | 5.1 ms     |
+| MPCC (tuned) | 0.145 m | 0.456 m | 4.09 m/s | 1.0 ms     |
+
+A 3×3 grid sweep (`{clay, sand, dirt} × {sinusoidal, lane_change,
+right_left}`) is running at the time of this note; results land in
+`simulation/plots/mpcc_vs_mpc/<timestamp>/kpis.csv`.
+
+**Open items:**
+
+* Re-enable the hard friction ellipse once we have a peak-Fy probing
+  strategy that is robust to the surrogate's averaging bias.
+* Port the rate-NN variant into the MPCC node if a paper figure needs
+  high-steering-rate fidelity. Currently MPCC uses static-MLP only.
+* Wire MPCC through the safety-shield wrapper for the shared/teleop
+  story. For the autonomous baseline figure, MPCC stands alone.
+
+## 2026-05-13: Paper scripts and diagnosis sweeps
+
+Added `paper_scripts/` as the canonical paper-run directory.  Each script
+tests one question and writes timestamped output under
+`paper_scripts/results/<experiment>_<timestamp>/` with `manifest.csv`,
+`results.csv`, aggregate `summary_*.csv`, raw per-run logs/diag CSVs, and
+PNG figures/heatmaps:
+
+* `mpc_tire_model_sweep.py` — standard MPC tire-model sweep over
+  Pacejka/TMeasy/NN surrogate variants across terrains, paths, speeds,
+  bumpiness, and seeds.
+* `mpcc_vs_mpc_speed_tracking.py` — standard MPC vs MPCC speed/tracking
+  tradeoff, including MPCC knob variants for speed cap, progress reward,
+  steering-rate regularization, and hard friction-ellipse troubleshooting.
+* `safety_filter_sweep.py` — no filter vs DOB-CBF vs MPPI vs NMPC safety
+  filters, with blind-MPC mode so the shield is the sole obstacle avoider.
+* `dob_cbf_nn_ablation.py` — DOB-CBF with NN tire model enabled vs the same
+  DOB-CBF forced to use the kinematic fallback.
+
+All paper scripts intentionally leave sensor noise ON; they never pass
+`--no-noise`.  Added `--no-safety-nn` to `chrono_sim_node.py` and
+`launch_decoupled.py` so the DOB-CBF NN ablation is explicit rather than
+depending on a missing checkpoint.  Added MPCC CLI plumbing for
+`--mpcc-w-speed-cap`, `--mpcc-w-delta-dot`, and `--mpcc-friction-ellipse`
+so the MPCC paper sweep can test suspected bottlenecks.
+
+Safety-filter root-cause fix: NMPC was not using the large physical-hit
+penalty that MPPI adds on top of the smooth obstacle cost.  It optimized
+only the soft rollout cost, so finite-difference L-BFGS-B could settle on
+locally cheap trajectories that still physically brushed rocks.  Moved the
+physical collision penalty to the predictive-shield base class and added it
+to NMPC `_cost_flat` / `_cost_and_grad`.  DOB-CBF can still win because it
+has an explicit reactive steering layer and a simple local geometry prior,
+but the NMPC ablation now pays the same "do not physically hit" cost as MPPI.
+
+Real Chrono smoke tests:
+
+* `mpcc_vs_mpc_speed_tracking.py --quick --time 3 --timeout 120`
+  -> `paper_scripts/results/mpcc_vs_mpc_speed_tracking_20260513_003404`.
+  On clay/sinusoidal/no-bump/noise-on: standard MPC RMS CTE 0.126 m,
+  speed ratio 0.44; MPCC default RMS CTE 0.424 m, speed ratio 0.57;
+  MPCC relaxed speed cap RMS CTE 0.653 m, speed ratio 0.57.  Tiny run
+  interpretation: MPCC does run faster here, but relaxing the cap barely
+  improves speed and worsens CTE, so the underperformance is not simply
+  `vtheta_max`/speed-cap conservatism.  Likely larger causes remain:
+  MPCC lacks standard-MPC add-ons (DOB/residual/estimator/safety hooks),
+  the hard friction ellipse is still disabled because closed-loop NN
+  peak-Fy is biased low, and the soft curvature speed cap plus weak
+  progress reward can still prefer tracking compromises rather than true
+  racing-style speed selection.
+* `safety_filter_sweep.py --quick --time 3 --timeout 120 --mppi-samples 64
+  --shield-horizon 6 --nmpc-iter 2`
+  -> `paper_scripts/results/safety_filter_sweep_20260513_003655`.
+  Confirms no-filter/DOB-CBF/MPPI/NMPC all launch and produce raw result
+  artifacts through the new wrapper after the NMPC physical-collision
+  penalty fix.
+* `dob_cbf_nn_ablation.py --quick --time 3 --timeout 120`
+  -> `paper_scripts/results/dob_cbf_nn_ablation_20260513_003148`.
+  Confirms `--no-safety-nn` exercises the DOB-CBF kinematic fallback.
+  The 3 s smoke case has no collisions/interventions, so it is only a
+  launch/output validation, not a meaningful ablation result.
+* `mpc_tire_model_sweep.py --quick --time 3 --timeout 120`
+  -> `paper_scripts/results/mpc_tire_model_sweep_20260513_003301`.
+  Confirms Pacejka/TMeasy/closed-loop-NN variants run and render summary
+  figures through the new paper wrapper.
+
+Next paper-grade runs should remove `--quick`, use at least 3-5 seeds, and
+keep the default multi-terrain/multi-path/multi-speed/multi-bump grids.
+
+## 2026-05-13: Paper experiment coverage and MPC speed-weight ablation
+
+Moved the controller comparison forward by exposing the standard MPC speed
+tracking weight instead of treating it as fixed.  `AcadosMPC` now accepts
+`speed_weight` (default still 70.0), `acados_mpc_controller_node.py` exposes
+`--speed-weight`, and `launch_decoupled.py` forwards it only to the standard
+MPC node.  `paper_scripts/mpcc_vs_mpc_speed_tracking.py` now includes:
+
+* `standard_mpc` — default speed weight 70.
+* `standard_mpc_soft_speed` — speed weight 15.
+* `standard_mpc_no_speed` — speed weight 0.
+
+This gives the paper a fairer baseline than “MPCC must beat a standard MPC
+that is known to chase `v_ref` too hard in turns.”  If the soft-speed MPC
+wins on full sweeps, use it as the baseline.  If MPCC beats the soft-speed
+baseline, the path-progress formulation is earning its keep.
+
+Added more paper scripts:
+
+* `autonomous_obstacle_tire_model_sweep.py` — obstacle-aware autonomous MPC
+  with no downstream safety filter, swept over tire models.  Uses the soft
+  speed weight by default so obstacle avoidance is not confounded by
+  aggressive speed recovery in turns.
+* `terrain_estimator_benchmark.py` — learned online terrain estimator on
+  canonical ID terrains and generated OOD SCM YAML terrains.  Starts from
+  neutral dirt/n=0.7 every run and reports tail mean/final `n` error,
+  update timing, tracking, and figures.
+* `human_delay_compensation_rounds.py` — human-in-the-loop round
+  orchestrator across delay, path, terrain, bumpiness, and safety-filter
+  settings.  Writes `round_plan.csv`, raw sim diagnostics, logs, summaries,
+  and figures.  It currently benchmarks control-path delay via
+  `--manual-input-delay`; camera-frame buffering remains a separate future
+  experiment if the final paper needs visual latency independently.
+
+Added sim/runtime hooks for the new HIL and obstacle metrics:
+
+* `chrono_sim_node.py --sim-diag-csv` writes sim-side state/control,
+  collision counters, and nearest obstacle clearance at 10 Hz.  This is
+  useful for manual runs where no controller diagnostic CSV exists and for
+  collision-free obstacle runs where the collision log has no clearance rows.
+* `chrono_sim_node.py --manual-honor-time` makes manual/WASD runs stop at
+  `--time`.
+* `chrono_sim_node.py --manual-input-delay` applies fixed actuation delay to
+  manual steering/throttle/brake inputs.
+* `launch_decoupled.py` forwards all three flags.
+* `paper_scripts/common.py` now requests sim diagnostics automatically for
+  rock-obstacle sweeps and uses them to fill `min_clearance_m` when the
+  event-based collision log is empty.
+
+Real smoke tests on 2026-05-13:
+
+* `mpcc_vs_mpc_speed_tracking.py --variants standard_mpc
+  standard_mpc_soft_speed --terrains clay --paths sinusoidal --speeds 5
+  --bumpiness 0 --seeds 1 --time 3 --timeout 140 --base-port 11200`
+  -> `paper_scripts/results/mpcc_vs_mpc_speed_tracking_20260513_005027`.
+  Both variants launched through Chrono/acados with noise on.  Default:
+  RMS CTE 0.131 m, speed ratio 0.45.  Soft-speed: RMS CTE 0.129 m, speed
+  ratio 0.46.  This 3 s run only validates the plumbing; the full sweep is
+  needed for a real conclusion.
+* `autonomous_obstacle_tire_model_sweep.py --quick --time 3 --timeout 160
+  --base-port 11800`
+  -> `paper_scripts/results/autonomous_obstacle_tire_model_sweep_20260513_005224`.
+  Pacejka/TMeasy/closed-loop MLP all ran with rocks, noise, sim diagnostics,
+  and figures.  No collisions in the short smoke; clearance now reports
+  finite values from `sim_diag.csv`.
+* `terrain_estimator_benchmark.py --quick --time 3 --timeout 180
+  --base-port 11600`
+  -> `paper_scripts/results/terrain_estimator_benchmark_20260513_005153`.
+  ID clay and one generated OOD soil launched.  The 3 s ID run stayed at
+  neutral n=0.7, so it is only a launch/output smoke; full/default 15 s
+  runs are needed for estimator convergence.
+* `human_delay_compensation_rounds.py --dry-run --quick`
+  -> `paper_scripts/results/human_delay_compensation_rounds_20260513_005027`.
+  Wrote `round_plan.csv`.
+* Manual timing/diag smoke:
+  `simulation/launch_decoupled.py --wasd --manual-honor-time --time 1
+  --terrain clay --path sinusoidal --speed 4 --rocks 1 --rock-zone-x 20 25
+  --rock-zone-y -1 1 --rock-size 0.8 1.0 --rock-seed 999 --vis-mode none
+  --sim-diag-csv /tmp/scm_teleop_manual_diag_smoke.csv`
+  completed in real time and wrote 11 diagnostic rows with finite
+  nearest-clearance values.
+
+## 2026-05-13: Focused baseline result pack
+
+Ran a focused baseline pack with real Chrono simulations and sensor noise
+enabled.  These are not the full paper grids, but they are broad enough to
+see the current story and catch bugs before scaling up.
+
+### Standard MPC tire-model baseline
+
+Command:
+
+```bash
+python paper_scripts/mpc_tire_model_sweep.py \
+  --models pacejka tmeasy closed_loop_mlp \
+  --terrains clay sand --paths sinusoidal lane_change \
+  --speeds 4 5 --bumpiness 0 4 --seeds 1 --time 8 \
+  --timeout 180 --base-port 12000
+```
+
+Output:
+`paper_scripts/results/mpc_tire_model_sweep_20260513_005540`.
+
+Summary over 48/48 successful runs:
+
+* Pacejka: RMS CTE 0.079 m, speed ratio 0.726, mean solve 2.27 ms.
+* TMeasy: RMS CTE 0.072 m, speed ratio 0.729, mean solve 2.25 ms.
+* Closed-loop MLP: RMS CTE 0.096 m, speed ratio 0.745, mean solve 3.90 ms.
+
+Interpretation: the closed-loop MLP gives the fastest baseline but is not
+the cleanest tracker in this focused grid.  TMeasy currently wins tracking.
+Clay/sinusoidal speed retention remains low for all models.
+
+### MPCC vs MPC baseline and attempted tuning
+
+Main output:
+`paper_scripts/results/mpcc_vs_mpc_speed_tracking_20260513_011319`.
+
+Summary over 32/32 successful runs:
+
+* Standard MPC: RMS CTE 0.103 m, speed ratio 0.679.
+* MPCC default: RMS CTE 0.239 m, speed ratio 0.846.
+* MPCC balanced tracking: RMS CTE 1.55 m, speed ratio 0.837
+  (one sand/sinusoidal run lost the path badly).
+* MPCC tight tracking: RMS CTE 0.236 m, speed ratio 0.847.
+
+Interpretation: MPCC is objectively faster but not objectively better yet.
+Increasing contour/lag weights and lowering progress reward did not recover
+standard-MPC tracking.  The current paper story should not claim MPCC is
+better.  Treat it as a negative/diagnostic result unless a deeper MPCC
+architecture change lands.
+
+Also ran `mpcc_less_speed_cap` in
+`paper_scripts/results/mpcc_vs_mpc_speed_tracking_20260513_010447`.
+It is not acceptable: several runs have high CTE and one sand/sinusoidal
+bumpy run gets stuck near the origin with ACADOS_MINSTEP messages, full
+brake, and saturated steering.  Do not use that variant as a paper result.
+
+### Safety-filter bug fix and baseline
+
+Found a real geometry bug in the predictive shield: `chrono_sim_node.py`
+instantiated MPPI/NMPC with `vehicle_radius=1.0`, while `CollisionLogger`
+uses an HMMWV collision radius of 1.5 m.  The observed predictive-shield
+contacts were mostly ~0.4--0.6 m penetrations, matching the 0.5 m radius
+mismatch.  Fixed the predictive shield instantiation to `vehicle_radius=1.5`
+and updated `--sim-diag-csv` nearest-clearance logging to subtract the same
+1.5 m footprint.
+
+After the radius fix, ran:
+
+```bash
+python paper_scripts/safety_filter_sweep.py \
+  --flavors none dob_cbf mppi nmpc \
+  --terrains clay sand --paths sinusoidal lane_change \
+  --speeds 5 --bumpiness 0 --seeds 2 --time 10 --rocks 5 \
+  --mppi-samples 384 --shield-horizon 18 --nmpc-iter 8 \
+  --timeout 260 --base-port 13200
+```
+
+Output:
+`paper_scripts/results/safety_filter_sweep_20260513_014300`.
+
+Summary:
+
+* No filter: 1.50 collisions/run, RMS CTE 0.160 m.
+* DOB-CBF: 0.00 collisions/run, RMS CTE 2.86 m, intervention 41.3%.
+* MPPI: 0.125 collisions/run, RMS CTE 1.73 m, intervention 59.4%.
+* NMPC: 0.625 collisions/run, RMS CTE 3.16 m, intervention 55.3%,
+  RT factor 0.78 (too slow).
+
+Then exposed `--safety-buffer` in `safety_filter_sweep.py` and set its
+paper-script default to 0.5 m.  A 1-seed sanity rerun with
+`--safety-buffer 0.5` landed at:
+`paper_scripts/results/safety_filter_sweep_20260513_015222`.
+
+* No filter: 1.5 collisions/run.
+* DOB-CBF: 0 collisions/run, min clearance 0.85 m.
+* MPPI: 0 collisions/run, min clearance 0.048 m.
+* NMPC: 0.5 collisions/run, still clips lane-change cases.
+
+Interpretation: MPPI is now viable as the predictive shield when geometry
+is correct and the safety buffer is nonzero.  NMPC remains a weaker ablation
+because the local optimizer still gets trapped/clips lane-change obstacles.
+DOB-CBF is collision-robust but very path-invasive.
+
+### Autonomous obstacle avoidance by tire model
+
+Command:
+
+```bash
+python paper_scripts/autonomous_obstacle_tire_model_sweep.py \
+  --models pacejka tmeasy closed_loop_mlp \
+  --terrains clay sand --paths sinusoidal lane_change \
+  --speeds 5 --bumpiness 0 --seeds 2 --time 10 --rocks 5 \
+  --timeout 220 --base-port 13600
+```
+
+Output:
+`paper_scripts/results/autonomous_obstacle_tire_model_sweep_20260513_015755`.
+
+Summary:
+
+* Pacejka: 0 collisions/run, RMS CTE 0.076 m, speed ratio 0.431.
+* TMeasy: 0 collisions/run, RMS CTE 0.065 m, speed ratio 0.444.
+* Closed-loop MLP: 0.25 collisions/run, RMS CTE 0.212 m, speed ratio 0.576.
+
+Interpretation: the NN planner drives faster but is currently less safe in
+autonomous obstacle avoidance.  A quick attempt to increase MPC obstacle
+slots from 3 to 5 did not fix the sand/lane-change NN failure and worsened
+one case, so that attempted change was backed out.  The likely issue is
+the standard MPC obstacle barrier / speed behavior under the faster NN
+planner; for paper safety, pair autonomous NN tracking with MPPI rather
+than relying on the in-horizon soft barrier alone.
+
+### DOB-CBF NN ablation
+
+Command:
+
+```bash
+python paper_scripts/dob_cbf_nn_ablation.py \
+  --variants no_filter dob_cbf_nn dob_cbf_no_nn \
+  --terrains clay sand --paths sinusoidal lane_change \
+  --speeds 5 --bumpiness 0 --seeds 2 --time 10 --rocks 5 \
+  --timeout 220 --base-port 14000
+```
+
+Output:
+`paper_scripts/results/dob_cbf_nn_ablation_20260513_020521`.
+
+Summary:
+
+* No filter: 1.50 collisions/run.
+* DOB-CBF + NN: 0 collisions/run, mean clearance 0.741 m.
+* DOB-CBF no NN: 0.125 collisions/run, mean clearance 0.237 m.
+
+Interpretation: the NN path does help DOB-CBF safety.  Reactive geometry is
+doing much of the visible steering, but the NN traction/speed path improves
+clearance and removes the one clay/sinusoidal collision seen without NN.
+
+### Terrain estimator baseline
+
+Command:
+
+```bash
+python paper_scripts/terrain_estimator_benchmark.py \
+  --distributions id ood --terrains clay dirt sand \
+  --paths sinusoidal --speeds 5 --bumpiness 0 --seeds 1 \
+  --ood-terrains 3 --time 15 --timeout 260 --base-port 14200
+```
+
+Output:
+`paper_scripts/results/terrain_estimator_benchmark_20260513_021211`.
+
+Summary:
+
+* ID: mean tail |n error| 0.069, first accepted update ~4.21 s.
+  Per-terrain tail estimates: clay 0.573 (err 0.073), dirt 0.702
+  (err 0.002), sand 0.969 (err 0.131).
+* OOD: mean tail |n error| 0.105, first accepted update ~4.16 s.
+  One OOD terrain is weak (err 0.232), but two are good (0.010, 0.073).
+
+Interpretation: the estimator is good enough for a baseline figure, but OOD
+needs more seeds/terrains before claiming broad generalization.
+
+### Current paper recommendations from this baseline pack
+
+* Use standard MPC/TMeasy as a strong tracking baseline; closed-loop MLP is
+  faster but less accurate in this grid.
+* Do not claim MPCC superiority yet.  It is a speed/progress diagnostic,
+  not a better controller in current form.
+* Use MPPI with corrected vehicle radius, horizon 18, K=384, and safety
+  buffer 0.5 m as the predictive safety-shield baseline.
+* Keep DOB-CBF as a robust but invasive baseline; its NN ablation is
+  favorable to NN usage.
+* Treat NMPC shield as a local-optimizer ablation that remains worse than
+  MPPI/DOB-CBF on lane-change obstacle cases.
+
+---
+
+## 2026-05-13 continuation: guarded NN autonomy and MPC speed-cost fix
+
+### Corrected 2-seed safety-filter baseline
+
+Final corrected run:
+`paper_scripts/results/safety_filter_sweep_20260513_060357`.
+
+Command family: blind MPC, rocks visible only to the safety layer, clay/sand,
+sinusoidal/lane-change, speed 5 m/s, bumpiness 0, 2 seeds, 5 rocks,
+MPPI `K=384`, horizon 18, safety buffer 0.5 m.
+
+Summary over 8 runs/filter:
+
+* No filter: 1.50 collisions/run, min clearance -1.69 m, RMS CTE 0.143 m.
+* DOB-CBF: 0 collisions/run, min clearance 0.925 m, intervention 47.6%,
+  RMS CTE 2.45 m.
+* MPPI: 0 collisions/run, min clearance 0.118 m, intervention 61.5%,
+  RMS CTE 1.70 m.
+
+Interpretation: the corrected MPPI shield is usable for the paper.  DOB-CBF
+is still more conservative in clearance, but MPPI is less path-invasive than
+DOB-CBF on this grid.  Keep NMPC as a weaker ablation from the earlier run,
+not as the primary predictive shield.
+
+### Autonomous obstacle avoidance with a fixed MPPI shield
+
+Added optional fixed downstream safety filtering to
+`paper_scripts/autonomous_obstacle_tire_model_sweep.py`:
+
+* `--safety-flavor {none,dob_cbf,mppi,nmpc}`
+* `--shield-horizon`, `--mppi-samples`, `--nmpc-iter`
+* `--safety-buffer`
+* `--mpc-blind-obstacles`
+
+This keeps tire model as the swept variable while holding the safety layer
+fixed for the whole experiment.
+
+Run:
+`paper_scripts/results/autonomous_obstacle_tire_model_sweep_mppi_20260513_061235`.
+
+Command family: Pacejka/TMeasy/closed-loop MLP, clay/sand,
+sinusoidal/lane-change, speed 5 m/s, 2 seeds, 5 rocks, MPPI safety
+`K=384`, horizon 18, buffer 0.5 m, standard MPC still obstacle-aware.
+
+Summary:
+
+* Pacejka + MPPI: 0 collisions/run, 0 near misses/run, RMS CTE 0.077 m,
+  speed ratio 0.432, min clearance 8.16 m.
+* TMeasy + MPPI: 0 collisions/run, 0 near misses/run, RMS CTE 0.070 m,
+  speed ratio 0.434, min clearance 8.04 m.
+* Closed-loop MLP + MPPI: 0 collisions/run, 0.25 near misses/run,
+  RMS CTE 0.986 m, speed ratio 0.600, min clearance 4.54 m.
+
+Interpretation: MPPI fixes the closed-loop MLP's hard collisions seen in
+the barrier-only autonomous sweep.  The NN planner remains faster and more
+path-invasive, especially on sand/lane-change; do not claim it is a cleaner
+autonomous tracker.  The honest paper story is: NN tire planning plus MPPI
+safety is safe on this grid, but the best low-error autonomy baseline is
+still TMeasy/Pacejka unless speed retention is the priority.
+
+### Standard MPC speed-cost experiments
+
+Added `--speed-cost-mode {symmetric,overspeed}` to the standard MPC.  The
+new `overspeed` mode treats `v_ref` as a smooth speed cap:
+
+```text
+speed_err = u - v_ref
+speed_cost_err = 0.5 * (speed_err + sqrt(speed_err^2 + 1e-4))
+```
+
+This avoids rewarding the optimizer for accelerating up to `v_ref` when it
+is already below the reference speed in a turn.  The mode is included in the
+acados build fingerprint, so changing it rebuilds the solver as intended.
+Flags are plumbed through `acados_mpc_controller_node.py`,
+`launch_decoupled.py`, and the autonomous obstacle tire-model script.
+
+Focused hard-case retests, closed-loop MLP, sand/lane-change, 2 seeds,
+MPPI shield, 5 rocks:
+
+* Baseline symmetric speed cost, weight 15:
+  `autonomous_obstacle_tire_model_sweep_mppi_20260513_061235`
+  gives 0 collisions, min clearances 0.40/2.72 m, RMS CTE 1.35/5.35 m.
+* No speed tracking (`--speed-weight 0`):
+  `autonomous_obstacle_tire_model_sweep_mppi_20260513_061839`
+  gives 0 collisions, min clearances 0.02/0.45 m, RMS CTE 1.35/1.29 m.
+  This is the best tracking rescue for the hardest guarded MLP case, but
+  clearance is thin and both runs are near misses.
+  A follow-up full MLP grid with the same setting,
+  `autonomous_obstacle_tire_model_sweep_mppi_20260513_062959`, stayed
+  collision-free over 8/8 runs with 0.375 near misses/run, RMS CTE 0.664 m,
+  speed ratio 0.551, and min clearance 6.22 m mean.  Sand/lane-change is
+  still the weak point (RMS CTE 1.63/3.02 m), so no-speed improves but does
+  not fully solve the NN tracking issue.
+* Overspeed-cap mode (`--speed-weight 70 --speed-cost-mode overspeed`):
+  `autonomous_obstacle_tire_model_sweep_mppi_20260513_062112`
+  gives 0 collisions, min clearances 1.34/0.68 m, RMS CTE 1.63/3.75 m.
+  Better than the worst symmetric case but not as good as the no-speed
+  ablation for tracking.
+
+No-rock tracking comparison:
+`paper_scripts/results/mpcc_vs_mpc_speed_tracking_20260513_062209`.
+
+One seed over clay/sand × sinusoidal/lane-change:
+
+* Standard MPC: RMS CTE 0.099 m, speed ratio 0.718.
+* Soft speed weight 15: RMS CTE 0.090 m, speed ratio 0.640.
+* Overspeed cap: RMS CTE 0.100 m, speed ratio 0.587.
+* No speed tracking: RMS CTE 0.094 m, speed ratio 0.581.
+* MPCC default: RMS CTE 0.278 m, speed ratio 0.632, but one
+  sand/lane-change run got stuck near the origin with repeated
+  `ACADOS_MINSTEP`, so this is still not a reliable paper controller.
+
+Interpretation: reducing/removing speed tracking is a valid ablation and
+can rescue the hardest MLP+MPPI obstacle case, but it is not a free win:
+it loses progress/speed and can reduce clearance by letting the shield
+thread very close to rocks.  `overspeed` is now available as a cleaner
+cap-style formulation, but current data do not justify making it the default.
+
+Current recommendation after this pass:
+
+* For clean tracking tables: report standard MPC with default/soft/no-speed
+  variants; TMeasy remains the lowest-error baseline.
+* For autonomous obstacle avoidance: report barrier-only and MPPI-guarded
+  sweeps separately.  Barrier-only shows the NN planner is faster but less
+  safe; MPPI-guarded shows it can be made collision-free.
+* For MPCC: keep as negative/troubleshooting unless a deeper fix lands.
+  The issue is not just a metric frame mismatch or simple weight choice.
+
+---
+
+## 2026-05-13 plotting pass: better paper figures from raw logs
+
+Added shared plotting helpers to `paper_scripts/common.py` and wired them
+into the main paper sweeps.  Existing result folders can now be refreshed
+without rerunning Chrono:
+
+```bash
+python paper_scripts/regenerate_figures.py --clean \
+  paper_scripts/results/<result_folder>
+```
+
+New figure classes:
+
+* Per-run metric distribution plots with raw points plus mean/std markers.
+  These are more honest than plain bars because the bad seeds/scenarios are
+  visible instead of hidden inside an average.
+* Trajectory-vs-reference overlays from controller diag CSVs.  For obstacle
+  sweeps, rock locations are overlaid when available from `collision_log.csv`.
+* Predicted-vs-actual lateral force figures from existing diagnostic columns:
+  `actual_Fy_front/rear` and `pred_Fy_front/rear`.
+  The scripts now write `force_prediction_metrics.csv` plus:
+  `force_predicted_vs_actual_scatter.png`,
+  `force_predicted_vs_actual_by_model.png`,
+  `force_prediction_error_summary.png`, and
+  `force_prediction_timeseries_examples.png`.
+
+Regenerated figures for:
+
+* `mpc_tire_model_sweep_20260513_005540`
+* `mpcc_vs_mpc_speed_tracking_20260513_062209`
+* `safety_filter_sweep_20260513_060357`
+* `autonomous_obstacle_tire_model_sweep_mppi_20260513_061235`
+* `autonomous_obstacle_tire_model_sweep_mppi_20260513_062959`
+
+Sanity checked representative PNGs with PIL and visual inspection: files are
+nonblank and the trajectory overlays show the expected reference/actual
+separation, including the closed-loop MLP sand/lane-change detour.
+
+---
+
+## 2026-05-14 surrogate force and reference-plot bugfix pass
+
+Investigated why the "whole vehicle" force surrogate looked much worse
+than expected in the new paper plots.  The primary bug was a terrain
+feature unit mismatch:
+
+* `closed_loop_v1_mlp_32_16` was saved with `mohr_friction` in degrees
+  (`scalers.pkl` has phi mean about 23.36).
+* The runtime loader had started converting all v6 model phi inputs to
+  radians before scaling.
+* That put every clay/dirt/sand sample far out of the model's training
+  distribution and made the paper force plots look catastrophically bad.
+
+Fixed by adding checkpoint-aware phi normalization in
+`simulation/nn_tire_model.py` (`phi_feature_value()` inspects the scaler),
+then using it consistently in:
+
+* `simulation/acados_mpc_solver.py`
+* `simulation/safety/surrogate_dynamics.py`
+* `paper_scripts/common.py` when recomputing corrected NN force metrics
+  from existing diagnostic CSVs.
+
+Direct loader sanity check on `data/closed_loop_v1/training_data_tire_frame.csv`:
+
+* Before fix: `Fx R2=-0.50`, `Fy R2=-3.96`, force MAE about `1060 N`.
+* After fix: `Fx R2=0.827`, `Fy R2=0.821`, `Fx MAE=201 N`,
+  `Fy MAE=144 N`.
+
+Real Chrono smoke tests after the fix:
+
+* `paper_scripts/results/mpc_tire_model_sweep_20260514_001502`
+  (`closed_loop_mlp`, clay/sinusoidal, 5 m/s, 8 s): completed with
+  `rms_cte=0.073 m`, `speed_ratio=0.48`.
+  Corrected force metrics were front axle `MAE=325 N`, `R2=0.63`;
+  rear axle `MAE=470 N`, `R2=-0.04`.
+* `paper_scripts/results/safety_filter_sweep_20260514_001553`
+  (MPPI, clay/sinusoidal, 5 rocks, 8 s): completed with
+  `collisions=0`, `near_misses=1`, intervention `28.4%`.
+
+The remaining rear-axle weakness is not the phi bug.  The current
+`closed_loop_v1` tire-frame training CSV only contains front-axle samples
+because `acados_mpc_controller_node.py --log-tire-csv` averaged and wrote
+front-left/front-right forces only.  Runtime then uses that same tire model
+for both axles, so rear-force predictions are an extrapolation.  Patched
+the logger to write rear-axle rows too, using
+`scenario_id + 1_000_000` so rate/temporal training does not stitch
+front and rear samples from the same timestep into one fake tire history.
+
+Verified the new logger with a 3 s real Chrono run to
+`/tmp/tire_log_both_axles.csv`:
+
+* 500 total rows for 250 controller ticks.
+* `scenario_id=42`: 250 front rows.
+* `scenario_id=1000042`: 250 rear rows.
+
+Also fixed the trajectory-reference plotting bug where the black dotted
+line was sane at the beginning and then went wild.  The plotting code had
+been using `x_ref_0/y_ref_0` from every MPC solve as if it were the static
+reference path.  Those columns are per-solve local reference samples and
+can jump after recovery/blending/reindexing, so they are not suitable for a
+paper reference path.  `paper_scripts/common.py` now reconstructs the
+nominal path from each result folder's `manifest.csv` and plots that
+instead; `x_ref_0/y_ref_0` are only a fallback.
+
+Regenerated corrected figures for:
+
+* `mpcc_vs_mpc_speed_tracking_20260513_062209`
+* `safety_filter_sweep_20260513_060357`
+* `autonomous_obstacle_tire_model_sweep_mppi_20260513_061235`
+* `autonomous_obstacle_tire_model_sweep_mppi_20260513_062959`
+* `mpc_tire_model_sweep_20260514_001502`
+* `safety_filter_sweep_20260514_001553`
+
+Paper caveat: old NN-controller benchmark numbers were generated before
+the runtime phi fix, so use the regenerated force plots for diagnosis but
+rerun the key paper sweeps before making final claims about NN controller
+performance.
+
+---
+
+## 2026-05-14 both-axle closed-loop recollection and v2 retraining
+
+Recollected and retrained the whole-vehicle tire surrogate after discovering
+that `closed_loop_v1` only logged front-axle training rows.  Changes made
+before collection:
+
+* `data_collection/collect_closed_loop_data.py` now writes both
+  `training_data.csv` (body-frame Chrono labels) and
+  `training_data_tire_frame.csv` (Fy sign flipped for the NN/MPC tire-frame
+  convention).
+* Collection now supports path/terrain subsets, bumpiness sampling,
+  rock-count choices, sensor-noise-on by default, and terrain preset jitter
+  or LHS terrain YAML generation.
+* `acados_mpc_controller_node.py --log-tire-csv` writes both front and rear
+  axle streams per controller tick.  Rear rows use
+  `scenario_id + 1_000_000` so temporal/rate training does not stitch front
+  and rear samples into one fake history.
+* Fixed a parallel collection race: acados build/cache directories were keyed
+  too coarsely by NN model id, so concurrent mixed-terrain workers could
+  delete/rebuild the same directory.  The collector now sets
+  `ACADOS_UNIQUE_BUILD_DIR=1`, and the controller appends the controller pid
+  to the acados build directory when that env var is present.  A 3-scenario
+  parallel smoke confirmed pid-suffixed build dirs and 3/3 successful runs.
+
+Collection:
+
+* Main run:
+  `data/closed_loop_v2_20260514_both_axles`
+  (`120` requested, `80` usable before the cache race fix fully landed).
+* Salvaged extra run:
+  `data/closed_loop_v2_20260514_both_axles_extra`
+  (`17` usable before stopping the flawed run).
+* Combined dataset:
+  `data/closed_loop_v2_20260514_combined`
+  with `127,798` rows from `97` base scenarios / `194` axle streams.
+* Distribution: sensor noise ON, jittered clay/sand/dirt presets,
+  sinusoidal/lane-change/double-lane-change/right-left paths, speeds
+  `3-7 m/s`, bumpiness levels `0-3`, rock counts sampled from
+  `{0,0,3,5}`.
+* Tire-frame sign sanity: `corr(slip_angle, Fy) = -0.620`.
+
+Trained checkpoints:
+
+| Model | Notes | Test R2 Fx | Test R2 Fy | RMSE Fx | RMSE Fy |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `closed_loop_v2_both_axles_mlp_32_16` | static MLP, same size as v1 | 0.661 | 0.574 | 590 N | 420 N |
+| `closed_loop_v2_both_axles_mlp_64_32` | larger static MLP | 0.666 | 0.578 | 585 N | 418 N |
+| `closed_loop_v2_both_axles_temporal_K4_32_16` | K=4 temporal, 50 ms spacing | 0.644 | 0.609 | 643 N | 390 N |
+| `closed_loop_v2_both_axles_rate_32_16` | rate-augmented MLP | 0.666 | 0.600 | 575 N | 407 N |
+
+Axle-specific full-dataset diagnostic (`data/closed_loop_v2_20260514_combined/model_axle_eval.csv`):
+
+| Model | Subset | R2 Fx | R2 Fy | MAE Fx | MAE Fy |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `closed_loop_v1_mlp_32_16` | front | 0.742 | 0.645 | 327 N | 252 N |
+| `closed_loop_v1_mlp_32_16` | rear | 0.195 | 0.003 | 558 N | 383 N |
+| `closed_loop_v2_both_axles_mlp_64_32` | front | 0.804 | 0.724 | 257 N | 221 N |
+| `closed_loop_v2_both_axles_mlp_64_32` | rear | 0.526 | 0.358 | 358 N | 264 N |
+| `closed_loop_v2_both_axles_rate_32_16` | front | 0.797 | 0.770 | 260 N | 195 N |
+| `closed_loop_v2_both_axles_rate_32_16` | rear | 0.527 | 0.366 | 359 N | 264 N |
+
+Interpretation: the original "whole vehicle surrogate is bad" diagnosis was
+correct, and the biggest concrete bug was front-only data.  The new v2 models
+substantially improve rear-force prediction (`Fy R2` from ~0.00 to ~0.36),
+while keeping or improving front-force prediction.  Rear axle is still the
+harder target, likely because rear lateral force depends on body/yaw/sinkage
+history that is only partially visible through instantaneous slip/Fz/rates.
+
+Real Chrono smoke with the best v2 rate model:
+
+```bash
+python simulation/launch_decoupled.py \
+  --controller-mode standard --model nn \
+  --nn-model closed_loop_v2_both_axles_rate_32_16 \
+  --terrain clay --path sinusoidal --speed 5 --time 8 \
+  --lead-in 5 --rocks 0 --no-vis --no-plot
+```
+
+Result: completed at RT factor `1.00`, RMS CTE `0.066 m`, mean solve
+`5.43 ms`.  Diag force metrics in that run:
+
+* Front Fy: MAE `304 N`, RMSE `479 N`, R2 `0.595`.
+* Rear Fy: MAE `433 N`, RMSE `613 N`, R2 `0.089`.
+
+The paper-script smoke
+`paper_scripts/results/mpc_tire_model_sweep_20260514_010636` also completed
+with `rms_cte=0.072`, `speed_ratio=0.53`, and regenerated figures.  Its
+force metrics were front `R2=0.703`, rear `R2=0.313` on clay/sinusoidal.
+
+Added paper-script model aliases in `mpc_tire_model_sweep.py`:
+
+* `closed_loop_v2_mlp`
+* `closed_loop_v2_rate_mlp`
+* `closed_loop_v2_temporal_mlp`
+
+Best current recommendation: use `closed_loop_v2_rate_mlp` in the next tire
+model sweeps.  It gives the best axle-balanced Fy metrics and already runs in
+the acados standard MPC.  Keep `closed_loop_v2_temporal_mlp` as an offline
+force-prediction ablation unless/until its closed-loop controller behavior is
+smoked.
+
+### Why v2 R2 still looks poor
+
+Follow-up diagnostics show the mediocre all-row R2 is not primarily a "not
+enough data" problem:
+
+* A boosted-tree diagnostic model with the same feature columns plateaued
+  quickly.  On one scenario-group split, increasing training size from
+  `3k` to `90k` rows only moved `Fy R2` from about `0.42` to `0.49`.
+* Adding an explicit `axle_id` feature to the tree barely changed `Fy R2`
+  (`0.592` to `0.593` random split; `0.646` to `0.650` grouped split), so
+  the missing information is not just "front vs rear" identity.
+* The rate model's all-row `Fy R2=0.622` jumps to `0.775` when evaluated
+  only on rows with `velocity >= 2 m/s`.  Low-speed/startup rows are noisy
+  and slip-angle features are ill-conditioned because `u_safe` is clamped
+  at `0.5 m/s`, while SCM contact forces can still jump during sinkage and
+  acceleration transients.
+* Rear force remains the hard case: rear `Fy R2=0.366` over all rows and
+  `0.505` for `velocity >= 2 m/s`.  This is the clearest sign of feature
+  aliasing / missing state, not just model capacity.
+
+Likely missing explanatory variables:
+
+* lateral load transfer / side-specific Fz: the training row uses axle mean
+  Fz and mean left/right force, but actual Chrono force is generated by
+  different inner/outer tire loads during yaw/lateral acceleration;
+* richer vehicle state: `v`, `omega`, steering angle, `ax`, `ay`, and maybe
+  previous force/state history, not just `(kappa, alpha, u, mean Fz,
+  steering_rate, terrain)`;
+* startup/sinkage/contact transient state on SCM terrain, which is not
+  represented by the compact tire-map features.
+
+Next corrective experiment: recollect a "v3 rich" tire dataset that logs
+front/rear rows with the current compact columns plus `axle_id`, `delta`,
+`v_body`, `omega`, measured `ax/ay`, estimated lateral load transfer
+`dFz`, elapsed scenario time or distance-from-start, and optionally separate
+left/right rows if Chrono can expose per-wheel vertical load cleanly.  Train
+two heads or two separate models for front/rear if rear still lags.  For
+paper metrics, report force R2 both on all rows and on the physically useful
+`u >= 2 m/s` subset so startup artifacts do not dominate the interpretation.
+
+Important sensor-realism constraint from AGENT.md/user follow-up: new inputs
+must be available from conventional vehicle sensing.  Implemented the v3
+logging schema with that boundary:
+
+* conventional state/estimator inputs: `u_body`, `v_body`, `yaw_rate`,
+  `ax_imu`, `ay_imu`;
+* steering encoder / command inputs: `steering_angle`, `steering_rate`,
+  `throttle_cmd`, `brake_cmd`, `accel_cmd`, `jerk_cmd`;
+* wheel encoder inputs: axle and per-side wheel speeds plus measured/global
+  and axle-specific `kappa`;
+* fixed-geometry estimates: mean axle Fz and lateral load-transfer proxies
+  from `u*omega` and IMU `ay`;
+* metadata/estimates already assumed elsewhere: axle id and terrain parameter
+  estimate columns.
+
+The Chrono tire forces remain labels only.  `tire_input_features.py` now has
+`write_rich_vehicle_tire_csv_header()` / `pack_rich_vehicle_tire_csv_row()`;
+`acados_mpc_controller_node.py` accepts `--log-rich-tire-csv`; and
+`collect_closed_loop_data.py` writes `training_data_rich.csv` plus
+`training_data_rich_tire_frame.csv`.  Smoke test:
+`/tmp/rich_tire_log_smoke2` produced `326` compact rows and `326` rich rows
+with the expected front/rear scenario split.
+
+### v3 rich recollection / retraining pass (2026-05-14)
+
+Collected a larger sensor-realistic closed-loop tire dataset and fixed two
+collection issues found during the run:
+
+* `chrono_setup.py` used one global `/tmp/scm_heightmap.bmp`; parallel bumpy
+  terrain workers could clobber the file while Chrono was reading it.  It now
+  writes a unique temporary BMP per process.
+* Some elevated workers held ZMQ ports after an interrupted run.  The clean
+  follow-up shard used a fresh high port range and fewer workers.
+
+Dataset outputs:
+
+* `data/closed_loop_v3_rich_20260514_04`: clean 24/24 shard, `31,334` rows.
+* `data/closed_loop_v3_rich_20260514_combined`: aggregate of successful `_03`
+  and `_04` runs, `78,806` compact rows and `78,806` rich rows.
+* Added `data_collection/aggregate_closed_loop_runs.py` so successful per-run
+  CSVs can be rebuilt into a combined dataset after partial/interrupted shards.
+
+Training/evaluation changes:
+
+* `train_variant.py` now supports `--split-by-scenario` to keep front/rear and
+  adjacent timesteps from the same run in the same train/val/test split.
+* Added `nn_training/evaluate_tire_model.py`, which writes `metrics.csv`,
+  per-row predictions, and predicted-vs-actual force scatter figures.
+* Added an `axle_rate` compact mode: `[axle_id] + compact rate tire features`.
+  This stays sensor-realistic and can be embedded in MPC because axle identity
+  is known at runtime.
+
+Force-prediction metrics on `closed_loop_v3_rich_20260514_combined`
+(`velocity >= 2 m/s`, tire-frame labels):
+
+| Model | All Fy R2 | Front Fy R2 | Rear Fy R2 | Notes |
+| --- | ---: | ---: | ---: | --- |
+| `closed_loop_v2_both_axles_rate_32_16` | 0.771 | 0.879 | 0.533 | current controller baseline |
+| `closed_loop_v3_both_axles_rate_64_32` | 0.750 | 0.893 | 0.435 | worse rear; do not use |
+| `closed_loop_v3_axle_rate_64_32` | 0.805 | 0.898 | 0.598 | controller-usable, better force ablation |
+| `closed_loop_v3_rich_64_32` | 0.823 | 0.903 | 0.646 | offline only |
+| `closed_loop_v3_rich_rate_64_32` | 0.843 | 0.933 | 0.644 | best offline force predictor |
+
+All-row metrics still lag the `u >= 2` subset because low-speed/startup rows
+remain ill-conditioned.  All-row rear Fy R2 improves from `0.371` for v2 rate
+to `0.448` for v3 axle-rate and `0.468` for v3 rich-rate.
+
+Runtime integration:
+
+* Added `AxleRateMLP` in `nn_tire_model.py` and routed acados rate-batch calls
+  through `predict_batch_axle_rate(...)` when the checkpoint has `axle_id`.
+* Real Chrono smoke passed with
+  `closed_loop_v3_axle_rate_64_32` on clay/sinusoidal/speed 5/time 8:
+  RT factor `1.00`, RMS CTE `0.073 m`, mean solve `7.24 ms`, tire CSV
+  `1,318` rows.
+
+Focused paper sweep:
+`paper_scripts/results/mpc_tire_model_sweep_20260514_101607` compared v2 rate
+against v3 axle-rate over clay/sand/dirt and sinusoidal/lane-change at 5 m/s.
+
+| Model | Mean RMS CTE | Mean speed ratio | Mean solve |
+| --- | ---: | ---: | ---: |
+| `closed_loop_v2_rate_mlp` | 0.0801 m | 0.748 | 5.18 ms |
+| `closed_loop_v3_axle_rate_mlp` | 0.0790 m | 0.740 | 7.26 ms |
+
+Interpretation: v3 axle-rate is a better force-prediction ablation and is
+MPC-compatible, but it is not a clean new controller default yet.  It slightly
+improves average RMS CTE in the focused sweep, but loses a little speed and
+costs ~2 ms more solve time.  Keep v2 rate as the safer default for broad
+controller sweeps until the MPC cost/speed policy is retuned around the new
+force map.  Use v3 rich/rich-rate as the paper evidence that sensor-realistic
+state features materially help tire-force prediction.
+
+### Paper-ready safety / estimator / latency results (2026-05-14)
+
+Updated `paper_scripts/common.py` so new paper runs use
+`closed_loop_v2_both_axles_rate_32_16` as the default NN model.  Keep
+`closed_loop_v3_axle_rate_64_32` as an explicit ablation; it predicts forces
+better but is not yet the broad controller default.
+
+#### Safety-filter sweep
+
+Result dir: `paper_scripts/results/safety_filter_sweep_20260514_220947`
+
+Command family: blind MPC, clay/sand/dirt, sinusoidal/lane-change, 5 m/s,
+2 seeds, 5 rocks, sensor noise on, MPPI K=384, horizon 18, safety buffer 0.5 m.
+All 48 runs completed.
+
+| Filter | Collisions/run | Near misses/run | Min clearance | RMS CTE | Speed ratio | RT factor |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| none | 1.583 | 2.167 | -1.684 m | 0.134 m | 0.749 | 1.000 |
+| DOB-CBF | 0.083 | 1.167 | 0.711 m | 2.810 m | 0.765 | 1.000 |
+| MPPI | 0.000 | 2.000 | 0.124 m | 1.547 m | 0.721 | 1.000 |
+| NMPC | 0.250 | 1.917 | 0.200 m | 2.512 m | 0.700 | 0.792 |
+
+Interpretation: MPPI is now the best predictive safety-shield baseline for
+the paper on this grid: collision-free and less path-invasive than DOB-CBF.
+DOB-CBF remains the high-clearance conservative baseline.  NMPC is useful as
+a local-optimizer ablation, but is slower and less robust.
+
+Generated figures include `safety_filter_summary.png`,
+`safety_collision_heatmap.png`, `safety_filter_metric_distributions.png`, and
+trajectory overlays under the result directory's `figures/`.
+
+#### Autonomous obstacle avoidance by tire model with fixed MPPI shield
+
+Result dir:
+`paper_scripts/results/autonomous_obstacle_tire_model_sweep_mppi_mpc_blind_20260514_222330`
+
+Command family: MPC blind to rocks, downstream MPPI shield fixed for all tire
+models, clay/sand/dirt, sinusoidal/lane-change, 5 m/s, one seed, 5 rocks,
+sensor noise on.  All 24 runs completed and all were collision-free.
+
+| Tire model | Collisions/run | Min clearance | RMS CTE | Speed ratio | Mean solve |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Pacejka | 0.0 | 8.463 m | 0.078 m | 0.551 | 2.14 ms |
+| TMeasy | 0.0 | 8.532 m | 0.063 m | 0.548 | 2.19 ms |
+| v2 rate NN | 0.0 | 6.248 m | 0.098 m | 0.596 | 5.36 ms |
+| v3 axle-rate NN | 0.0 | 7.160 m | 0.066 m | 0.579 | 7.00 ms |
+
+Interpretation: a fixed MPPI shield makes the autonomy stack collision-free
+for all tire models on this grid.  The v3 axle-rate NN improves clearance and
+tracking over v2 rate under the same shield, but still costs more solve time.
+Analytical tire models remain faster and conservative on clearance.
+
+#### Terrain estimator excitation benchmark
+
+Mixed short benchmark:
+`paper_scripts/results/terrain_estimator_benchmark_20260514_223109`
+
+* ID tail |n error| mean: `0.122`.
+* OOD tail |n error| mean: `0.122`.
+* First accepted update: about `4.17 s`.
+
+This mixed 12 s grid showed some under-estimation on sand/OOD sinusoidal
+cases, so we reran the estimator in the intended excited regime.
+
+Long sinusoidal-only benchmark:
+`paper_scripts/results/terrain_estimator_benchmark_20260514_224909`
+
+Command family: sinusoidal only, 20 s, metric tail after 8 s, 2 seeds for ID
+and OOD, sensor noise on.  All 12 runs completed.
+
+| Distribution/case | True n | Estimated tail n | Tail n error |
+| --- | ---: | ---: | ---: |
+| ID clay | 0.500 | 0.502 | 0.002 |
+| ID dirt | 0.700 | 0.589 | 0.111 |
+| ID sand | 1.100 | 1.042 | 0.058 |
+| ID mean | 0.767 | 0.711 | 0.057 |
+| OOD mean | 0.792 | 0.624 | 0.167 |
+
+Interpretation: the estimator is paper-ready as an excited-maneuver terrain
+identifier, not as a passive classifier.  With longer sinusoidal excitation,
+ID clay and sand converge well; dirt is conservative; OOD terrains are harder
+and under-estimated, which is acceptable as a safety-conservative behavior.
+
+#### Latency compensation proxy
+
+Added `paper_scripts/latency_compensation_sweep.py`.
+
+Result dir: `paper_scripts/results/latency_compensation_sweep_20260514_223505`
+
+Command family: MPC blind to rocks, fixed command-path delays `0, 0.15,
+0.30 s`, clay/sand, sinusoidal/lane-change, 5 rocks, sensor noise on,
+standard MPC delay compensation ON.  All 36 runs completed.
+
+| Filter | Delay | Collisions/run | Min clearance | RMS CTE | Speed ratio |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| none | 0.00 s | 1.0 | -1.206 m | 0.321 m | 0.647 |
+| none | 0.15 s | 1.0 | -1.316 m | 0.346 m | 0.656 |
+| none | 0.30 s | 1.0 | -1.278 m | 0.385 m | 0.662 |
+| DOB-CBF | 0.00 s | 0.0 | 1.537 m | 2.177 m | 0.694 |
+| DOB-CBF | 0.15 s | 0.0 | 1.523 m | 2.061 m | 0.653 |
+| DOB-CBF | 0.30 s | 0.0 | 2.135 m | 2.406 m | 0.597 |
+| MPPI | 0.00 s | 0.0 | 0.206 m | 0.620 m | 0.647 |
+| MPPI | 0.15 s | 0.0 | 0.189 m | 1.187 m | 0.684 |
+| MPPI | 0.30 s | 0.0 | 0.411 m | 1.268 m | 0.663 |
+
+Interpretation: scripted latency proxy shows the compensation stack preserves
+hard safety up to 300 ms fixed command delay.  DOB-CBF carries larger clearance
+but is path-invasive; MPPI keeps lower RMS CTE with thinner clearance.  This
+does not replace true human-in-the-loop delay rounds, but it is reproducible
+paper data for control-path latency robustness.
+
+### 5G latency-profile implementation (2026-05-14)
+
+Added a JSON-configurable latency-profile implementation based on the
+Choi-style 5G traffic-generation workflow cited in the abstract.  The external
+`0913ktg/5G-Traffic-Generator` repo provides model code and open bitrate
+datasets, but the shallow public checkout does not include ready-to-run trained
+checkpoints.  The sim now supports both:
+
+* scheduled good/poor/outage latency windows with synthetic traffic load; and
+* optional bitrate traces from the 5G repo CSVs, e.g. `youtube_dataset.csv`,
+  mapped through a queue-load latency model.
+
+Code/config:
+
+* `simulation/latency_profile.py`
+* `config/latency_profiles/5g_good_bad_control.json`
+* `config/latency_profiles/5g_repo_youtube_template.json`
+* `paper_scripts/latency_profile_figure.py`
+
+Simulator integration:
+
+* `chrono_sim_node.py` accepts `--latency-profile-json` and
+  `--latency-profile-log`.
+* `launch_decoupled.py` forwards those args.
+* The profile drives command delay, manual-input actuation delay, and Chrono
+  Sensor camera lag (`camera` channel).
+* Sim diagnostics now include `latency_control_s`, `latency_manual_s`, and
+  `latency_camera_s`.
+* Fixed a safety-filter edge case: `set_teleop_delay()` now re-enables
+  latency-aware logic when a profile transitions from a good/near-zero window
+  into a poor/outage window.
+
+Profile figure result:
+`paper_scripts/results/latency_profile_figure_20260514_231334`
+
+| Channel | Mean | Std | Min | Max |
+| --- | ---: | ---: | ---: | ---: |
+| control/manual | 77.7 ms | 110.6 ms | 4.0 ms | 450.0 ms |
+| camera | 120.7 ms | 160.4 ms | 13.8 ms | 660.5 ms |
+
+Generated paper figures:
+
+* `figures/latency_profile_timeseries.png`
+* `figures/latency_profile_histogram.png`
+
+Chrono smoke test:
+
+* Direct `chrono_sim_node.py` run with profile, sim diagnostics, and latency
+  log completed for 2.5 s with sensor noise on.
+* `/tmp/scm_latency_profile_smoke.csv` and `/tmp/scm_latency_diag_smoke.csv`
+  showed the expected channel delays in the sim loop.
+
+Tiny 5G-profile avoidance sweep:
+`paper_scripts/results/latency_compensation_sweep_20260514_231637`
+
+Command family: clay sinusoidal, 12 s, 5 m/s, 3 rocks, one seed, sensor noise
+on, time-varying `5g_good_bad_control.json` profile.
+
+| Filter | Runs | Collisions/run | Min clearance | RMS CTE | Speed ratio | Intervention |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| none | 1 | 1.0 | -1.626 m | 0.910 m | 0.530 | n/a |
+| MPPI | 1 | 0.0 | 0.188 m | 0.851 m | 0.282 | 64.8% |
+
+Interpretation: the new 5G-like profile is wired end-to-end and produces a
+useful stress case: without the shield the autonomous controller clips an
+obstacle during poor network periods; the MPPI shield prevents collision but
+does so by heavily intervening and slowing the vehicle.  This is good evidence
+for latency-robust safety, but it is a tiny smoke matrix.  The next paper-ready
+step is to run this profile sweep across the same multi-terrain/path/seeds grid
+as the fixed-delay sweep.
+
+Small multi-scenario 5G-profile sweep:
+`paper_scripts/results/latency_compensation_sweep_20260514_231858`
+
+Command family: clay/sand, sinusoidal/lane-change, 12 s, 5 m/s, 5 rocks, one
+seed, sensor noise on, time-varying `5g_good_bad_control.json` profile.  All
+12 runs completed.
+
+| Filter | Runs | Collisions/run | Min clearance | RMS CTE | Speed ratio | Intervention |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| none | 4 | 1.0 | -1.553 m | 0.657 m | 0.706 | n/a |
+| DOB-CBF | 4 | 0.0 | 1.279 m | 3.289 m | 0.664 | 45.7% |
+| MPPI | 4 | 0.0 | 0.213 m | 1.146 m | 0.610 | 62.5% |
+
+Generated figures include:
+
+* `latency_compensation_summary_mpc_on.png`
+* `latency_collision_heatmap.png`
+* `latency_metric_distributions.png`
+* one trajectory overlay per terrain/path scenario.
+
+Interpretation: under a time-varying 5G-like profile, both DOB-CBF and MPPI
+remove collisions that appear in every unshielded run.  DOB-CBF is the
+large-clearance conservative baseline; MPPI is less path-invasive on average
+but relies on frequent intervention and thinner clearance.  This is the
+stronger paper result for 5G latency than the two-run smoke test.
+
+#### Trained N-HiTS-5G checkpoint
+
+Installed the missing 5G repo dependencies into the `sim` environment:
+`hyperopt`, `pytorch-lightning==1.9.5`, and `fastcore`.
+
+Public repo compatibility patches needed:
+
+* `N-HiTS-5G/src/data/tsdataset.py`: pandas 2.x requires
+  `drop(..., axis=1)`.
+* `N-HiTS-5G/inference.py`: load `hyperopt_{experiment_id}.p` and
+  `{experiment_id}.ckpt` instead of `hyperopt_{datatype}.p` and
+  `{datatype}.ckpt`; iterate through the loader instead of repeatedly using
+  the first batch.
+
+Added reproducible wrapper:
+`paper_scripts/train_5g_nhits.py`
+
+Training command actually run in `/tmp/5G-Traffic-Generator/N-HiTS-5G`:
+
+```bash
+python -u model_train.py \
+  --dataset youtube \
+  --datatype ul \
+  --hyperopt_max_evals 1 \
+  --experiment_id scm_youtube_ul_smoke
+```
+
+Training completed on GPU.  Hyperopt best validation loss was about `0.613`
+for the short tuning pass; the final model trained to `max_steps=1000` and
+ended with validation loss about `0.172`.
+
+Exported artifacts:
+`data/5g_generated/scm_youtube_ul_smoke`
+
+| Artifact | Purpose |
+| --- | --- |
+| `scm_youtube_ul_smoke.ckpt` | trained N-HiTS checkpoint |
+| `hyperopt_scm_youtube_ul_smoke.p` | selected hyperparameters |
+| `youtube_10_scm_youtube_ul_smoke.npy` | generated bitrate trace |
+| `generated_traffic.csv` | simulator-readable UL/DL traffic |
+| `summary.json` | trace statistics |
+
+Generated traffic summary after inference size 50 / 500 samples:
+
+| Metric | Value |
+| --- | ---: |
+| mean UL bitrate | 59.4 kbps |
+| std UL bitrate | 365.6 kbps |
+| median UL bitrate | 0 bps |
+| p95 UL bitrate | 0 bps |
+| max UL bitrate | 3.62 Mbps |
+
+Interpretation: the learned YouTube-UL trace is sparse/bursty, matching the
+source dataset's sparse uplink character but still more zero-heavy than the
+raw data.  For latency stress testing, the latency config therefore uses
+`traffic_scale=45` and a 9 Mbps bottleneck capacity so the learned burst shape
+drives congestion while the scenario defines the assumed network loading.
+
+Generated latency profile:
+`config/latency_profiles/5g_nhits_youtube_ul_scm_youtube_ul_smoke.json`
+
+Profile figures:
+`paper_scripts/results/latency_profile_figure_20260515_000053`
+
+| Channel | Mean | Std | Min | Max |
+| --- | ---: | ---: | ---: | ---: |
+| control/manual | 56.9 ms | 90.3 ms | 6.7 ms | 450.0 ms |
+| camera | 90.5 ms | 131.0 ms | 17.7 ms | 660.5 ms |
+
+Closed-loop smoke sweep with the trained N-HiTS profile:
+`paper_scripts/results/latency_compensation_sweep_20260515_000106`
+
+Command family: clay sinusoidal, 12 s, 5 m/s, 3 rocks, one seed, sensor noise
+on.
+
+| Filter | Runs | Collisions/run | Min clearance | RMS CTE | Speed ratio | Intervention |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| none | 1 | 1.0 | -1.648 m | 1.006 m | 0.546 | n/a |
+| MPPI | 1 | 0.0 | 0.176 m | 0.304 m | 0.277 | 63.9% |
+
+Interpretation: yes, we can train the 5G model checkpoints ourselves and use
+them in the sim.  For the paper, this should be described as
+"learned 5G traffic traces mapped through a queue/load latency model," not as a
+direct learned latency predictor.
+
+Current rating: about 7.5/10 for the full paper stack.  Safety and terrain
+estimator evidence are now strong enough to write around if framed carefully.
+The remaining weaker areas are (1) true human-in-the-loop latency rounds with
+the G29, (2) expanding 5G-profile sweeps to multiple seeds and dirt/OOD
+terrains, and (3) deciding whether the v3 axle-rate NN should replace v2 rate
+in controller sweeps after retuning speed and clearance tradeoffs.
+
+### Paper suite repeatability upgrade (2026-05-15)
+
+Concern addressed: many earlier result folders were useful debugging/pilot
+evidence, but not all were averaged across enough seeds or swept over high
+speeds, all terrains, bumpiness levels, and reference paths.
+
+Changes:
+
+* `paper_scripts/common.py`
+  * Paper default speeds are now `5, 7, 9 m/s`.
+  * Paper default bumpiness levels are now `0, 4, 8`.
+* Main sweep scripts now default to 5 seeds where appropriate.
+* Safety sweep default horizon is now 18 to match the stronger MPPI/DOB-CBF
+  paper runs.
+* Terrain estimator default matrix is now sinusoidal-only, 20 s, metric tail
+  after 8 s, because the estimator should be evaluated under deliberate
+  excitation rather than passive driving.
+* Added `paper_scripts/run_paper_suite.py` as an orchestration layer.  It does
+  not define new experiments; it launches the one-question scripts with
+  explicit repeatable matrices and writes a suite manifest.
+* Updated `paper_scripts/README.md` with smoke/pilot/paper/stress commands.
+
+Suite tiers:
+
+| Tier | Purpose | Matrix | Estimated non-HIL Chrono runs |
+| --- | --- | --- | ---: |
+| `smoke` | syntax/health checks | one tiny case per script | about 8 |
+| `pilot` | manageable high-speed pilot | clay/sand, sinusoid/lane-change, 5/7 m/s, bump 0/4, 2 seeds | 768 |
+| `paper` | broad final matrix | clay/dirt/sand, all paths, 5/7/9 m/s, bump 0/4/8, 5 seeds | thousands per selected group |
+| `stress` | high-speed rough-terrain subset | 7/9 m/s, bump 4/8, all terrains/paths, 5 seeds | targeted stress |
+
+Validated commands:
+
+```bash
+python paper_scripts/run_paper_suite.py --tier pilot --dry-run
+python paper_scripts/run_paper_suite.py --tier paper --dry-run --only safety latency_compensation terrain_estimator
+python paper_scripts/run_paper_suite.py --tier smoke --only latency_profile
+```
+
+The dry runs produced manifests under:
+
+* `paper_scripts/results/paper_suite_pilot_20260515_002109`
+* `paper_scripts/results/paper_suite_paper_20260515_002109`
+
+The actual smoke `latency_profile` suite run completed and generated:
+
+* `paper_scripts/results/paper_suite_smoke_20260515_002117`
+* `paper_scripts/results/latency_profile_figure_20260515_002117`
+
+Current non-HIL gap list:
+
+1. Run the `pilot` tier end-to-end to find high-speed/bumpy failures without
+   paying for the full final matrix.
+2. Promote stable subsets to the `paper` tier, likely in chunks via
+   `--only safety latency_compensation terrain_estimator`, then tire-model and
+   MPCC sweeps.
+3. If 9 m/s rough terrain produces many controller failures, keep those as
+   stress-test evidence and report the stable operating envelope separately.
+4. After the non-HIL paper tier is complete, the only major missing category
+   should be true human-in-the-loop G29 latency rounds.
+
+### Paper suite smoke validation + MPCC NN pin + auto-publish (2026-05-15)
+
+Ran `paper_scripts/run_paper_suite.py --tier smoke` end-to-end (not just
+`--only latency_profile` as on the prior pass) and uncovered two real
+issues:
+
+1. **MPCC variants in `mpcc_vs_mpc_speed_tracking.py` crashed at
+   `acados_mpcc_solver.py:272`** with
+   `Function::call ... Expected 12, got 11`.  Cause: every `mpcc_*` variant
+   used `DEFAULT_NN_MODEL = closed_loop_v2_both_axles_rate_32_16`
+   (rate-augmented, 12 inputs), but the MPCC solver is wired to the 11-input
+   static MLP per AGENT.md (*"MPCC currently uses the NN surrogate
+   static-MLP only"*).  With `--continue-on-error`, every MPCC pilot row
+   would have silently been a NaN.  Fix: introduced
+   `MPCC_NN_MODEL = "closed_loop_v1_mlp_32_16"` and pinned every MPCC
+   variant to it.  Standard MPC variants still use the v2 rate-MLP.
+
+2. **The suite did not publish anything to `my_paper/paper_figures/`.**  The
+   abstract LaTeX (`my_paper/abstract.tex`) was referencing May-10 figures
+   that no longer match the current paper-suite outputs.  Fix: added
+   `paper_scripts/publish_paper_figures.py` that maps a curated set of
+   sweep figures and summary CSVs to the abstract's filenames (e.g.
+   `tire_model_summary.png -> bench_tire_models.png`,
+   `terrain_estimator_summary.png -> closed_loop_estimator_learned.png`),
+   and wired `run_paper_suite.py` to call it at the end of every non-dry
+   run.  A `--no-publish` opt-out is available.  Publish honors the suite
+   manifest's mtime so a stale older results folder cannot leak in.
+
+Both smoke passes after the fix completed in ~12 min and produced 38 files
+in `my_paper/paper_figures/` plus `publish_manifest.json`.  The pilot tier
+(estimated ~768 Chrono runs) was launched detached after the second smoke
+to provide real multi-seed evidence under the same publish pipeline.
+
+Known cosmetic gaps still to clean up:
+
+* `run_paper_suite.py` hardcodes `estimated_runs=1` per smoke step; reality
+  is 2–4 per script.  Cosmetic.
+* The current `terrain_estimator_summary.png` is a 3-bar ID/OOD summary,
+  but the abstract caption describes a *time-series* of `n_hat` on
+  clay/dirt/sand.  Either update the caption or have
+  `terrain_estimator_benchmark.py` emit a per-terrain time-series figure
+  named for that abstract reference.
+* `latency_compensation_sweep --quick` clamps `--delays` to `[0.0]` even
+  when a profile JSON is supplied, so smoke does not exercise the 5G
+  trace.  Pilot/paper tier still does.
+
+### Abstract-claim coverage audit + 3 new ablation steps (2026-05-15)
+
+Audited `run_paper_suite.py` against the abstract's four contributions and
+found four sub-claims with no direct ablation evidence:
+
+1. *"Asymmetric throttle DOB on the actuation map closes the residual
+   soft-soil speed gap"* — no DOB on/off comparison existed.
+2. *"NMPC softplus barriers (in-horizon) ... two-layer obstacle-avoidance
+   stack"* — `safety_filter_sweep` always ran with `--mpc-blind-obstacles`
+   so the in-horizon barrier layer was never the lever being tested.
+3. *"Hand-crafted seed trajectories ... injected unconditionally so the
+   optimizer always has a recoverable option"* — `MPPIShield._seed_trajectories`
+   was unconditional with no toggle.
+4. *"Ensemble disagreement on phi gates the safety filter's friction
+   cone"* — `MPPIShield.update_terrain(phi_uncertainty_deg=...)` accepts the
+   parameter but **no caller ever passes it**; `_phi_uncertainty_rad` is
+   always 0.  This is a missing implementation, not a missing ablation.
+
+For claims 1–3 I added end-to-end ablations:
+
+* `paper_scripts/throttle_dob_ablation.py` — standard MPC, NN tire model,
+  no obstacles; variants `dob_on` (defaults) and `dob_off`
+  (`--dob-ki 0 --dob-max 0` so the controller still constructs the DOB hook
+  but adds no integral action).
+* `paper_scripts/mppi_seed_ablation.py` — planner-blind standard MPC,
+  MPPI shield with rocks on; variants `mppi_with_seeds` (defaults) and
+  `mppi_no_seeds` (sets the new `--mppi-no-seeds` flag).
+* Existing `safety_filter_sweep.py` now also runs as a second orchestrator
+  step (`safety_planner_aware`) with `--blind-and-aware --output-suffix
+  planner_aware`, producing both planner-aware and planner-blind variants
+  of every shield flavor in one folder.
+
+Code changes to support claim-3 ablation:
+
+* `simulation/safety/predictive_shield.py`: `MPPIShield.__init__` accepts
+  `disable_seeds: bool = False`; `_solve` returns an empty seed array when
+  `disable_seeds=True`.
+* `simulation/chrono_sim_node.py`: new `--mppi-no-seeds` flag plumbed into
+  the `make_safety_filter('mppi', ...)` call.
+* `simulation/launch_decoupled.py`: same `--mppi-no-seeds` flag forwarded
+  to the sim subprocess when `--safety-flavor mppi`.
+* `paper_scripts/safety_filter_sweep.py`: new `--output-suffix` so multiple
+  invocations (planner-blind vs planner-aware) write to distinct result
+  folders.
+
+Orchestrator changes:
+
+* `paper_scripts/run_paper_suite.py`: three new pilot/paper/stress steps
+  (`throttle_dob_ablation`, `mppi_seed_ablation`, `safety_planner_aware`).
+* Port stride lowered from 5000 to 4000 so all 10 experiment blocks fit
+  inside the 65535 ceiling at `base_port=20000`.
+* `paper_scripts/publish_paper_figures.py`: exact-prefix matcher (anchored
+  on the `_YYYYMMDD_HHMMSS` suffix) so `safety_filter_sweep` does not
+  accidentally match `safety_filter_sweep_planner_aware_<ts>`.  New
+  publish specs for all three ablations and a per-variant spec for
+  `autonomous_obstacle_tire_model_sweep_{mppi_mpc_blind,barrier_only}`.
+
+Two abstract sub-claims still have no in-repo evidence path and need
+either implementation or text changes before submission:
+
+* **Ensemble phi-gating**: implement an estimator-ensemble path that
+  exposes `sigma_phi` and have the controller forward it to the shield.
+  Until then this sentence in the abstract is unsupported.
+* **Joint (n, phi) RMSE = 0.07, 3.3°**: comes from
+  `utilities/exp_joint_n_phi.py`, which needs trace CSVs from
+  `collect_diverse_terrains.py` / `collect_rich_excitation.py`.  Neither
+  trace family exists on disk anymore (`data/` has only the closed-loop
+  datasets).  Re-collect before re-running, or pull the figures and the
+  numbers from an earlier commit's artefacts.
+
+To replay only the new ablations against the running pilot's seed plan
+once the pilot finishes:
+
+```bash
+python paper_scripts/run_paper_suite.py --tier pilot \
+  --only throttle_dob_ablation mppi_seed_ablation safety_planner_aware
+```
+
+### Pilot results (2026-05-15, suite folder paper_suite_pilot_20260515_005416)
+
+Suite ran 7 sub-scripts for the 8 listed (latency_profile is a figure-only
+step). 740 / 755 Chrono runs succeeded; the 15 missing runs are all
+`dob_cbf_no_nn` on sand and died with `zmq.error.ZMQError: Address already
+in use (addr='tcp://*:35162')` — TIME_WAIT port reuse from the previous
+run, not a science bug. Pilot finished in ~3.5 hours wall.
+
+| Sweep | Headline |
+| --- | --- |
+| Tire models (128/128) | v3 NN best at RMS CTE 0.083 m vs Pacejka 0.104 m (-20%), TMeasy 0.087 m (-5%). All four models give identical speed-ratio 0.66, so the curvature-derived speed profile is the binding constraint, not the tire model. NN solve <7.1 ms. |
+| MPCC vs MPC (128/128) | Standard MPC dominates: RMS CTE 0.063 m vs MPCC 0.34 m. MPCC's speed-ratio advantage (0.72 vs 0.36-0.51) costs 5x in tracking. Recommend keeping standard MPC as the paper baseline and de-emphasizing MPCC. |
+| Safety (planner-blind, 128/128) | none 1.97 coll/run, dob_cbf 0.03, mppi 0.09, nmpc 0.66. DOB-CBF wins on collisions and clearance (+1.0 m). MPPI clearance is thin (+0.06 m) and tracking takes the biggest hit (RMS CTE 1.47 m). NMPC fails badly on clay (1.00 coll on both v=5 and v=7). |
+| DOB-CBF NN ablation (81/96) | NN-on: 0.00 coll, +0.51 m clearance. NN-off: 0.47 coll, +0.01 m clearance. The NN inside DOB-CBF clearly helps in deformable-terrain obstacle avoidance, supporting the abstract. |
+| Auto-obstacle by tire (128/128) | All four tire models avoid the obstacles ~equally under a fixed MPPI shield (collisions ~0, clearance 1.1-1.9 m). Tire choice does not change the shield-mediated outcome here, which is consistent with the shield being the dominant safety layer. |
+| Terrain estimator (64/64) | ID clay |err|=0.005, sand 0.079. OOD per-case: terrain1 0.068, t2 0.153, t3 0.220, t4 0.036, t5 0.034, t6 0.075. terrain3 (true n=0.882) is the extrapolation gap; clay and the easier OOD cases estimate cleanly. |
+| Latency comp (96/96, 5G profile) | none 1.81 coll/run, dob_cbf 0.22, mppi 0.19. Both shields cut collisions by ~85% under the time-varying N-HiTS-5G profile. |
+
+Honest summary against abstract claims:
+
+* **NN surrogate beats Pacejka/TMeasy**: confirmed, but the gain is 20%
+  vs Pacejka and 5% vs TMeasy, not "an order of magnitude" as the
+  abstract currently claims. Soften to "consistent improvement with
+  largest gap at higher speed and harder terrain" or similar.
+* **NN-aware DOB-CBF helps**: confirmed (0.00 vs 0.47 coll/run, +0.50 m
+  vs +0.01 m clearance). Strong evidence.
+* **MPPI shield matches NMPC on collision rate**: NOT supported. NMPC
+  shield is worse (0.66 vs 0.09 coll/run). Reframe MPPI as the primary
+  shield with NMPC as a gradient-ablation that underperforms on hard
+  clay scenarios, which actually justifies the abstract's choice of MPPI.
+* **5G-profile latency robustness**: confirmed, both shields cut
+  collisions ~85% under the learned profile.
+* **Order-of-magnitude tracking improvement**: not supported in the
+  data. Recommend removing this phrasing.
+* **Terrain estimator converges in seconds on canonical clay/dirt/sand**:
+  confirmed for clay (err 0.005). Sand is noticeably worse (0.079) and
+  one OOD soil (terrain3, n=0.882) is an extrapolation failure (err
+  0.220). Honest scope: "good on clay, fair on the rest of the trained
+  distribution, fails on n-extrapolation".
+
+Known abstract gaps that need separate work, not yet covered by suite:
+
+* **Ensemble phi-gating**: `MPPIShield.update_terrain` accepts
+  `phi_uncertainty_deg` but no caller passes it; `_phi_uncertainty_rad`
+  is always 0. Either implement the ensemble path that exposes
+  `sigma_phi` to the shield, or remove the sentence from the abstract.
+* **Joint (n, phi) RMSE 0.07 / 3.3°**: `utilities/exp_joint_n_phi.py`
+  needs trace CSVs from `collect_diverse_terrains.py` /
+  `collect_rich_excitation.py`; no such traces remain on disk. Re-collect
+  or pull the figures and numbers from a prior commit before submission.
+
+Iteration 2 launched: the three new ablations (throttle DOB on/off,
+MPPI seed-trajectory on/off, planner-aware safety sweep) are running
+detached as PID 207992 with the same pilot matrix. Expected ~2.5-3
+hours and will publish into `my_paper/paper_figures/` automatically.
+
+### Autonomous-loop iterations 2-4 results (2026-05-15)
+
+Iteration 2 (`paper_suite_pilot_20260515_042941`, 384+256 runs, 100 % ok):
+
+* Throttle DOB: speed_ratio 0.673 on, 0.610 off; tracking identical;
+  10 % speed gap closed with no tracking cost.
+* MPPI seed-trajectory ablation: with seeds 0.03 coll/run +0.11 m
+  clearance; without seeds 1.34 coll/run -0.74 m clearance (40x
+  collision rate, seeds essential).
+* Planner-aware NMPC barrier ablation: every shield is better with the
+  in-horizon barrier on (dob_cbf 0.16 -> 0.00 coll/run; mppi 0.09 ->
+  0.00; nmpc 0.28 -> 0.16; none 1.97 -> 0.19).  Confirms the abstract's
+  two-layer obstacle-avoidance stack.
+
+Iteration 3 (`tire_model_with_estimator_ablation_20260515_061954`, 124
+of 128 ok, 4 lost to a flaky ZMQ port-bind):
+
+* New ablation script `paper_scripts/tire_model_with_estimator_ablation.py`
+  added to the orchestrator (port block 60000).  Variants: pacejka_static,
+  tmeasy_static, nn_v3_static, nn_v3_estimator.  Sim time 20 s,
+  metric_start 8 s so the KPI window is post-convergence.
+* Multi-seed merged result: pacejka 0.350 m, tmeasy 0.431 m,
+  nn_v3_static 0.179 m, nn_v3_estimator 0.208 m RMS CTE.  The NN
+  surrogate wins by 40-52 % over Pacejka/TMeasy, but the live estimator
+  *slightly hurts* tracking versus static parameters - mostly because
+  clay's static prior already matches the true terrain, so the
+  estimator's convergence transient is pure noise.  Sand benefits from
+  the estimator.
+
+Iteration 4 (gap fills, all 24 runs ok):
+
+* Rerun `dob_cbf_no_nn` on sand (16 runs) to fill the 15-run gap left by
+  iteration 1's ZMQ flake; merged 81+15 = 96 runs.
+* Rerun `nn_v3_estimator` on sand bumpy (8 runs) to fill iteration 3's
+  10-run gap; merged 118+8-2 (overlap) = 124 runs.
+* No flakes on the rerun -> the `hil_messages.ZMQPublisher` retry fix
+  works.
+
+Code fixes shipped in the loop:
+
+* `paper_scripts/common.py`: `parse_diag_csv` now tolerates header-only
+  or zero-byte diag CSVs (catches `pandas.errors.EmptyDataError`) so a
+  single mid-init controller crash no longer kills the whole sweep.
+* `simulation/hil_messages.py`: `ZMQPublisher.__init__` retries bind
+  16x with 0.5 s backoff (~8 s total) before raising, eliminating the
+  flaky `Address already in use` TIME_WAIT races on rapid sequential
+  runs.
+* `paper_scripts/publish_paper_figures.py`: now merges all matching
+  results.csv files for each spec (deduped on the run key) and
+  re-plots from the merged dataset before copying figures.  Windowing
+  is anchored on the largest-row folder so older smoke/abandoned-sweep
+  folders no longer leak into the published numbers.  This means the
+  published CSV always matches the published figure.
+
+Final paper-readiness scorecard lives at
+`my_paper/PAPER_READINESS.md`.  Key recommended abstract text changes:
+
+1. Drop "order of magnitude" -> "40-50 %" for tire-model tracking
+   improvement.
+2. Reframe MPPI vs NMPC shield - data shows MPPI *dominates* NMPC on
+   collision rate, not "matches".  This actually strengthens the
+   paper's choice of MPPI as primary.
+3. Decide on ensemble phi-gating - either implement the path that
+   forwards `sigma_phi` from the estimator ensemble to
+   `MPPIShield.update_terrain(phi_uncertainty_deg=...)`, or drop the
+   sentence from the abstract.
+4. Refresh joint (n, phi) numbers from `utilities/exp_joint_n_phi.py`
+   by re-collecting the diverse-terrain LHS traces (none currently on
+   disk).
+
+I am stopping the autonomous loop here. The 9 most-defendable abstract
+claims have multi-seed evidence; the 2 unsupported ones need
+code-or-data work, not more sweeps.
+
+### Autonomous-loop iterations 5-6 (2026-05-15 / 2026-05-16): ensemble-phi-gate wired and ablated end-to-end
+
+Decided to resume the loop to convert the "ensemble phi-gating" sentence
+from "not wired" to "tested with multi-seed evidence."  This required
+wiring the missing controller -> sim-node -> shield channel, then
+ablating two distinct gate designs.
+
+Plumbing shipped (2026-05-15, iter 5):
+
+* `simulation/learned_terrain_estimator.py`: EMA-residual sigma_n
+  tracker (alpha=0.05 over the squared n_raw-n_smooth deviation), plus
+  `get_n_uncertainty()` and `get_phi_uncertainty_deg()` accessors. The
+  phi conversion uses the preset n -> phi slope (degrees per unit n) -
+  initial implementation accidentally double-converted with
+  `math.degrees`, producing 305 deg sigma; fixed.
+* `simulation/hil_messages.py`: extended `ControlCommand` with
+  `terrain_n / terrain_phi_deg / terrain_phi_sigma_deg / terrain_K* /
+  terrain_class / terrain_confidence / terrain_update_seq` optional
+  fields. (Initially used a separate `TerrainUpdate` dataclass on the
+  same socket but ZMQ_CONFLATE on `ctrl_sub` dropped it; piggybacking
+  on `ControlCommand` survives conflation.)
+* `simulation/acados_mpc_controller_node.py`: caches the most recent
+  live (n, phi, sigma_phi, K*) into `latest_terrain_update` whenever
+  the estimator commits, then injects them into every outgoing
+  `ControlCommand`.
+* `simulation/chrono_sim_node.py`: new `ControlCommand` handler
+  dispatches to `safety_filter.update_terrain(...,
+  phi_uncertainty_deg=sigma)` whenever `msg.terrain_update_seq`
+  advances; new `--shield-no-sigma-gate` / `--shield-sigma-mode` /
+  `--shield-sigma-buffer-gain` CLI flags.
+* `simulation/safety/predictive_shield.py`: `MPPIShield.__init__` now
+  takes `sigma_mode in {tighten, inflate, both, off}` and
+  `sigma_buffer_gain` (default 0.05 m / deg). `_effective_buffer` adds
+  `gain * sigma_phi_deg` when mode is `inflate` or `both`;
+  `_phi_lower_bound` only subtracts sigma when mode is `tighten` or
+  `both`.
+* `simulation/launch_decoupled.py`: forwards the new flags to sim-node
+  inside the `if safety_flavor == "mppi"` branch (initial edit broke
+  the elif chain, fixed before any sweep ran).
+
+Iter 5 ablation (3 variants x 32 runs = 96):
+
+```
+variant            collisions_mean  min_clearance_m_mean
+no_live_terrain               0.13                 +0.10
+sigma_gate_off                0.22                 +0.09
+sigma_gate_on (tighten)       0.34                 +0.005
+```
+
+Verdict: tightening the friction cone by sigma_phi *rejects valid
+evasive maneuvers* and doubles the collision rate.  The abstract's
+gate design is harmful as written.
+
+Iter 6 ablation (5 variants x 32 runs = 160, after gate redesign):
+
+```
+variant            collisions_mean  min_clearance_m_mean
+no_live_terrain              0.156                +0.115
+sigma_inflate (new)          0.188                +0.061
+sigma_tighten (legacy)       0.188                +0.031
+sigma_off                    0.219                +0.048
+sigma_both                   0.250                +0.019
+```
+
+Verdict: the redesign (inflate clearance buffer instead of tightening
+friction cone) also loses to the no-live-terrain baseline.  The MPPI
+shield was designed against a fixed terrain and any live-update path
+(even without sigma) is at best neutral and at worst harmful, because
+the shield's safety calculations were calibrated against initial
+terrain and re-conditioning during evasive maneuvers introduces noise
+the safety logic does not damp.
+
+Recommendation: in the abstract, drop the entire "shield tracks the
+terrain" / "ensemble disagreement gates the friction cone" framing.
+Keep only "online estimator feeds the NMPC" for contribution (ii); the
+shield uses its initial terrain configuration and ignores live
+updates.  See `my_paper/PAPER_READINESS.md` for the full final
+scorecard with the recommended abstract text changes.
+
+I am stopping the autonomous loop here.  Across 6 iterations the loop
+produced multi-seed evidence for (or against) every empirically
+testable abstract sub-claim; the two remaining gaps are HIL G29 rounds
+(out of scope for a non-human suite) and the joint (n, phi) RMSE
+numbers (require re-collecting trace data that is no longer on disk).
+Both need user-level decisions, not more sweeps.

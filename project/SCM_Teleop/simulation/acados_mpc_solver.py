@@ -35,6 +35,7 @@ from __future__ import annotations
 import os
 import sys
 import shutil
+import hashlib
 import numpy as np
 import casadi as ca
 from pathlib import Path
@@ -137,7 +138,9 @@ class AcadosMPC:
                  build_dir=None, tire_model='nn', build_solver=True,
                  symbolic_rates=None, no_temporal_staged=False,
                  friction_angle_deg=None, rate_feature_dt=None,
-                 oracle_terrain=None):
+                 oracle_terrain=None, speed_weight: float = 70.0,
+                 speed_cost_mode: str = 'symmetric',
+                 obstacle_weight: float = 5e3):
         """
         Args:
             nn_tire_model: Instance of NNTireModel from nn_tire_model.py.
@@ -165,6 +168,16 @@ class AcadosMPC:
                            the same effective_dt used when training the rate
                            model (e.g. nn_rate_sample_dt) for consistency.
                            Defaults to dt when not provided.
+            speed_weight: Quadratic stage weight on (u - v_ref)^2. Lower values
+                          let the MPC accept slower speed through turns instead
+                          of accelerating/braking to chase the reference profile.
+            speed_cost_mode: 'symmetric' tracks v_ref from both sides.
+                             'overspeed' only penalizes u > v_ref, so the MPC
+                             treats v_ref as a speed cap instead of a speed
+                             command.
+            obstacle_weight: Smooth obstacle-barrier weight. Higher values make
+                             the in-horizon autonomous MPC avoid rocks more
+                             aggressively.
         Longitudinal channel design note:
             The OCP closes the longitudinal momentum equation as u̇ = ax,
             where ax is the commanded longitudinal acceleration state and
@@ -247,7 +260,10 @@ class AcadosMPC:
         self.w_y = 10.0          # y-position tracking (heavy — keeps the MPC honest about lateral errors)
         self.w_lateral = 200.0   # y-position tracking
         self.w_heading = 100.0
-        self.w_speed = 70.0
+        self.w_speed = float(speed_weight)
+        if speed_cost_mode not in ('symmetric', 'overspeed'):
+            raise ValueError("speed_cost_mode must be 'symmetric' or 'overspeed'")
+        self.speed_cost_mode = speed_cost_mode
         # Strong (δ−δ_prev)²/dt term smooths wheel angle (straights / RTI).
         self.w_delta_dot = 80.0
         self.w_Jx = 150.0
@@ -260,8 +276,7 @@ class AcadosMPC:
         # Obstacle avoidance: smooth softplus barrier in OCP cost.
         # N_OBS positions injected as per-stage parameters; inactive = far-away placeholder.
         self._n_obs = 3          # fixed: max obstacles tracked per solve
-        self.w_obstacle = 5e3    # penalty weight — balanced with tracking weights to
-                                 # avoid Hessian ill-conditioning (was 2e4, caused QP failure)
+        self.w_obstacle = float(obstacle_weight)
 
         # NN integration mode
         self._temporal_mode = (self.use_nn and nn_tire_model.temporal_K > 1)
@@ -403,6 +418,7 @@ class AcadosMPC:
             model_tag = nn_tire_model.model_type
         else:
             model_tag = tire_model  # pacejka / pacejka-oracle / tmeasy
+        self._build_dir_user_provided = build_dir is not None
         if build_dir is None:
             build_dir = Path(f'/tmp/acados_mpc_{model_tag}')
         self._build_dir = Path(build_dir)
@@ -597,6 +613,17 @@ class AcadosMPC:
 
         # --- Cache: skip full OCP build if compiled solver matches ---
         fingerprint = self._compute_fingerprint()
+        if not getattr(self, '_build_dir_user_provided', False):
+            # The fingerprint includes terrain/friction and solver options.
+            # Keying the default cache only by model tag lets parallel
+            # mixed-terrain runs delete/rebuild the same directory while other
+            # processes are inside it.  Add a short fingerprint hash to make
+            # concurrent cache misses independent.
+            model_tag = self.nn_tire_model.model_type if self.use_nn else self.tire_model
+            fp_hash = hashlib.sha1(fingerprint.encode('utf-8')).hexdigest()[:10]
+            if os.environ.get('ACADOS_UNIQUE_BUILD_DIR'):
+                fp_hash = f"{fp_hash}_{os.getpid()}"
+            self._build_dir = Path(f'/tmp/acados_mpc_{model_tag}_{fp_hash}')
         fp_file = self._build_dir / '.fingerprint'
         so_file = self._build_dir / 'c_generated_code' / 'libacados_ocp_solver_bicycle.so'
         json_file = self._build_dir / 'acados_ocp.json'
@@ -712,6 +739,7 @@ class AcadosMPC:
             'w_lateral': self.w_lateral,
             'w_heading': self.w_heading,
             'w_speed': self.w_speed,
+            'speed_cost_mode': self.speed_cost_mode,
             'w_du': self.w_du,
             'w_steer': self.w_steer,
             'w_terminal': self.w_terminal,
@@ -1056,9 +1084,15 @@ class AcadosMPC:
                 du_vec = ca.vertcat(rates_f_du, rates_f_du, rates_r_du, rates_r_du,
                                     rates_f_du, rates_r_du, rates_f_du, rates_r_du)
 
-                Fxs_all, Fys_all = nn.predict_batch_rate(
-                    a_vec, fz_vec, u_vec, k_vec, n_vec, sr_vec,
-                    dk_vec, da_vec, du_vec, Kphi_sym, Kc_sym, c_sym, phi_sym, k_sym)
+                if hasattr(nn, 'predict_batch_axle_rate'):
+                    axle_vec = ca.vertcat(0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0)
+                    Fxs_all, Fys_all = nn.predict_batch_axle_rate(
+                        axle_vec, a_vec, fz_vec, u_vec, k_vec, n_vec, sr_vec,
+                        dk_vec, da_vec, du_vec, Kphi_sym, Kc_sym, c_sym, phi_sym, k_sym)
+                else:
+                    Fxs_all, Fys_all = nn.predict_batch_rate(
+                        a_vec, fz_vec, u_vec, k_vec, n_vec, sr_vec,
+                        dk_vec, da_vec, du_vec, Kphi_sym, Kc_sym, c_sym, phi_sym, k_sym)
                 Fyf = -self.nn_scale * (Fys_all[0] + Fys_all[1])
                 Fyr = -self.nn_scale * (Fys_all[2] + Fys_all[3])
                 Fx_traction = 2.0 * (Fxs_all[4] + Fxs_all[5])
@@ -1078,9 +1112,15 @@ class AcadosMPC:
                 du_vec = ca.vertcat(rates_f_du, rates_r_du, rates_f_du, rates_r_du,
                                     0.0, 0.0, 0.0, 0.0)
 
-                Fxs_all, Fys_all = nn.predict_batch_rate(
-                    a_vec, fz_vec, u_vec, k_vec, n_vec, sr_vec,
-                    dk_vec, da_vec, du_vec, Kphi_sym, Kc_sym, c_sym, phi_sym, k_sym)
+                if hasattr(nn, 'predict_batch_axle_rate'):
+                    axle_vec = ca.vertcat(0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0)
+                    Fxs_all, Fys_all = nn.predict_batch_axle_rate(
+                        axle_vec, a_vec, fz_vec, u_vec, k_vec, n_vec, sr_vec,
+                        dk_vec, da_vec, du_vec, Kphi_sym, Kc_sym, c_sym, phi_sym, k_sym)
+                else:
+                    Fxs_all, Fys_all = nn.predict_batch_rate(
+                        a_vec, fz_vec, u_vec, k_vec, n_vec, sr_vec,
+                        dk_vec, da_vec, du_vec, Kphi_sym, Kc_sym, c_sym, phi_sym, k_sym)
                 Fyf = -self.nn_scale * 2.0 * Fys_all[0]
                 Fyr = -self.nn_scale * 2.0 * Fys_all[1]
                 Fx_traction = 2.0 * (Fxs_all[2] + Fxs_all[3])
@@ -1305,6 +1345,12 @@ class AcadosMPC:
 
         # Keep legacy weight scaling to preserve closed-loop tuning while
         # using wrapped heading error.
+        speed_err = u_vel - v_ref
+        if self.speed_cost_mode == 'overspeed':
+            speed_cost_err = 0.5 * (speed_err + ca.sqrt(speed_err**2 + 1e-4))
+        else:
+            speed_cost_err = speed_err
+
         stage_cost = (
             self.w_delta_dot / _ct * d_delta**2 +
             self.w_Jx * _ct * Jx**2 +
@@ -1315,7 +1361,7 @@ class AcadosMPC:
             self.w_y * (py - y_ref)**2 +
             self.w_lateral * (py - y_ref)**2 +
             self.w_heading * psi_err**2 +
-            self.w_speed * (u_vel - v_ref)**2
+            self.w_speed * speed_cost_err**2
         )
         # Obstacle avoidance: smooth softplus barrier penalty.
         # Uses softplus(k*(r - d))/k as a smooth approximation to max(0, r - d).
@@ -1613,11 +1659,14 @@ class AcadosMPC:
                 z0[self._sr_state_idx], self.delta_min, self.delta_max
             )
 
-        # Terrain friction angle: normalize to radians for the OCP model.
-        # Presets/checkpoints are typically in degrees; if already in radians
-        # (|phi| <= pi), keep as-is.
-        phi_raw = float(tp['phi'])
-        phi_val = np.radians(phi_raw) if abs(phi_raw) > np.pi else phi_raw
+        # Terrain friction angle in the units expected by the selected NN
+        # checkpoint.  Rig v6 checkpoints used radians; closed-loop vehicle
+        # checkpoints use degrees.  The NN loader detects this from scalers.
+        if self.use_nn and hasattr(self.nn_tire_model, 'phi_feature_value'):
+            phi_val = self.nn_tire_model.phi_feature_value(float(tp['phi']))
+        else:
+            phi_raw = float(tp['phi'])
+            phi_val = np.radians(phi_raw) if abs(phi_raw) > np.pi else phi_raw
 
         terrain_vec = [tp['Kphi'], tp['Kc'], terrain_n, tp['c'], phi_val, tp['k']]
 

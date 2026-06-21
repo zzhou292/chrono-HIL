@@ -1,0 +1,23 @@
+key,value
+created_at,2026-05-13T01:52:22
+project_root,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop
+description,Safety filter obstacle-avoidance sweep with sensor noise enabled.
+command,paper_scripts/safety_filter_sweep.py --flavors none dob_cbf mppi nmpc --terrains clay sand --paths sinusoidal lane_change --speeds 5 --bumpiness 0 --seeds 1 --time 10 --rocks 5 --mppi-samples 384 --shield-horizon 18 --nmpc-iter 8 --safety-buffer 0.5 --timeout 260 --base-port 13400
+base_port,13400
+base_seed,45
+blind_and_aware,False
+bumpiness,[0]
+flavors,"['none', 'dob_cbf', 'mppi', 'nmpc']"
+lead_in,5.0
+mppi_samples,384
+nmpc_iter,8
+paths,"['sinusoidal', 'lane_change']"
+quick,False
+rocks,5
+safety_buffer,0.5
+seeds,1
+shield_horizon,18
+speeds,[5.0]
+terrains,"['clay', 'sand']"
+time,10.0
+timeout,260.0

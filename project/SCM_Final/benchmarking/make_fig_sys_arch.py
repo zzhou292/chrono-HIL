@@ -76,7 +76,7 @@ BOXES = {
                   "Operator",                                                           HUMAN_EDGE, HUMAN_FILL),
     # ---------- row 3: middleware ----------
     "filter"   : ( 1.7, Y_ROW3, 3.0, 0.95,
-                  "Safety Filter\n{ none | DOB-CBF | MPPI | NMPC }",                    SWAP_EDGE,  SWAP_FILL),
+                  "Safety Filter\n{ none | DOB-CBF }",                                  SWAP_EDGE,  SWAP_FILL),
     "lat"      : ( 6.0, Y_ROW3, 2.8, 0.95,
                   "Latency Profiles\n{ const | replay | 5G }",                          SWAP_EDGE,  LAT_FILL),
     "cw"       : (10.3, Y_ROW3, 3.0, 0.95,

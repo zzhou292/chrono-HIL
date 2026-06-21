@@ -1,0 +1,3 @@
+filter,delay_s,mpc_delay_comp,n_runs,n_ok,collisions_mean,min_clearance_m_mean,rms_cte_m_mean,speed_ratio_mean,intervention_rate_pct_mean
+none,0.0,on,1,1,1.0,-0.0181,0.1371940987016715,0.46777536,
+mppi,0.0,on,1,1,0.0,0.9345,0.2186646519704954,0.4197160829493087,40.7

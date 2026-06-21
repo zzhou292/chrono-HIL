@@ -85,9 +85,12 @@ constexpr double ALPHA_LIMIT = 0.6;
 // =============================================================================
 struct ParameterRanges {
     // Target values at measurement time
+    // Widened from prior version (±0.40 rad on alpha) to paper118
+    // (Dallas 2021 IEEE TVT, Table I): slip_angle ±0.6 rad to give the
+    // UKF bicycle's transient excursions full coverage on firm soils.
     double kappa_target_min = -0.8, kappa_target_max = 0.8;
-    double alpha_target_min = -0.40, alpha_target_max = 0.40;
-    double velocity_target_min = 2.5, velocity_target_max = 9.5;
+    double alpha_target_min = -0.60, alpha_target_max = 0.60;
+    double velocity_target_min = 2.0, velocity_target_max = 10.0;
 
     // Target rates at measurement time
     double dkappa_min = -0.4, dkappa_max = 0.4;     // dκ/dt (1/s)
@@ -98,7 +101,12 @@ struct ParameterRanges {
     double ramp_time_min = T_RAMP_MIN, ramp_time_max = T_RAMP_MAX;
 
     // Vertical load (constant per scenario)
-    double vertical_load_min = 2500.0, vertical_load_max = 7500.0;
+    // Widened from prior [2.5, 7.5] kN so the LHS box covers the
+    // per-wheel Fz excursions a full HMMWV sees under cornering on
+    // SCM (peak outer-wheel Fz reaches ~10 kN in a sustained 0.3-rad
+    // sinusoidal steer). Widening the LHS box is allowed per the
+    // CLAUDE.md no-biased-data rule; narrowing it would not be.
+    double vertical_load_min = 2500.0, vertical_load_max = 11000.0;
 
     // Terrain (same as static collector)
     double bekker_Kphi_min = 0.5e6, bekker_Kphi_max = 4.0e6;
@@ -416,21 +424,30 @@ RateResult CollectRateSample(
             rig.Advance(STEP_SIZE);
             t += STEP_SIZE;
 
-            // Average forces and actual state over measurement window
+            // Average forces and actual state over measurement window.
+            // Newer Chrono builds dropped ChTireTestRig::GetSlipAngle /
+            // GetLongSpeed / GetLongitudinalSlip / GetAngSpeed from the
+            // public API. The collector knows the commanded functions
+            // locally (slip_func, v_func, omega_func) and the rig
+            // tracks them, so we read the commanded values directly.
             if (t >= t_next_measure && t >= t_measure_start && t <= t_measure_end) {
                 auto force = rig.ReportTireForce();
                 sum_Fx += force.force.x();
                 sum_Fy += force.force.y();
                 sum_Fz += force.force.z();
-                double cur_kappa = rig.GetLongitudinalSlip();
-                double cur_alpha = rig.GetSlipAngle();
-                double cur_v     = rig.GetLongSpeed();
+                double cur_v_local     = v_func->GetVal(t);
+                double cur_omega_local = omega_func->GetVal(t);
+                double cur_alpha       = slip_func->GetVal(t);
+                // Longitudinal slip: ω*R / v - 1 = κ  (since ω = v/R·(1+κ))
+                double cur_kappa = (cur_v_local > 1e-3)
+                    ? (cur_omega_local * TIRE_RADIUS / cur_v_local - 1.0)
+                    : 0.0;
                 sum_kappa += cur_kappa;
                 sum_alpha += cur_alpha;
-                sum_v     += cur_v;
-                sum_omega += rig.GetAngSpeed();
-                if (count == 0) { first_kappa = cur_kappa; first_alpha = cur_alpha; first_v = cur_v; first_t = t; }
-                last_kappa = cur_kappa; last_alpha = cur_alpha; last_v = cur_v; last_t = t;
+                sum_v     += cur_v_local;
+                sum_omega += cur_omega_local;
+                if (count == 0) { first_kappa = cur_kappa; first_alpha = cur_alpha; first_v = cur_v_local; first_t = t; }
+                last_kappa = cur_kappa; last_alpha = cur_alpha; last_v = cur_v_local; last_t = t;
                 count++;
                 t_next_measure += MEASURE_DT;
             }

@@ -102,9 +102,12 @@ from tire_input_features import (
     VehicleGeometry,
     compute_bicycle_operating_point,
     fz_with_lateral_transfer,
+    kappa_from_wheel_pair,
     kappa_from_wheel_speed,
     lateral_load_transfer_dFz,
+    pack_rich_vehicle_tire_csv_row,
     pack_vehicle_tire_csv_row,
+    write_rich_vehicle_tire_csv_header,
     write_vehicle_tire_csv_header,
 )
 
@@ -194,6 +197,8 @@ def _acados_build_directory(args, tire_model: str, nn_model_id: Optional[str]) -
         return Path(args.acados_build_dir).expanduser().resolve()
     root = Path(os.environ.get("ACADOS_MPC_BUILD_ROOT", tempfile.gettempdir()))
     tag = (nn_model_id or tire_model).replace("/", "_")
+    if os.environ.get("ACADOS_UNIQUE_BUILD_DIR"):
+        tag = f"{tag}_{os.getpid()}"
     return (root / f"acados_mpc_{tag}").resolve()
 
 
@@ -294,6 +299,9 @@ def run_controller_node(args):
         friction_angle_deg=terrain_params.get('phi'),
         rate_feature_dt=float(args.nn_rate_sample_dt),
         oracle_terrain=(terrain_name if tire_model == 'pacejka-oracle' else None),
+        speed_weight=float(args.speed_weight),
+        speed_cost_mode=args.speed_cost_mode,
+        obstacle_weight=float(args.obstacle_weight),
     )
     if tire_model == 'nn':
         model_label = f"ACADOS-NN ({nn_tire.model_type})"
@@ -563,6 +571,14 @@ def run_controller_node(args):
     terrain_estimator = None
     _te_omega_prev = None
     _te_time_prev = None
+    # Cache of the most recent live terrain estimate. Every ControlCommand
+    # carries this snapshot so the sim-side safety shield can re-condition
+    # its NN surrogate and tighten the friction-cone gate by sigma_phi.
+    latest_terrain_update = {
+        "seq": 0, "n": None, "phi_deg": None, "phi_sigma_deg": None,
+        "Kphi": None, "Kc": None, "c": None, "k": None,
+        "terrain_class": None, "confidence": None,
+    }
     if args.terrain_estimator and args.model == "nn":
         # Start estimator from a NEUTRAL default — midpoint of the n range.
         # Use dirt preset as base (n=0.7, middle of [0.3, 1.3]).
@@ -572,7 +588,7 @@ def run_controller_node(args):
         learned_dir = (Path(args.learned_terrain_model_dir).resolve()
                        if args.learned_terrain_model_dir else
                        Path(__file__).parent.parent / "nn_models" /
-                       "terrain_window_mlp_v3_cl")
+                       "terrain_window_mlp")
         terrain_estimator = LearnedTerrainEstimator(
             model_dir=str(learned_dir),
             initial_terrain=_te_default,
@@ -617,6 +633,11 @@ def run_controller_node(args):
     tire_csv_file = None
     tire_csv_writer = None
     tire_csv_path = None
+    tire_csv_rows = 0
+    rich_tire_csv_file = None
+    rich_tire_csv_writer = None
+    rich_tire_csv_path = None
+    rich_tire_csv_rows = 0
     if not args.no_csv:
         csv_path = run_dir / f"diag_{terrain_name}_{path_type}_{model_tag}.csv"
         csv_file = open(csv_path, "w", newline="")
@@ -653,6 +674,14 @@ def run_controller_node(args):
         tire_csv_writer = csv.writer(tire_csv_file)
         tire_csv_writer.writerow(write_vehicle_tire_csv_header())
         print(f"  MPC-aligned tire training CSV: {tire_csv_path}")
+
+    if args.log_rich_tire_csv:
+        rich_tire_csv_path = Path(args.log_rich_tire_csv).expanduser().resolve()
+        rich_tire_csv_path.parent.mkdir(parents=True, exist_ok=True)
+        rich_tire_csv_file = open(rich_tire_csv_path, "w", newline="")
+        rich_tire_csv_writer = csv.writer(rich_tire_csv_file)
+        rich_tire_csv_writer.writerow(write_rich_vehicle_tire_csv_header())
+        print(f"  Rich sensor-realistic tire training CSV: {rich_tire_csv_path}")
 
     tire_geom = VehicleGeometry(
         Lf=float(mpc.Lf),
@@ -1067,7 +1096,10 @@ def run_controller_node(args):
                 v_ref = v_ref * _gp_speed_scale
 
         # Obstacle avoidance: pass parsed obstacle list to OCP solver.
-        if _obs_list_mpc:
+        # ``--mpc-blind-obstacles`` lets the safety filter be the *sole*
+        # obstacle-avoider, which is the realistic test for a teleoperator
+        # who can't see the rocks ahead of time and relies on the shield.
+        if _obs_list_mpc and not getattr(args, 'mpc_blind_obstacles', False):
             solve_kwargs['obstacles'] = _obs_list_mpc
 
         # Online signed Fy bias correction — currently disabled.
@@ -1142,7 +1174,10 @@ def run_controller_node(args):
 
         if tire_csv_writer is not None and msg.tire_forces:
             tfw = msg.tire_forces
-            req = ("front_left_Fx", "front_right_Fx", "front_left_Fy", "front_right_Fy")
+            req = (
+                "front_left_Fx", "front_right_Fx", "front_left_Fy", "front_right_Fy",
+                "rear_left_Fx", "rear_right_Fx", "rear_left_Fy", "rear_right_Fy",
+            )
             if all(k in tfw for k in req):
                 fxm = 0.5 * (tfw["front_left_Fx"] + tfw["front_right_Fx"])
                 fym = 0.5 * (tfw["front_left_Fy"] + tfw["front_right_Fy"])
@@ -1160,6 +1195,29 @@ def run_controller_node(args):
                         float(fym),
                     )
                 )
+                tire_csv_rows += 1
+                # Log the rear axle as a separate sequence.  Static training
+                # treats scenario_id as metadata, but temporal/rate training
+                # groups by scenario_id to build windows; offsetting the rear
+                # id prevents front/rear samples at the same timestep from
+                # being stitched into one artificial tire history.
+                fxm_r = 0.5 * (tfw["rear_left_Fx"] + tfw["rear_right_Fx"])
+                fym_r = 0.5 * (tfw["rear_left_Fy"] + tfw["rear_right_Fy"])
+                tire_csv_writer.writerow(
+                    pack_vehicle_tire_csv_row(
+                        int(args.log_scenario_id) + 1_000_000,
+                        float(msg.time),
+                        kappa_h,
+                        alpha_r_h,
+                        u_safe_h,
+                        Fz_r_h,
+                        0.0,
+                        terrain_params_est,
+                        float(fxm_r),
+                        float(fym_r),
+                    )
+                )
+                tire_csv_rows += 1
 
         # --- Update tire history after solve (training uses ~dt_nn between frames) ---
         if tire_hist is not None:
@@ -1211,6 +1269,95 @@ def run_controller_node(args):
         integrator.steering_angle = _saved_delta
         steering = float(np.clip(
             integrator.steering_angle * integrator.steering_gain, -1.0, 1.0))
+
+        if rich_tire_csv_writer is not None and msg.tire_forces:
+            tfw = msg.tire_forces
+            req = (
+                "front_left_Fx", "front_right_Fx", "front_left_Fy", "front_right_Fy",
+                "rear_left_Fx", "rear_right_Fx", "rear_left_Fy", "rear_right_Fy",
+            )
+            if all(k in tfw for k in req):
+                dFz_kin = lateral_load_transfer_dFz(msg.u, msg.omega, geom=tire_geom)
+                dFz_imu = float(tire_geom.M * float(msg.ay) * tire_geom.h_cg / tire_geom.T / 2.0)
+                kappa_front = kappa_from_wheel_pair(
+                    msg.wheel_omega_fl, msg.wheel_omega_fr, msg.u
+                )
+                kappa_rear = kappa_from_wheel_pair(
+                    msg.wheel_omega_rl, msg.wheel_omega_rr, msg.u
+                )
+
+                fxm_f = 0.5 * (tfw["front_left_Fx"] + tfw["front_right_Fx"])
+                fym_f = 0.5 * (tfw["front_left_Fy"] + tfw["front_right_Fy"])
+                rich_tire_csv_writer.writerow(
+                    pack_rich_vehicle_tire_csv_row(
+                        int(args.log_scenario_id),
+                        float(msg.time),
+                        0,
+                        kappa_h,
+                        alpha_f_h,
+                        u_safe_h,
+                        Fz_f_h,
+                        float(delta_dot),
+                        float(delta_cmd),
+                        float(msg.u),
+                        float(msg.v),
+                        float(msg.omega),
+                        float(msg.ax),
+                        float(msg.ay),
+                        float(_meas_kappa),
+                        float(kappa_front),
+                        float(0.5 * (msg.wheel_omega_fl + msg.wheel_omega_fr)),
+                        float(msg.wheel_omega_fl),
+                        float(msg.wheel_omega_fr),
+                        float(dFz_kin),
+                        float(dFz_imu),
+                        float(throttle),
+                        float(braking),
+                        float(integrator.acceleration),
+                        float(Jx),
+                        terrain_params_est,
+                        float(fxm_f),
+                        float(fym_f),
+                    )
+                )
+                rich_tire_csv_rows += 1
+
+                fxm_r = 0.5 * (tfw["rear_left_Fx"] + tfw["rear_right_Fx"])
+                fym_r = 0.5 * (tfw["rear_left_Fy"] + tfw["rear_right_Fy"])
+                rich_tire_csv_writer.writerow(
+                    pack_rich_vehicle_tire_csv_row(
+                        int(args.log_scenario_id) + 1_000_000,
+                        float(msg.time),
+                        1,
+                        kappa_h,
+                        alpha_r_h,
+                        u_safe_h,
+                        Fz_r_h,
+                        float(delta_dot),
+                        float(delta_cmd),
+                        float(msg.u),
+                        float(msg.v),
+                        float(msg.omega),
+                        float(msg.ax),
+                        float(msg.ay),
+                        float(_meas_kappa),
+                        float(kappa_rear),
+                        float(0.5 * (msg.wheel_omega_rl + msg.wheel_omega_rr)),
+                        float(msg.wheel_omega_rl),
+                        float(msg.wheel_omega_rr),
+                        float(dFz_kin),
+                        float(dFz_imu),
+                        float(throttle),
+                        float(braking),
+                        float(integrator.acceleration),
+                        float(Jx),
+                        terrain_params_est,
+                        float(fxm_r),
+                        float(fym_r),
+                    )
+                )
+                rich_tire_csv_rows += 1
+
         # For next cycle's realized-rate estimate, keep the delta from this
         # cycle's measured state sample (before applying the new command).
         prev_applied_delta = delta_meas_now
@@ -1404,6 +1551,25 @@ def run_controller_node(args):
                             terrain_class_est = getattr(
                                 terrain_estimator, '_terrain_name', 'estimated'
                             )
+                            # Cache the live estimate so every subsequent
+                            # ControlCommand carries it to the sim-side
+                            # safety shield (see ControlCommand.terrain_*
+                            # fields). Piggybacking on ctrl_pub avoids
+                            # ZMQ_CONFLATE dropping a separate channel.
+                            latest_terrain_update.update({
+                                "seq": latest_terrain_update["seq"] + 1,
+                                "n": float(_te_mpc['n']),
+                                "phi_deg": float(_te_mpc['phi']),
+                                "phi_sigma_deg": float(
+                                    terrain_estimator.get_phi_uncertainty_deg()
+                                ),
+                                "Kphi": float(_te_mpc['Kphi']),
+                                "Kc": float(_te_mpc['Kc']),
+                                "c": float(_te_mpc['c']),
+                                "k": float(_te_mpc['k']),
+                                "terrain_class": str(terrain_class_est),
+                                "confidence": float(_te_conf),
+                            })
               except Exception as _te_exc:
                 import traceback
                 print(f"[TERRAIN-EST] Error: {_te_exc}", flush=True)
@@ -1459,6 +1625,16 @@ def run_controller_node(args):
             delta_dot=delta_dot,
             jerk=Jx,
             solve_time_ms=t_solve * 1000.0,
+            terrain_n=latest_terrain_update["n"],
+            terrain_phi_deg=latest_terrain_update["phi_deg"],
+            terrain_phi_sigma_deg=latest_terrain_update["phi_sigma_deg"],
+            terrain_Kphi=latest_terrain_update["Kphi"],
+            terrain_Kc=latest_terrain_update["Kc"],
+            terrain_c=latest_terrain_update["c"],
+            terrain_k=latest_terrain_update["k"],
+            terrain_class=latest_terrain_update["terrain_class"],
+            terrain_confidence=latest_terrain_update["confidence"],
+            terrain_update_seq=latest_terrain_update["seq"],
         )
         ctrl_pub.send(cmd)
 
@@ -1588,7 +1764,14 @@ def run_controller_node(args):
     if tire_csv_file is not None:
         tire_csv_file.close()
         if tire_csv_path is not None:
-            print(f"  Tire training CSV written: {tire_csv_path} ({seq} rows)")
+            print(f"  Tire training CSV written: {tire_csv_path} ({tire_csv_rows} rows)")
+    if rich_tire_csv_file is not None:
+        rich_tire_csv_file.close()
+        if rich_tire_csv_path is not None:
+            print(
+                f"  Rich tire training CSV written: {rich_tire_csv_path} "
+                f"({rich_tire_csv_rows} rows)"
+            )
 
     if not args.no_plot:
         analytics.plot_results(
@@ -1612,6 +1795,11 @@ def run_controller_node(args):
 
 def main():
     p = argparse.ArgumentParser(description="ACADOS MPC Controller Node (decoupled)")
+    p.add_argument("--mpc-blind-obstacles", action="store_true",
+                   help="Drop obstacle data on the controller side so the NMPC is a "
+                        "pure path-tracker. The downstream safety shield (MPPI/NMPC/"
+                        "DOB-CBF) becomes the sole collision-avoidance layer — "
+                        "useful as a proxy for an oblivious teleoperator.")
 
     # Model (NN or analytical tire model)
     p.add_argument("--model", default="nn",
@@ -1619,7 +1807,7 @@ def main():
                    help="Tire model: nn (neural network), pacejka (rigid-terrain "
                         "defaults), pacejka-oracle (terrain-fitted mu/B, fair "
                         "comparison upper bound), or tmeasy")
-    p.add_argument("--nn-model", default="paper_v2_mlp_16_4",
+    p.add_argument("--nn-model", default="closed_loop_v2_both_axles_rate_32_16",
                    help="NN model version directory (only used when --model nn)")
     p.add_argument("--kappa", default="measured", choices=["zero", "approx", "measured"])
     p.add_argument("--no-lat-transfer", action="store_true",
@@ -1657,6 +1845,26 @@ def main():
     p.add_argument("--path", default="lane_change",
                    choices=["lane_change", "double_lane_change", "right_left", "sinusoidal"])
     p.add_argument("--speed", type=float, default=5.0, help="Target speed (m/s)")
+    p.add_argument(
+        "--speed-weight",
+        type=float,
+        default=70.0,
+        help="Stage-cost weight on (u - v_ref)^2. Lower values keep the MPC "
+             "from chasing reference speed as aggressively in turns.",
+    )
+    p.add_argument(
+        "--speed-cost-mode",
+        choices=["symmetric", "overspeed"],
+        default="symmetric",
+        help="'symmetric' tracks v_ref from both sides; 'overspeed' treats "
+             "v_ref as a cap and does not reward accelerating up to it.",
+    )
+    p.add_argument(
+        "--obstacle-weight",
+        type=float,
+        default=5e3,
+        help="Stage/terminal soft obstacle-barrier weight for autonomous MPC obstacle avoidance.",
+    )
     p.add_argument("--sine-amplitude", type=float, default=2.0)
     p.add_argument("--sine-wavelength", type=float, default=30.0)
     p.add_argument("--lead-in", type=float, default=0.0,
@@ -1771,8 +1979,18 @@ def main():
         default=None,
         metavar="PATH",
         help="Append MPC-aligned tire rows (temporal CSV schema) for retraining; "
-             "one row per control step with kappa, bicycle alpha_f, Fz_f, delta_dot, "
-             "and mean front-wheel Fx/Fy from Chrono when available",
+             "front and rear axle rows are logged per control step with kappa, "
+             "bicycle alpha, Fz, steering-rate feature, and mean wheel Fx/Fy "
+             "from Chrono when available",
+    )
+    p.add_argument(
+        "--log-rich-tire-csv",
+        default=None,
+        metavar="PATH",
+        help="Append rich sensor-realistic tire rows for retraining. Inputs are "
+             "limited to GPS/INS/IMU, steering and wheel encoders, command "
+             "signals, fixed-geometry load-transfer estimates, and terrain "
+             "estimates; Chrono tire forces are labels only.",
     )
     p.add_argument(
         "--log-scenario-id",
@@ -1879,7 +2097,7 @@ def main():
                    help="Minimum confidence to apply estimated terrain params to MPC")
     p.add_argument("--learned-terrain-model-dir", default=None,
                    help="Path to the trained terrain_window_mlp/ directory. "
-                        "Defaults to nn_models/terrain_window_mlp_v3_cl.")
+                        "Defaults to nn_models/terrain_window_mlp.")
     p.add_argument("--te-verbose", action="store_true",
                    help="Print verbose terrain-estimator predictions (every "
                         "10 observations) for offline parsing/validation.")

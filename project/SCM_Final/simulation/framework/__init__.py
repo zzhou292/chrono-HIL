@@ -15,7 +15,7 @@ new implementation is one decorator and zero edits to the consumers:
 The roles are:
 
 * ``COMMAND_SOURCES``  — ``CommandSource``  (NMPC, G29, WASD, remote)
-* ``SAFETY_FILTERS``   — ``SafetyFilter``   (DOB-CBF, MPPI, NMPC shield)
+* ``SAFETY_FILTERS``   — ``SafetyFilter``   (DOB-CBF; registry is swappable)
 * ``COLLISION_WARNINGS`` — ``CollisionWarning`` (TTC + variants)
 * ``TIRE_MODELS``      — ``TireModel``      (NN surrogates + analytical)
 * ``TERRAIN_ESTIMATORS`` — ``TerrainEstimator`` (n-only, joint, UKF...)

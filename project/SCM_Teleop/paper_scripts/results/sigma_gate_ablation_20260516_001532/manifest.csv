@@ -1,0 +1,21 @@
+key,value
+created_at,2026-05-16T00:15:32
+project_root,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop
+description,MPPI shield sigma-gating ablation with sensor noise enabled.
+command,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/sigma_gate_ablation.py --variants sigma_inflate sigma_tighten sigma_both sigma_off no_live_terrain --terrains clay sand --paths sinusoidal lane_change --speeds 5 7 --bumpiness 0 4 --seeds 2 --time 12.0 --base-port 58500
+base_port,58500
+base_seed,950
+bumpiness,"[0, 4]"
+lead_in,5.0
+mppi_samples,384
+paths,"['sinusoidal', 'lane_change']"
+quick,False
+rocks,5
+safety_buffer,0.5
+seeds,2
+shield_horizon,18
+speeds,"[5.0, 7.0]"
+terrains,"['clay', 'sand']"
+time,12.0
+timeout,240.0
+variants,"['sigma_inflate', 'sigma_tighten', 'sigma_both', 'sigma_off', 'no_live_terrain']"

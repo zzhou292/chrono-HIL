@@ -43,7 +43,7 @@ from common import (  # noqa: E402
 )
 
 
-FILTERS = ("none", "dob_cbf", "mppi")
+FILTERS = ("none", "dob_cbf")
 
 
 def parse_args() -> argparse.Namespace:
@@ -230,7 +230,7 @@ def plot_figures(results_csv: Path, out_dir: Path) -> None:
 def main() -> None:
     args = parse_args()
     if args.quick:
-        args.filters = ["none", "mppi"]
+        args.filters = ["none", "dob_cbf"]
         args.delays = [0.0, 0.15]
         args.terrains = ["clay"]
         args.paths = ["sinusoidal"]

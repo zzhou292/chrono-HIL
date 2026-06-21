@@ -81,10 +81,9 @@ def collect_one(*, terrain: str, throttle: float, steer_amp: float,
     if terrain_yaml is not None:
         base_args += ["--terrain-config", str(terrain_yaml)]
     if python_exe == "conda":
-        sim_cmd = [
-            "/home/kyle/miniconda3/bin/conda", "run", "--no-capture-output",
-            "-n", "sim", "python", *base_args,
-        ]
+        # ``conda`` is a legacy sentinel; use the interpreter already running
+        # this collector rather than a machine-specific hard-coded path.
+        sim_cmd = [sys.executable, *base_args]
     else:
         sim_cmd = [python_exe, *base_args]
     print(f"  launching sim: {terrain} thr={throttle} amp={steer_amp} seed={seed}")

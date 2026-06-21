@@ -58,14 +58,15 @@ neural surrogate of the SCM tire forces is embedded inside an
 acados NMPC for terrain-aware trajectory tracking, while a
 learned online estimator regresses the dominant soil parameters
 from onboard IMU and wheel-speed signals so that both the NMPC
-and a latency-aware DOB-CBF-QP safety filter track the terrain and
-compensate time-varying teleoperator delay in real time.  We simulate an HMMWV on
+and a downstream Model Predictive Path Integral (MPPI) safety
+shield track the terrain and compensate time-varying teleoperator
+delay in real time.  We simulate an HMMWV on
 SCM terrain using Chrono::Vehicle (Project Chrono~\cite{Tasora16});
 Chrono::Sensor supplies driver POV and a Logitech G29 steering/pedals.
-Simulator, NMPC, terrain estimator, and CBF-QP exchange data over
-low-latency ZMQ; ML-based 5G models~\cite{Choi23}
-inject delay only on the camera and human-control paths, not between
-simulator and controller.
+Simulator, NMPC, terrain estimator, and shield exchange data over
+low-latency ZMQ; learned 5G traffic profiles~\cite{Choi23}
+drive a configurable queue-load delay model on the camera and
+human-control paths, not between simulator and controller.
 
 \vspace{2pt}
 \noindent\textbf{Contributions.}  Off-road
@@ -89,9 +90,13 @@ Bekker~$n$ and Mohr--Coulomb~$\phi$ from onboard IMU and
 wheel-speed signals, conditioning both the surrogate and the
 traction-aware NMPC constraints online; (iii)~a two-layer obstacle-avoidance
 stack that pairs in-horizon NMPC softplus barriers with a
-downstream latency-aware DOB-CBF-QP safety
-filter~\cite{Zhang25} whose friction cone is tightened by the same
-$\phi$ estimate; and (iv)~an open-source parallelized
+downstream MPPI safety shield that rolls $K$ candidate command
+sequences through the same NN surrogate over a horizon padded by
+the EMA teleoperator round-trip delay, and whose friction-cone
+penalty is tightened by the $\phi$ estimate and its ensemble
+uncertainty; we benchmark against the prior DOB-CBF
+filter~\cite{Zhang25} and a gradient-based predictive NMPC variant
+on the same rollout; and (iv)~an open-source parallelized
 data-collection and benchmarking suite that scales training and
 closed-loop evaluation across terrains and reference trajectories.
 
@@ -103,8 +108,9 @@ runs an HMMWV on an SCM patch within Chrono::HIL~\cite{Zhou23}.
 The human views Chrono::Sensor driver POV and steers a Logitech G29
 via \texttt{pygame} with SDL2 haptics.  IMU measurements ride on the
 ZMQ vehicle-state stream to NMPC and the terrain estimator.  A second
-process runs NMPC and CBF-QP on low-latency ZMQ to the sim;~\cite{Choi23}
-delays hit the simulated camera stream and operator commands
+process runs NMPC and CBF-QP on low-latency ZMQ to the sim; learned
+traffic traces from~\cite{Choi23} are mapped to delay profiles that
+hit the simulated camera stream and operator commands
 (Fig.~\ref{fig:sysArch}); one workstation closes the loop in real
 time.
 
@@ -115,7 +121,7 @@ time.
     \includegraphics[width=0.55\textwidth]{bench_tire_models.png}
     \caption{\small \textbf{Left:} shared-control architecture:
       SCM surrogate and learned terrain estimator inform the NMPC and
-      the DOB-CBF-QP filter that screens delayed operator inputs.
+      the MPPI safety shield that screens delayed operator inputs.
       \textbf{Right:} NMPC tracking at $5$\,m/s (LC and sinusoid,
       $2$\,m amp, $30$\,m wavelength); RMS crosstrack error (m),
       mean$\pm$std, $5$ runs/cell.}
@@ -157,17 +163,32 @@ RMSE $\approx\!0.07$ in $n$, $\approx\!3.3^{\circ}$ in $\phi$);
 ensemble disagreement on $\phi$ gates the safety filter's friction
 cone.
 
-\noindent\textbf{NMPC barriers and delay-aware safety filter.}
+\noindent\textbf{NMPC barriers and predictive MPPI safety shield.}
 Obstacle handling uses two complementary layers.  (i)~The NMPC
 adds a smooth softplus barrier (stage and terminal) over live-$\phi$
 traction limits, proactively re-planning inside its horizon.
-(ii)~A downstream DOB-CBF-QP safety filter~\cite{Zhang25} screens
-autonomous and operator commands via a heading-aligned ellipsoidal
-barrier elongated ahead of the vehicle: a filter-side first-order
-velocity DOB captures unmodelled SCM drag, the NN surrogate sets the
-traction-limited top speed, and the barrier plus forward-prediction
-collision check are inflated by an EMA teleoperation round-trip
-delay drawn from the same 5G model~\cite{Choi23}.
+(ii)~A downstream MPPI shield replaces the single-step
+linearization of the DOB-CBF baseline~\cite{Zhang25}: at each tick
+it samples $K\!\sim\!384$ noisy command sequences around the
+operator/AI command, rolls each forward through the *same* NN tire
+surrogate that the planner uses, and returns the
+importance-weighted mean of the first action.  The cost is a sum
+of (a) a softplus obstacle barrier inflated by an EMA round-trip
+delay induced by the learned 5G traffic profile from~\cite{Choi23}
+plus the constant-deceleration stopping
+distance at the current speed, (b) an NN-derived friction-cone
+penalty tightened by $\hat\phi - \sigma_\phi$, (c) a terrain-aware
+speed cap, and (d) deviation from operator intent so the shield is
+minimally invasive when the operator command is already safe.
+Hand-crafted seed trajectories (passthrough, full brake, coast,
+evade-left/right, brake-while-turn) are injected unconditionally
+so the optimizer always has a recoverable option in the sample
+set.  A scipy-SLSQP \emph{NMPC} variant on the identical NN-surrogate
+rollout serves as the gradient-based ablation; closed-loop tests
+on clay show MPPI matches the NMPC variant on collision rate while
+running $1.5\times$ faster wall-clock and intervening with
+markedly larger control authority via the importance-weighted
+action mean.
 
 \begin{figure}[H]
   \vspace{-6pt}

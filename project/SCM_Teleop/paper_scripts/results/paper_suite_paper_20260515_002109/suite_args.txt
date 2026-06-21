@@ -1,0 +1,8 @@
+base_port: 20000
+continue_on_error: False
+dry_run: True
+latency_profile_json: '/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/config/latency_profiles/5g_nhits_youtube_ul_scm_youtube_ul_smoke.json'
+only: ['safety', 'latency_compensation', 'terrain_estimator']
+port_stride: 5000
+tier: 'paper'
+train_5g: False

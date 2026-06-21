@@ -1,0 +1,17 @@
+key,value
+created_at,2026-05-15T05:39:43
+project_root,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop
+description,Asymmetric throttle DOB ablation with sensor noise enabled.
+command,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/throttle_dob_ablation.py --variants dob_on dob_off --terrains clay sand --paths sinusoidal lane_change --speeds 5 7 --bumpiness 0 4 --seeds 2 --time 12.0 --base-port 48000
+base_port,48000
+base_seed,600
+bumpiness,"[0, 4]"
+lead_in,5.0
+paths,"['sinusoidal', 'lane_change']"
+quick,False
+seeds,2
+speeds,"[5.0, 7.0]"
+terrains,"['clay', 'sand']"
+time,12.0
+timeout,180.0
+variants,"['dob_on', 'dob_off']"

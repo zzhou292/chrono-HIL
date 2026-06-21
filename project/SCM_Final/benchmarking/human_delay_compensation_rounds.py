@@ -65,8 +65,8 @@ from traffic import CONVOY_DESCRIPTIONS  # noqa: E402
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--filters", nargs="+", default=["none", "mppi", "dob_cbf", "nmpc"],
-                   choices=["none", "mppi", "nmpc", "dob_cbf"])
+    p.add_argument("--filters", nargs="+", default=["none", "dob_cbf"],
+                   choices=["none", "dob_cbf"])
     p.add_argument("--delays", nargs="+", type=float, default=[0.0, 0.15, 0.30],
                    help="Operator command-path (uplink) delays in seconds.")
     p.add_argument("--camera-delay-scale", type=float, default=1.0,

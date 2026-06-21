@@ -1,0 +1,242 @@
+[
+  {
+    "prefix": "mpc_tire_model_sweep",
+    "status": "ok",
+    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/mpc_tire_model_sweep_20260516_021007",
+    "copied": [
+      "bench_tire_models.png",
+      "bench_tire_models_heatmap.png",
+      "bench_tire_models_distributions.png",
+      "tire_force_predicted_vs_actual.png",
+      "tire_force_prediction_error.png",
+      "bench_tire_models_results.csv",
+      "bench_tire_models_summary.csv"
+    ],
+    "merged_rows": 129,
+    "merged_from": [
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/mpc_tire_model_sweep_20260515_005416",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/mpc_tire_model_sweep_20260516_021007"
+    ]
+  },
+  {
+    "prefix": "mpcc_vs_mpc_speed_tracking",
+    "status": "ok",
+    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/mpcc_vs_mpc_speed_tracking_20260516_021056",
+    "copied": [
+      "mpcc_vs_mpc_summary.png",
+      "mpcc_vs_mpc_pareto.png",
+      "mpcc_vs_mpc_speed_heatmap.png",
+      "mpcc_vs_mpc_results.csv",
+      "mpcc_vs_mpc_summary.csv"
+    ],
+    "merged_rows": 130,
+    "merged_from": [
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/mpcc_vs_mpc_speed_tracking_20260515_012713",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/mpcc_vs_mpc_speed_tracking_20260516_021056"
+    ]
+  },
+  {
+    "prefix": "safety_filter_sweep_planner_aware",
+    "status": "ok",
+    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/safety_filter_sweep_planner_aware_20260515_042941",
+    "copied": [
+      "safety_filter_planner_aware_summary.png",
+      "safety_filter_planner_aware_collision_heatmap.png",
+      "safety_filter_planner_aware_distributions.png",
+      "safety_filter_planner_aware_results.csv",
+      "safety_filter_planner_aware_summary.csv"
+    ],
+    "merged_rows": 256,
+    "merged_from": [
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/safety_filter_sweep_planner_aware_20260515_042941"
+    ]
+  },
+  {
+    "prefix": "safety_filter_sweep",
+    "status": "ok",
+    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/safety_filter_sweep_20260516_021229",
+    "copied": [
+      "safety_filter_summary.png",
+      "safety_filter_collision_heatmap.png",
+      "safety_filter_distributions.png",
+      "safety_filter_results.csv",
+      "safety_filter_summary.csv"
+    ],
+    "merged_rows": 128,
+    "merged_from": [
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/safety_filter_sweep_20260515_020556",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/safety_filter_sweep_20260516_021229"
+    ]
+  },
+  {
+    "prefix": "dob_cbf_nn_ablation",
+    "status": "ok",
+    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/dob_cbf_nn_ablation_20260516_021334",
+    "copied": [
+      "dob_cbf_nn_ablation_summary.png",
+      "dob_cbf_nn_ablation_heatmap.png",
+      "dob_cbf_nn_ablation_results.csv"
+    ],
+    "merged_rows": 96,
+    "merged_from": [
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/dob_cbf_nn_ablation_20260515_024122",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/dob_cbf_nn_ablation_20260515_070933",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/dob_cbf_nn_ablation_20260516_021334"
+    ]
+  },
+  {
+    "prefix": "autonomous_obstacle_tire_model_sweep_mppi_mpc_blind",
+    "status": "ok",
+    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/autonomous_obstacle_tire_model_sweep_mppi_mpc_blind_20260515_030311",
+    "copied": [
+      "autonomous_obstacle_tire_summary.png",
+      "autonomous_obstacle_collision_heatmap.png",
+      "autonomous_obstacle_clearance_heatmap.png",
+      "autonomous_obstacle_distributions.png",
+      "autonomous_obstacle_results.csv"
+    ],
+    "merged_rows": 128,
+    "merged_from": [
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/autonomous_obstacle_tire_model_sweep_mppi_mpc_blind_20260515_030311"
+    ]
+  },
+  {
+    "prefix": "autonomous_obstacle_tire_model_sweep_barrier_only",
+    "status": "ok",
+    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/autonomous_obstacle_tire_model_sweep_barrier_only_20260516_021406",
+    "copied": [
+      "autonomous_obstacle_barrier_only_summary.png",
+      "autonomous_obstacle_barrier_only_collision_heatmap.png",
+      "autonomous_obstacle_barrier_only_clearance_heatmap.png",
+      "autonomous_obstacle_barrier_only_results.csv"
+    ],
+    "merged_rows": 3,
+    "merged_from": [
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/autonomous_obstacle_tire_model_sweep_barrier_only_20260515_003751",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/autonomous_obstacle_tire_model_sweep_barrier_only_20260515_005048",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/autonomous_obstacle_tire_model_sweep_barrier_only_20260516_021406"
+    ]
+  },
+  {
+    "prefix": "terrain_estimator_benchmark",
+    "status": "ok",
+    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/terrain_estimator_benchmark_20260516_021455",
+    "copied": [
+      "closed_loop_estimator_learned.png",
+      "closed_loop_estimator_true_vs_estimated.png",
+      "closed_loop_estimator_error_heatmap.png",
+      "closed_loop_estimator_results.csv",
+      "closed_loop_estimator_summary.csv"
+    ],
+    "merged_rows": 64,
+    "merged_from": [
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/terrain_estimator_benchmark_20260515_033649",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/terrain_estimator_benchmark_20260516_021455"
+    ]
+  },
+  {
+    "prefix": "latency_profile_figure",
+    "status": "ok",
+    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/latency_profile_figure_20260516_021700",
+    "copied": [
+      "latency_profile_timeseries.png",
+      "latency_profile_histogram.png",
+      "latency_profile_samples.csv",
+      "latency_profile_summary.csv"
+    ],
+    "merged_rows": 0,
+    "merged_from": [
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/latency_profile_figure_20260514_231334",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/latency_profile_figure_20260514_235937",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/latency_profile_figure_20260515_000053",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/latency_profile_figure_20260515_002117",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/latency_profile_figure_20260515_003943",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/latency_profile_figure_20260515_005240",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/latency_profile_figure_20260515_040128",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/latency_profile_figure_20260516_021700"
+    ]
+  },
+  {
+    "prefix": "latency_compensation_sweep",
+    "status": "ok",
+    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/latency_compensation_sweep_20260516_021701",
+    "copied": [
+      "latency_compensation_summary.png",
+      "latency_compensation_collision_heatmap.png",
+      "latency_compensation_distributions.png",
+      "latency_compensation_results.csv"
+    ],
+    "merged_rows": 96,
+    "merged_from": [
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/latency_compensation_sweep_20260515_040129",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/latency_compensation_sweep_20260516_021701"
+    ]
+  },
+  {
+    "prefix": "throttle_dob_ablation",
+    "status": "ok",
+    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/throttle_dob_ablation_20260516_021557",
+    "copied": [
+      "throttle_dob_ablation_summary.png",
+      "throttle_dob_ablation_speed_heatmap.png",
+      "throttle_dob_ablation_distributions.png",
+      "throttle_dob_ablation_results.csv",
+      "throttle_dob_ablation_summary.csv"
+    ],
+    "merged_rows": 64,
+    "merged_from": [
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/throttle_dob_ablation_20260515_053943",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/throttle_dob_ablation_20260516_021557"
+    ]
+  },
+  {
+    "prefix": "mppi_seed_ablation",
+    "status": "ok",
+    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/mppi_seed_ablation_20260516_021638",
+    "copied": [
+      "mppi_seed_ablation_summary.png",
+      "mppi_seed_ablation_collision_heatmap.png",
+      "mppi_seed_ablation_distributions.png",
+      "mppi_seed_ablation_results.csv",
+      "mppi_seed_ablation_summary.csv"
+    ],
+    "merged_rows": 64,
+    "merged_from": [
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/mppi_seed_ablation_20260515_055630",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/mppi_seed_ablation_20260516_021638"
+    ]
+  },
+  {
+    "prefix": "tire_model_with_estimator_ablation",
+    "status": "ok",
+    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/tire_model_with_estimator_ablation_20260515_071325",
+    "copied": [
+      "tire_model_with_estimator_summary.png",
+      "tire_model_with_estimator_rms_cte_heatmap.png",
+      "tire_model_with_estimator_distributions.png",
+      "tire_model_with_estimator_results.csv",
+      "tire_model_with_estimator_summary.csv"
+    ],
+    "merged_rows": 124,
+    "merged_from": [
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/tire_model_with_estimator_ablation_20260515_061954",
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/tire_model_with_estimator_ablation_20260515_071325"
+    ]
+  },
+  {
+    "prefix": "sigma_gate_ablation",
+    "status": "ok",
+    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/sigma_gate_ablation_20260516_001532",
+    "copied": [
+      "sigma_gate_ablation_summary.png",
+      "sigma_gate_ablation_collision_heatmap.png",
+      "sigma_gate_ablation_distributions.png",
+      "sigma_gate_ablation_results.csv",
+      "sigma_gate_ablation_summary.csv"
+    ],
+    "merged_rows": 160,
+    "merged_from": [
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop/paper_scripts/results/sigma_gate_ablation_20260516_001532"
+    ]
+  }
+]

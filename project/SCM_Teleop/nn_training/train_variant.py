@@ -4,7 +4,7 @@ Train an experiment variant for tire force prediction (Fx, Fy).
 
 Variants covered:
 - arch:    mlp | resnet
-- mode:    static | temporal | rate
+- mode:    static | temporal | rate | axle_rate | rich | rich_rate
 
 This script writes outputs compatible with `simulation/nn_tire_model.py`:
 - best_terrain_nn.pt   (checkpoint with model_state_dict + metadata)
@@ -46,13 +46,47 @@ def set_global_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-OpMode = Literal["static", "temporal", "rate"]
+OpMode = Literal["static", "temporal", "rate", "axle_rate", "rich", "rich_rate"]
 Arch = Literal["mlp", "resnet"]
 
 
 OP_COLS = ["slip_ratio", "slip_angle", "velocity", "vertical_load", "steering_rate"]
 TERRAIN_COLS = ["bekker_Kphi", "bekker_Kc", "bekker_n", "mohr_cohesion", "mohr_friction", "janosi_shear"]
 OUT_COLS = ["Fx", "Fy"]
+RICH_SENSOR_COLS = [
+    "axle_id",
+    "slip_ratio",
+    "slip_angle",
+    "velocity",
+    "vertical_load",
+    "steering_rate",
+    "steering_angle",
+    "u_body",
+    "v_body",
+    "yaw_rate",
+    "ax_imu",
+    "ay_imu",
+    "measured_kappa",
+    "axle_kappa",
+    "wheel_omega_axle",
+    "dFz_lateral_kin",
+    "dFz_lateral_imu",
+    "throttle_cmd",
+    "brake_cmd",
+    "accel_cmd",
+    "jerk_cmd",
+]
+RICH_RATE_SOURCE_COLS = [
+    "slip_ratio",
+    "slip_angle",
+    "velocity",
+    "v_body",
+    "yaw_rate",
+    "ax_imu",
+    "ay_imu",
+    "axle_kappa",
+]
+RICH_RATE_COLS = [f"d_{c}" for c in RICH_RATE_SOURCE_COLS]
 
 
 def _apply_physical_filters(df: pd.DataFrame, mode: OpMode) -> pd.DataFrame:
@@ -71,11 +105,16 @@ def _apply_physical_filters(df: pd.DataFrame, mode: OpMode) -> pd.DataFrame:
         & df["Fy"].between(-5.0e4, 5.0e4)
     )
 
-    if mode == "rate":
+    if mode in ("rate", "rich_rate"):
         for c, lo, hi in (
             ("d_slip_ratio", -5.0, 5.0),
             ("d_slip_angle", -2.0, 2.0),
             ("d_velocity", -10.0, 10.0),
+            ("d_v_body", -10.0, 10.0),
+            ("d_yaw_rate", -5.0, 5.0),
+            ("d_ax_imu", -80.0, 80.0),
+            ("d_ay_imu", -80.0, 80.0),
+            ("d_axle_kappa", -10.0, 10.0),
         ):
             if c in df.columns:
                 base_mask &= df[c].between(lo, hi)
@@ -149,6 +188,17 @@ def compute_rates(df: pd.DataFrame, record_dt: float) -> pd.DataFrame:
     for col, name in zip(["slip_ratio", "slip_angle", "velocity"], ["d_slip_ratio", "d_slip_angle", "d_velocity"]):
         df[name] = df.groupby("scenario_id")[col].diff() / record_dt
     df = df.dropna(subset=["d_slip_ratio", "d_slip_angle", "d_velocity"]).reset_index(drop=True)
+    return df
+
+
+def compute_named_rates(df: pd.DataFrame, cols: list[str], record_dt: float) -> pd.DataFrame:
+    df = df.sort_values(["scenario_id", "timestep"]).reset_index(drop=True)
+    rate_cols = []
+    for col in cols:
+        name = f"d_{col}"
+        df[name] = df.groupby("scenario_id")[col].diff() / record_dt
+        rate_cols.append(name)
+    df = df.dropna(subset=rate_cols).reset_index(drop=True)
     return df
 
 
@@ -231,6 +281,7 @@ def train_one(
     patience: int,
     ckpt_meta: dict,
     data_loader_seed: int | None = None,
+    groups: np.ndarray | None = None,
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -238,8 +289,27 @@ def train_one(
     logger.info("Using device %s", device)
     model = model.to(device)
 
-    X_train, X_tmp, y_train, y_tmp = train_test_split(X, y, test_size=0.2, random_state=42)
-    X_val, X_test, y_val, y_test = train_test_split(X_tmp, y_tmp, test_size=0.5, random_state=42)
+    if groups is None:
+        X_train, X_tmp, y_train, y_tmp = train_test_split(X, y, test_size=0.2, random_state=42)
+        X_val, X_test, y_val, y_test = train_test_split(X_tmp, y_tmp, test_size=0.5, random_state=42)
+    else:
+        unique_groups = np.unique(groups)
+        if len(unique_groups) < 5:
+            raise ValueError("--split-by-scenario needs at least 5 unique scenarios")
+        train_groups, tmp_groups = train_test_split(unique_groups, test_size=0.2, random_state=42)
+        val_groups, test_groups = train_test_split(tmp_groups, test_size=0.5, random_state=42)
+        train_mask = np.isin(groups, train_groups)
+        val_mask = np.isin(groups, val_groups)
+        test_mask = np.isin(groups, test_groups)
+        logger.info(
+            "scenario split: train=%d val=%d test=%d groups",
+            len(train_groups),
+            len(val_groups),
+            len(test_groups),
+        )
+        X_train, y_train = X[train_mask], y[train_mask]
+        X_val, y_val = X[val_mask], y[val_mask]
+        X_test, y_test = X[test_mask], y[test_mask]
 
     scaler_X = StandardScaler().fit(X_train)
     scaler_y = StandardScaler().fit(y_train)
@@ -352,7 +422,7 @@ def main():
     p.add_argument("--data", required=True, help="CSV path (static or timeseries depending on mode)")
     p.add_argument("--output-dir", required=True)
     p.add_argument("--arch", required=True, choices=["mlp", "resnet"])
-    p.add_argument("--mode", required=True, choices=["static", "temporal", "rate"])
+    p.add_argument("--mode", required=True, choices=["static", "temporal", "rate", "axle_rate", "rich", "rich_rate"])
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--lr", type=float, default=1e-2)
@@ -376,6 +446,11 @@ def main():
 
     # MLP size
     p.add_argument("--hidden", type=int, nargs="+", default=None)
+    p.add_argument(
+        "--split-by-scenario",
+        action="store_true",
+        help="Use complete scenario IDs for train/val/test so adjacent timesteps do not leak across splits.",
+    )
 
     # ResNet size
     p.add_argument("--hidden-dim", type=int, default=16)
@@ -404,6 +479,9 @@ def main():
         y = df[OUT_COLS].values.astype(np.float32)
         temporal_K = 1
         rate_aug = False
+        feature_cols = OP_COLS + TERRAIN_COLS
+        offline_only = False
+        source_df = df
 
     elif mode == "temporal":
         if args.K <= 1:
@@ -415,36 +493,91 @@ def main():
         X, y = build_temporal_windows(df, K=args.K, dt_nn=args.dt_nn, record_dt=args.record_dt)
         temporal_K = int(args.K)
         rate_aug = False
+        feature_cols = [f"hist_{i}_{c}" for i in range(args.K) for c in OP_COLS] + TERRAIN_COLS
+        offline_only = False
+        source_df = None
 
-    else:  # rate
+    elif mode in ("rate", "axle_rate"):
         rate_cols = ["d_slip_ratio", "d_slip_angle", "d_velocity"]
+        use_axle_id = mode == "axle_rate"
         if all(c in df.columns for c in rate_cols):
             # Rate columns pre-computed (e.g. from collect_rate_data)
             required = OP_COLS + rate_cols + TERRAIN_COLS + OUT_COLS
+            if use_axle_id:
+                required = ["axle_id"] + required
             missing = [c for c in required if c not in df.columns]
             if missing:
-                raise ValueError(f"Rate CSV missing columns: {missing}")
+                raise ValueError(f"{mode} CSV missing columns: {missing}")
             _check_rate_feature_independence(
                 df, allow_duplicate=bool(args.allow_duplicate_rate_features)
             )
             logger.info("Using pre-computed rate columns from CSV")
-            X = df[OP_COLS + rate_cols + TERRAIN_COLS].values.astype(np.float32)
+            feature_cols = (["axle_id"] if use_axle_id else []) + OP_COLS + rate_cols + TERRAIN_COLS
+            X = df[feature_cols].values.astype(np.float32)
             y = df[OUT_COLS].values.astype(np.float32)
+            source_df = df
         else:
             # Compute rates from time-series data
             required = ["scenario_id", "timestep"] + OP_COLS + TERRAIN_COLS + OUT_COLS
+            if use_axle_id:
+                required.append("axle_id")
             missing = [c for c in required if c not in df.columns]
             if missing:
-                raise ValueError(f"Rate CSV missing columns: {missing}")
+                raise ValueError(f"{mode} CSV missing columns: {missing}")
             df_r = compute_rates(df, record_dt=args.record_dt)
-            X = df_r[OP_COLS + rate_cols + TERRAIN_COLS].values.astype(np.float32)
+            feature_cols = (["axle_id"] if use_axle_id else []) + OP_COLS + rate_cols + TERRAIN_COLS
+            X = df_r[feature_cols].values.astype(np.float32)
             y = df_r[OUT_COLS].values.astype(np.float32)
+            source_df = df_r
         temporal_K = 1
         rate_aug = True
+        offline_only = False
+
+    elif mode == "rich":
+        cols = RICH_SENSOR_COLS + TERRAIN_COLS + OUT_COLS
+        missing = [c for c in cols if c not in df.columns]
+        if missing:
+            raise ValueError(f"Rich CSV missing columns: {missing}")
+        feature_cols = RICH_SENSOR_COLS + TERRAIN_COLS
+        X = df[feature_cols].values.astype(np.float32)
+        y = df[OUT_COLS].values.astype(np.float32)
+        temporal_K = 1
+        rate_aug = False
+        offline_only = True
+        source_df = df
+
+    else:  # rich_rate
+        if all(c in df.columns for c in RICH_RATE_COLS):
+            df_r = df.copy()
+        else:
+            required = ["scenario_id", "timestep"] + RICH_SENSOR_COLS + TERRAIN_COLS + OUT_COLS
+            missing = [c for c in required if c not in df.columns]
+            if missing:
+                raise ValueError(f"Rich-rate CSV missing columns: {missing}")
+            df_r = compute_named_rates(df, RICH_RATE_SOURCE_COLS, record_dt=args.record_dt)
+            df_r = _apply_physical_filters(df_r, mode)
+        feature_cols = RICH_SENSOR_COLS + RICH_RATE_COLS + TERRAIN_COLS
+        missing = [c for c in feature_cols + OUT_COLS if c not in df_r.columns]
+        if missing:
+            raise ValueError(f"Rich-rate CSV missing columns: {missing}")
+        X = df_r[feature_cols].values.astype(np.float32)
+        y = df_r[OUT_COLS].values.astype(np.float32)
+        temporal_K = 1
+        rate_aug = True
+        offline_only = True
+        source_df = df_r
 
     # Filter finite
     mask = np.isfinite(X).all(axis=1) & np.isfinite(y).all(axis=1)
     X, y = X[mask], y[mask]
+    groups = None
+    if args.split_by_scenario:
+        if source_df is None or "scenario_id" not in source_df.columns:
+            raise ValueError("--split-by-scenario is not available for this mode/dataset")
+        scenario_ids = source_df.loc[mask, "scenario_id"].to_numpy(dtype=np.int64)
+        # Rear-axle rows are encoded as base_scenario_id + 1_000_000.  Fold
+        # them back so front/rear rows from the same run stay in the same split.
+        groups = np.mod(scenario_ids, 1_000_000)
     logger.info(f"dataset: X={X.shape}, y={y.shape}")
 
     if args.seed is not None:
@@ -460,6 +593,10 @@ def main():
             "hidden_sizes": list(hidden),
             "temporal_K": temporal_K,
             "rate_augmented": bool(rate_aug),
+            "mode": mode,
+            "feature_cols": list(feature_cols),
+            "offline_only": bool(offline_only),
+            "split_by_scenario": bool(args.split_by_scenario),
             **({"torch_seed": int(args.seed)} if args.seed is not None else {}),
         }
     else:
@@ -470,6 +607,10 @@ def main():
             "n_blocks": int(args.n_blocks),
             "temporal_K": temporal_K,
             "rate_augmented": bool(rate_aug),
+            "mode": mode,
+            "feature_cols": list(feature_cols),
+            "offline_only": bool(offline_only),
+            "split_by_scenario": bool(args.split_by_scenario),
             **({"torch_seed": int(args.seed)} if args.seed is not None else {}),
         }
 
@@ -484,6 +625,7 @@ def main():
         patience=args.patience,
         ckpt_meta=meta,
         data_loader_seed=args.seed,
+        groups=groups,
     )
 
 

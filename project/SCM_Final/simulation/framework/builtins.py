@@ -37,23 +37,15 @@ _already = getattr(sys.modules[__name__], _REGISTERED_FLAG, False)
 
 if not _already:
     # ----- safety filters -------------------------------------------------
+    # DOB-CBF is the only shipped filter (intent-preserving). The MPPI and NMPC
+    # shields were archived 2026-06-21 (archive/2026-06-21_mppi_nmpc_removal/);
+    # the registry stays swappable so a new filter can be registered here.
     from simulation.safety import CBFSafetyFilter, make_safety_filter
-    from simulation.safety.predictive_shield import MPPIShield, NMPCShield
 
     SAFETY_FILTERS.register_value(
         "dob_cbf",
         lambda **kw: make_safety_filter("dob_cbf", **kw),
         "cbf", "dob-cbf", "legacy",
-    )
-    SAFETY_FILTERS.register_value(
-        "mppi",
-        lambda **kw: make_safety_filter("mppi", **kw),
-        "mppi_shield",
-    )
-    SAFETY_FILTERS.register_value(
-        "nmpc",
-        lambda **kw: make_safety_filter("nmpc", **kw),
-        "nmpc_shield",
     )
 
     # ----- collision warning ---------------------------------------------

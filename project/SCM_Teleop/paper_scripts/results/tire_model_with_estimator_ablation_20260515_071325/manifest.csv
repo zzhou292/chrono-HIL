@@ -1,0 +1,18 @@
+key,value
+created_at,2026-05-15T07:13:25
+project_root,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop
+description,"Tire model sweep with the live terrain estimator on, to test the order-of-magnitude tracking claim."
+command,paper_scripts/tire_model_with_estimator_ablation.py --variants nn_v3_estimator --terrains sand --paths sinusoidal lane_change --speeds 5 7 --bumpiness 4 --seeds 2 --time 20.0 --metric-start 8.0 --base-port 60400
+base_port,60400
+base_seed,400
+bumpiness,[4]
+lead_in,5.0
+metric_start,8.0
+paths,"['sinusoidal', 'lane_change']"
+quick,False
+seeds,2
+speeds,"[5.0, 7.0]"
+terrains,['sand']
+time,20.0
+timeout,240.0
+variants,['nn_v3_estimator']

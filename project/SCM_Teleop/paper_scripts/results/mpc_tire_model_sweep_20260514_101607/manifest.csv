@@ -1,0 +1,17 @@
+key,value
+created_at,2026-05-14T10:16:07
+project_root,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop
+description,Standard MPC tire-model sweep with sensor noise enabled.
+command,project/SCM_Teleop/paper_scripts/mpc_tire_model_sweep.py --models closed_loop_v2_rate_mlp closed_loop_v3_axle_rate_mlp --terrains clay sand dirt --paths sinusoidal lane_change --speeds 5 --bumpiness 0 --seeds 1 --time 8 --timeout 150 --base-port 48000
+base_port,48000
+base_seed,100
+bumpiness,[0]
+lead_in,5.0
+models,"['closed_loop_v2_rate_mlp', 'closed_loop_v3_axle_rate_mlp']"
+paths,"['sinusoidal', 'lane_change']"
+quick,False
+seeds,1
+speeds,[5.0]
+terrains,"['clay', 'sand', 'dirt']"
+time,8.0
+timeout,150.0

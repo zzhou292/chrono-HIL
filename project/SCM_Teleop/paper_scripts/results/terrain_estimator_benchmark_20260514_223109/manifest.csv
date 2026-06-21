@@ -1,0 +1,20 @@
+key,value
+created_at,2026-05-14T22:31:09
+project_root,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop
+description,Learned terrain estimator ID/OOD benchmark with sensor noise enabled.
+command,project/SCM_Teleop/paper_scripts/terrain_estimator_benchmark.py --distributions id ood --terrains clay sand dirt --ood-terrains 3 --paths sinusoidal lane_change --speeds 5 --bumpiness 0 --seeds 1 --time 12 --metric-start 4 --timeout 240 --base-port 52000
+base_port,52000
+base_seed,710
+bumpiness,[0]
+distributions,"['id', 'ood']"
+lead_in,5.0
+metric_start,4.0
+ood_terrains,3
+paths,"['sinusoidal', 'lane_change']"
+quick,False
+seeds,1
+speed_weight,15.0
+speeds,[5.0]
+terrains,"['clay', 'sand', 'dirt']"
+time,12.0
+timeout,240.0

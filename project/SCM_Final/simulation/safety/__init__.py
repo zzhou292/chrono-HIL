@@ -1422,12 +1422,16 @@ class CBFSafetyFilter:
 
 
 # ============================================================================
-# Predictive shields (MPPI and NMPC comparison) — see predictive_shield.py
+# Safety-filter factory.  DOB-CBF is the only shipped filter -- it is the only
+# one that preserves operator intent (minimum-deviation QP).  The predictive
+# MPPI shield and the SLSQP NMPC comparison shield were archived on 2026-06-21
+# (archive/2026-06-21_mppi_nmpc_removal/); the swappable-filter architecture
+# remains, so a new filter can still be registered here.
 # ============================================================================
 
-from .predictive_shield import MPPIShield, NMPCShield  # noqa: E402
+SAFETY_FLAVORS = ('dob_cbf',)
 
-SAFETY_FLAVORS = ('mppi', 'nmpc', 'dob_cbf')
+_ARCHIVED_FLAVORS = ('mppi', 'mppi_shield', 'nmpc', 'nmpc_shield')
 
 
 def make_safety_filter(flavor: str,
@@ -1435,45 +1439,31 @@ def make_safety_filter(flavor: str,
                        nn_model=None,
                        terrain_params: dict | None = None,
                        **flavor_kwargs):
-    """Factory for the three safety-filter flavors.
+    """Factory for the safety filter.
 
     Args:
-        flavor: one of ``SAFETY_FLAVORS``.  ``'dob_cbf'`` is the
-            minimum-deviation, intent-preserving CBF filter;
-            ``'mppi'`` is the predictive learned-dynamics shield; and
-            ``'nmpc'`` is the gradient-based finite-horizon comparison.
+        flavor: one of ``SAFETY_FLAVORS`` (``'dob_cbf'``) -- the
+            minimum-deviation, intent-preserving CBF filter.
         vehicle_params: dict with ``M, Lf, Lr, Izz, ...``.
-        nn_model: a loaded ``NNTireModel`` (required for ``mppi`` and
-            ``nmpc``; optional for ``dob_cbf`` — falls back to kinematic).
-        terrain_params: terrain preset dict (``Kphi, Kc, n, c, phi`` in
-            **degrees**, ``k``).  Required for ``mppi`` and ``nmpc``.
-        **flavor_kwargs: forwarded verbatim to the chosen filter's
-            constructor.  The caller is responsible for using
-            flavor-appropriate keys (see each class docstring).
+        nn_model: a loaded ``NNTireModel`` (optional for ``dob_cbf`` -- it
+            falls back to a kinematic steering model).
+        terrain_params: unused by ``dob_cbf`` (kept for signature stability).
+        **flavor_kwargs: forwarded verbatim to ``CBFSafetyFilter``.
 
     Returns:
         A filter instance exposing ``.filter(...)``,
         ``.update_command_age(...)``, ``.set_teleop_delay(...)``,
-        and ``.get_diagnostics()`` — interchangeable across flavors.
+        and ``.get_diagnostics()``.
     """
     f = (flavor or '').lower()
-    if f in ('mppi', 'mppi_shield'):
-        if nn_model is None or terrain_params is None:
-            raise ValueError("flavor='mppi' requires nn_model and terrain_params")
-        return MPPIShield(vehicle_params=vehicle_params,
-                          nn_model=nn_model,
-                          terrain_params=terrain_params,
-                          **flavor_kwargs)
-    if f in ('nmpc', 'nmpc_shield'):
-        if nn_model is None or terrain_params is None:
-            raise ValueError("flavor='nmpc' requires nn_model and terrain_params")
-        return NMPCShield(vehicle_params=vehicle_params,
-                          nn_model=nn_model,
-                          terrain_params=terrain_params,
-                          **flavor_kwargs)
     if f in ('dob_cbf', 'cbf', 'legacy', 'dob-cbf'):
         return CBFSafetyFilter(vehicle_params=vehicle_params,
                                nn_casadi=nn_model,
                                **flavor_kwargs)
+    if f in _ARCHIVED_FLAVORS:
+        raise ValueError(
+            f"safety flavor {flavor!r} was removed on 2026-06-21 -- the MPPI and "
+            f"NMPC shields live in archive/2026-06-21_mppi_nmpc_removal/. "
+            f"DOB-CBF is the only shipped filter; use 'dob_cbf'.")
     raise ValueError(f"Unknown safety flavor {flavor!r}; "
                      f"expected one of {SAFETY_FLAVORS}")

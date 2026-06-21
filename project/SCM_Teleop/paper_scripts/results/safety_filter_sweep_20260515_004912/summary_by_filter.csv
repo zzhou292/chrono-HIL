@@ -1,0 +1,5 @@
+variant,n_runs,n_ok,collisions_mean,collisions_std,near_misses_mean,near_misses_std,min_clearance_m_mean,min_clearance_m_std,intervention_rate_pct_mean,intervention_rate_pct_std,mean_abs_dsteer_mean,mean_abs_dsteer_std,mean_abs_dthrottle_mean,mean_abs_dthrottle_std,rt_factor_mean,rt_factor_std,rms_cte_m_mean,rms_cte_m_std
+none_blind,1,1,1.0,,1.0,,-1.2260999999999997,,,,,,,,1.0,,0.15161789433913794,
+dob_cbf_blind,1,1,0.0,,1.0,,0.6179000000000001,,43.2,,,,,,1.0,,0.6430413737964097,
+mppi_blind,1,1,0.0,,1.0,,0.05889999999999995,,46.9,,0.369175,,0.08904999999999999,,1.0,,1.0202597169745378,
+nmpc_blind,1,1,1.0,,1.0,,-0.6754999999999998,,42.0,,0.28500000000000003,,0.27719444444444447,,0.95,,0.26922010750407277,

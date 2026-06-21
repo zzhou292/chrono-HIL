@@ -318,6 +318,15 @@ def run_one(job: dict[str, Any], args: argparse.Namespace, out_root: Path) -> Ru
         cmd.append("--no-path-reindex")
     if args.safety_filter:
         cmd.append("--safety-filter")
+        cmd += ["--safety-flavor", args.safety_flavor]
+        if args.safety_flavor == "mppi":
+            cmd += ["--mppi-samples", str(args.mppi_samples),
+                    "--shield-horizon", str(args.shield_horizon)]
+        elif args.safety_flavor == "nmpc":
+            cmd += ["--nmpc-iter", str(args.nmpc_iter),
+                    "--shield-horizon", str(args.shield_horizon)]
+    if args.mpc_blind_obstacles:
+        cmd.append("--mpc-blind-obstacles")
     if args.dob_ki is not None:
         cmd += ["--dob-ki", str(args.dob_ki)]
 
@@ -682,7 +691,18 @@ def main() -> None:
                    help="Use analytical accel/gyro instead of Chrono sensor IMU.")
     p.add_argument("--no-path-reindex", action="store_true")
     p.add_argument("--safety-filter", action="store_true",
-                   help="Enable sim-side DOB-CBF safety filter; off by default to isolate MPC tire model behavior.")
+                   help="Enable sim-side safety filter; off by default to isolate MPC tire model behavior.")
+    p.add_argument("--safety-flavor", type=str, default="mppi",
+                   choices=["mppi", "nmpc", "dob_cbf"],
+                   help="Which safety filter to use when --safety-filter is set.")
+    p.add_argument("--mppi-samples", type=int, default=384,
+                   help="K samples for the MPPI shield.")
+    p.add_argument("--shield-horizon", type=int, default=12,
+                   help="Prediction horizon for the predictive shields.")
+    p.add_argument("--nmpc-iter", type=int, default=6,
+                   help="L-BFGS-B iteration cap for the NMPC shield ablation.")
+    p.add_argument("--mpc-blind-obstacles", action="store_true",
+                   help="Make the MPC ignore obstacles — shield is the sole avoider.")
     p.add_argument("--dob-ki", type=float, default=None,
                    help="Override controller throttle DOB gain.")
     p.add_argument("--dry-run", action="store_true")

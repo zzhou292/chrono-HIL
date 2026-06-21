@@ -1,0 +1,5 @@
+variant,n_runs,n_ok,rms_cte_m_mean,rms_cte_m_std,speed_ratio_mean,speed_ratio_std,mean_speed_mps_mean,mean_speed_mps_std,mean_solve_ms_mean,mean_solve_ms_std,progress_m_mean,progress_m_std
+standard_mpc,1,1,0.07716120208862741,,0.5631548000000001,,2.815774,,5.154647676161918,,18.367902465885003,
+standard_mpc_soft_speed,1,1,0.06961357415112372,,0.37714156,,1.8857078,,5.204917043740573,,11.827499921047886,
+mpcc_default,1,0,,,,,,,,,,
+mpcc_less_speed_cap,1,0,,,,,,,,,,

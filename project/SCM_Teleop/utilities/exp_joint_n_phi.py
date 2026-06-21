@@ -66,12 +66,17 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 # ─────────────────────────────────────────────────────────────────────
 # phi label recovery
 # ─────────────────────────────────────────────────────────────────────
-_TRACE_SUFFIX_RE = re.compile(r"_thr\d+(?:_amp\d+)?(?:_seed\d+)?$")
+# Each suffix component is independently optional: rig-style traces carry
+# ``_thrXX_ampXX_seedX`` while rich-excitation traces carry only ``_seedX``.
+# Requiring ``_thr`` (the old behaviour) left ``_seedX`` on the label, so the
+# per-soil YAML lookup missed and phi silently fell back to the 3 preset
+# values -- collapsing the phi sweep to 3 bands.
+_TRACE_SUFFIX_RE = re.compile(r"(?:_thr\d+)?(?:_amp\d+)?(?:_seed\d+)?$")
 
 
 def trace_label_from_filename(stem: str) -> str:
-    """Strip the ``_thrXX_ampXX_seedX`` suffix to recover the terrain label
-    used for the YAML / preset lookup."""
+    """Strip any ``_thrXX``/``_ampXX``/``_seedX`` suffix to recover the
+    terrain label used for the YAML / preset lookup."""
     return _TRACE_SUFFIX_RE.sub("", stem)
 
 

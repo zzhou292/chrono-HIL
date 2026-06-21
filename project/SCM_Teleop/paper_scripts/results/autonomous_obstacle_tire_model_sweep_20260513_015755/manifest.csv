@@ -1,0 +1,19 @@
+key,value
+created_at,2026-05-13T01:57:55
+project_root,/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Teleop
+description,Autonomous obstacle-aware MPC tire-model sweep with sensor noise enabled.
+command,paper_scripts/autonomous_obstacle_tire_model_sweep.py --models pacejka tmeasy closed_loop_mlp --terrains clay sand --paths sinusoidal lane_change --speeds 5 --bumpiness 0 --seeds 2 --time 10 --rocks 5 --timeout 220 --base-port 13600
+base_port,13600
+base_seed,510
+bumpiness,[0]
+lead_in,5.0
+models,"['pacejka', 'tmeasy', 'closed_loop_mlp']"
+paths,"['sinusoidal', 'lane_change']"
+quick,False
+rocks,5
+seeds,2
+speed_weight,15.0
+speeds,[5.0]
+terrains,"['clay', 'sand']"
+time,10.0
+timeout,220.0

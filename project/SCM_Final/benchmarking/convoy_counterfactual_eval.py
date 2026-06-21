@@ -66,8 +66,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--convoy", nargs="+", default=["lead_brake", "cut_in", "stalled"],
                    help="Convoy preset(s) to sweep (lead_brake/cut_in/stalled/convoy/"
                         "jam/gauntlet/...). Each is replayed off vs each filter.")
-    p.add_argument("--filters", nargs="+", default=["none", "dob_cbf", "mppi"],
-                   choices=["none", "dob_cbf", "mppi", "nmpc"])
+    p.add_argument("--filters", nargs="+", default=["none", "dob_cbf"],
+                   choices=["none", "dob_cbf"])
     p.add_argument("--delays", nargs="+", type=float, default=[0.0],
                    help="Command-path (uplink) delays applied to the replayed intent.")
     p.add_argument("--terrain", default="clay")

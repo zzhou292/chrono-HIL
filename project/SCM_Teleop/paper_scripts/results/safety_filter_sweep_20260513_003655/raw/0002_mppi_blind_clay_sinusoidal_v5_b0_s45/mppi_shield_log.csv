@@ -1,0 +1,2 @@
+step,x,y,psi_deg,u,delta_deg,n_obs,horizon,phi_lb_deg,v_max_terrain,steer_in,throttle_in,brake_in,steer_out,throttle_out,brake_out,was_modified,min_clearance,solve_ms,cost_min
+20,0.997,0.051,0.86,1.719,0.00,2,6,10.00,5.63,+0.000,0.385,0.006,+0.000,0.385,0.006,0,12.171,2.94,0.000

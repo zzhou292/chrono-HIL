@@ -94,13 +94,13 @@ class CommandSource(Protocol):
 
 @runtime_checkable
 class SafetyFilter(Protocol):
-    """Minimum-deviation or predictive screen of one driver command.
+    """Minimum-deviation screen of one driver command.
 
-    Implementations live in :mod:`simulation.safety`:
-    :class:`CBFSafetyFilter` (DOB-CBF), :class:`MPPIShield`,
-    :class:`NMPCShield`. The factory
-    :func:`simulation.safety.make_safety_filter` returns one of them
-    keyed by ``--safety-flavor``.
+    The shipped implementation is :class:`CBFSafetyFilter` (DOB-CBF) in
+    :mod:`simulation.safety`; the factory
+    :func:`simulation.safety.make_safety_filter` returns it keyed by
+    ``--safety-flavor dob_cbf``. (The MPPI/NMPC shields were archived
+    2026-06-21; the registry remains swappable for new filters.)
     """
 
     def filter(
