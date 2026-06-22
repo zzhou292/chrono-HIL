@@ -417,6 +417,27 @@ class CBFSafetyFilter:
         self._delay_ema = max(delay_s, 0.0)
         self._teleop_enabled = self._teleop_delay > 0.0
 
+    def update_terrain(self, terrain_params, phi_uncertainty_deg=None):
+        """Re-condition the filter on the live online terrain estimate.
+
+        The filter's longitudinal authority is grip-limited, and grip drops on
+        softer soil, so the available accel/brake (which set the CBF's
+        deceleration budget and effective stopping buffer) are scaled by the
+        firmness of the live soil. Lower Bekker $n$ (softer) -> more
+        conservative filter. Called from the sim only when the online terrain
+        estimator is running; otherwise the nominal limits stand.
+        """
+        try:
+            n = float(terrain_params["n"] if isinstance(terrain_params, dict)
+                      else terrain_params)
+        except (TypeError, ValueError, KeyError):
+            return
+        self._terrain_n = n
+        # n in [~0.4 soft, ~1.3 firm] -> grip scale in [0.6, 1.0]
+        grip = float(np.clip(0.6 + 0.4 * (n - 0.4) / 0.9, 0.5, 1.0))
+        self.max_accel = 3.0 * grip
+        self.max_decel = -6.0 * grip
+
     def update_command_age(self, cmd_wall_time: float):
         """
         Update teleop delay estimate from a received command's wall-clock stamp.

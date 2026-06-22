@@ -174,7 +174,10 @@ Concretely, this work contributes:
         $0.17\,\mathrm{m}$ mean absolute error.
   \item An open-source benchmarking suite
         (Section~\ref{sec:suite}) that reproduces every non-HIL
-        figure and CSV from a single command.
+        figure and CSV from a single command, and an integrated
+        end-to-end demonstration (Section~\ref{sec:integrated}) that runs
+        all layers together on one mission --- the concrete evidence that the
+        components compose, not merely coexist.
 \end{enumerate}
 
 Several of these components individually extend prior work
@@ -1912,6 +1915,42 @@ even under the profile's outage spikes.
   \label{fig:latency_comp}
 \end{figure*}
 
+\subsection{Does delay-\emph{awareness} matter, or just having a filter?}
+\label{sec:latency_ablation}
+
+The result above shows a filter helps under latency, but not that the filter's
+\emph{delay compensation} --- inflating its obstacle buffer by a
+delay-dependent stopping distance and forward-predicting over the round trip
+before acting --- is what helps, rather than merely screening the command at
+all. We isolate it with a deterministic ablation: the command path is delayed
+by $\Delta_\mathrm{cmd}$ in \emph{every} run, but the filter is either
+\emph{told} the delay ($\texttt{teleop\_delay}\!=\!\Delta_\mathrm{cmd}$,
+``aware'') or not ($\texttt{teleop\_delay}\!=\!0$, ``blind''); everything else
+is identical, and the same adversarial intents (Sec.~\ref{sec:safety_convoy})
+are replayed, so blind-vs-aware is causal. Over $30$ cells per variant ($5$
+convoy scenarios $\times$ two delays $\times$ three intents), both filters cut
+collisions sharply relative to no filter ($0.87$), but the delay-aware filter
+is strictly better: a $0.13$ collision rate vs the delay-blind $0.23$, at nearly
+twice the clearance margin ($+2.12$ vs $+1.10\,$m). Crucially the gap
+\emph{grows with delay} (Fig.~\ref{fig:latency_ablation}): at
+$\Delta_\mathrm{cmd}\!=\!0.15\,$s the two tie on collisions ($0.27$) but the
+aware filter already holds more margin ($+1.67$ vs $+0.97\,$m), while at
+$0.30\,$s delay-awareness \emph{eliminates} the residual collisions the
+delay-blind filter still suffers ($0.20\!\to\!0.00$). This substantiates the
+\emph{latency-aware} claim specifically, not merely a latency-robust one.
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{latency_awareness_ablation.png}
+  \caption{Latency-awareness ablation. The same adversarial intent is replayed
+    with the command path delayed by $\Delta_\mathrm{cmd}$, the DOB-CBF filter
+    either \emph{told} that delay (aware) or not (blind). A filter helps at both
+    delays, but knowing the delay matters more as the delay grows: at $0.30\,$s
+    it removes the residual collisions the delay-blind filter still suffers.
+    $30$ deterministic cells per bar.}
+  \label{fig:latency_ablation}
+\end{figure}
+
 %======================================================================
 \section{Terrain- and Latency-Aware Collision Warning}
 \label{sec:collision_warning}
@@ -2104,6 +2143,44 @@ matches result folders by exact timestamp so that closely-named
 sweep variants are never conflated.
 
 %======================================================================
+\section{Integrated System Demonstration}
+\label{sec:integrated}
+%======================================================================
+
+The preceding sections evaluate each layer in isolation on shared
+infrastructure; the contribution, however, is their \emph{integration}. As a
+capstone we run the entire stack together on a single mission and present it as
+one timeline (Fig.~\ref{fig:hero}): a sinusoidal reference driven across a
+clay\,$\to$\,sand soil transition through a rock field, under the learned 5G
+command/camera latency, with the terrain-aware NMPC, the online Fused-UKF
+terrain estimator, the g--g speed planner, the throttle DOB, the DOB-CBF safety
+filter, and the forward collision warning all active simultaneously. The online
+estimate $\hat n$ adapts across the soil boundary (top); the achieved speed
+tracks the grip-limited g--g reference with the DOB closing the soft-soil gap
+(middle); and the safety filter holds the ego clear of the hazards throughout
+(minimum clearance $0.42\,$m, $162$ binding-constraint avoidance steps) with
+\emph{zero collisions} over the $129\,$m traverse (bottom). Running the full
+stack is itself an integration test: it exercises the cross-layer interfaces
+that per-component evaluation does not --- here the estimator's live-terrain
+update re-conditions the safety filter's grip-limited braking authority, the
+same socket the controller uses to re-condition its own surrogate. The run is
+reproduced by \texttt{benchmarking/integrated\_hero\_run.py}.
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{integrated_hero_run.png}
+  \caption{Integrated mission: the whole stack on one run, under the learned 5G
+    latency, across a clay\,$\to$\,sand soil change (grey band) through a rock
+    field. \textbf{Top:} the online terrain estimate $\hat n$ (blue) tracks the
+    true $n(x)$ (dashed) across the soil boundary. \textbf{Middle:} achieved
+    speed (green) tracks the terrain-aware g--g reference (purple). \textbf{Bottom:}
+    clearance to the nearest hazard (capped at $8\,$m) dips at each rock, with
+    the DOB-CBF binding-constraint avoidance steps marked; zero collisions over
+    the traverse.}
+  \label{fig:hero}
+\end{figure}
+
+%======================================================================
 \section{Discussion}
 \label{sec:disc}
 %======================================================================
@@ -2262,9 +2339,18 @@ command in the provided conda environment:
 \begin{quote}\small\tt
 python benchmarking/run.py --tier paper
 \end{quote}
+The counterfactual safety result (Sec.~\ref{sec:safety_convoy}), the
+latency-awareness ablation (Sec.~\ref{sec:latency_ablation}), and the
+integrated mission (Sec.~\ref{sec:integrated}) each reproduce from a single
+self-contained script in \texttt{benchmarking/}:
+\begin{quote}\scriptsize\tt
+python benchmarking/convoy\_counterfactual\_eval.py\\
+python benchmarking/latency\_awareness\_ablation.py\\
+python benchmarking/integrated\_hero\_run.py
+\end{quote}
 The exact result folders backing each figure are catalogued alongside
 the published figures. The HIL rounds are intentionally excluded from
-this automated command because they require a human operator; they
+the automated commands because they require a human operator; they
 are run through a separate human-in-the-loop script.
 
 %======================================================================
