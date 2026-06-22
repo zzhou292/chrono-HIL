@@ -161,7 +161,7 @@ Concretely, this work contributes:
         by~\cite{Zhang25}, with physical steering/throttle rate limits
         baked into the QP. Its effect is quantified by a deterministic
         \emph{counterfactual replay} --- replaying a fixed command trace
-        filter off vs.\ on on the identical scenario --- giving a causal,
+        (filter off vs.\ on) on the identical scenario --- giving a causal,
         exactly reproducible collisions-prevented measurement over a
         population of adversarial intents.
   \item A learned 5G latency model (Section~\ref{sec:latency}) that
@@ -1396,7 +1396,7 @@ absorbs this bias:
   \quad |d| \le d_{\max},
 \end{equation}
 with the bleed gain $K_b\!<\!K_i$ to make the observer asymmetric: it
-accumulates rapidly under under-speed and decays slowly toward zero,
+accumulates rapidly during under-speed and decays slowly toward zero,
 never contributing a positive over-speed bias. The applied throttle
 is $\tau\!=\!\tau_{\mathrm{NMPC}}\!+\!d$. The ablation zeros both
 gains ($K_i\!=\!0$, $d_{\max}\!=\!0$), keeping the structural hook
@@ -1577,7 +1577,7 @@ paper, not a human-factors study, so the \emph{quantitative} safety evaluation
 is deliberately not a human-operator comparison (which would carry inter-operator
 variance and a separate experimental protocol). We instead validate the filter
 with the deterministic \emph{counterfactual} of Sec.~\ref{sec:safety_convoy}:
-replaying a fixed command trace filter-off versus DOB-CBF-on on the
+replaying a fixed command trace (filter-off versus DOB-CBF-on) over the
 \emph{identical} scenario, so the harm prevented is causal and exactly
 reproducible. The traces used are adversarial ``drive-into-the-hazard'' intents
 --- a worst-case stress test of the filter --- and, because the simulator is
@@ -1607,9 +1607,9 @@ an autonomous controlled experiment in which an obstacle-blind planner
 stands in for the operator, isolating the safety filter as the sole collision
 avoider. This
 removes operator variance and supports a larger, fully repeatable
-matrix (405 trials per filter; 1620 trials total). The same matrix is
+matrix (405 trials per filter; 810 trials total). The same matrix is
 re-evaluated with the planner's in-horizon barriers re-enabled in
-Sec.~\ref{sec:safety_aware} for a total of 3240 runs.
+Sec.~\ref{sec:safety_aware} for a total of 1620 runs.
 Table~\ref{tab:safety_blind} and Fig.~\ref{fig:safety_blind} report the
 safety-filter-only outcome. Because the planner's reference here is
 deliberately routed through the obstacles, crosstrack error would conflate
@@ -1623,7 +1623,7 @@ cost a teleoperator would feel. DOB-CBF cuts mean collisions by $79\,\%$
 the obstacle footprint) into $+0.50\,$m, while intervening on $57\,\%$ of
 steps with small corrections ($|\Delta\delta|\!=\!0.28$,
 $|\Delta\tau|\!=\!0.39$) --- the minimum-deviation, intent-preserving
-behaviour that motivates it as the shipped HIL filter.
+behaviour that motivates it as the shipped safety filter.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
@@ -1723,9 +1723,9 @@ two variants over 1215 closed-loop trials.
     \toprule
     \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
     \midrule
-    None (no filter) & $3.05$ & $-1.83$ & --- & --- & ---\\
-    DOB-CBF, no NN   & $0.81$ & $-0.21$ & $46$ & $0.71$ & $0.26$\\
-    \textbf{DOB-CBF, NN} & $\mathbf{0.48}$ & $\mathbf{+0.12}$ & $50$ & $0.69$ & $0.26$\\
+    None (no filter) & $3.06$ & $-1.84$ & --- & --- & ---\\
+    DOB-CBF, no NN   & $1.86$ & $-0.62$ & $44$ & $0.29$ & $0.27$\\
+    \textbf{DOB-CBF, NN} & $\mathbf{0.65}$ & $\mathbf{+0.32}$ & $56$ & $0.28$ & $0.36$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1878,14 +1878,14 @@ channels.
 \end{figure}
 
 The closed-loop obstacle scenario is then run under the synthetic
-profile with and without the safety filter:
-Table~\ref{tab:latency_comp} reports the result.
+profile with and without the safety filter; Table~\ref{tab:latency_comp}
+and Fig.~\ref{fig:latency_comp} report the result.
 Under the learned 5G profile DOB-CBF cuts collisions by $86\,\%$
 ($2.85\!\to\!0.39$ per run) and turns a negative mean clearance
 ($-1.48\,$m, inside the obstacle footprint) into $+0.35\,$m, intervening on
-about half of the steps --- the minimum-deviation, intent-preserving
-behaviour that suits the human-in-the-loop case (Sec.~\ref{sec:safety})
-holding up even under the profile's outage spikes.
+about half of the steps. The minimum-deviation, intent-preserving behaviour
+that suits the human-in-the-loop case (Sec.~\ref{sec:safety}) thus holds up
+even under the profile's outage spikes.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
@@ -1916,8 +1916,8 @@ holding up even under the profile's outage spikes.
 \label{sec:collision_warning}
 %======================================================================
 
-The safety filters in
-\S\ref{sec:safety}--\S\ref{sec:latency} modify the
+The safety filter in
+\S\ref{sec:safety}--\S\ref{sec:latency} modifies the
 operator's command stream when a collision is imminent. In some
 deployment modes (e.g. expert-loop teleoperation, or a safety filter
 that has been muted for debugging) the operator wants only a
@@ -2084,7 +2084,7 @@ A single invocation of the suite's top-level driver executes all of
 the autonomous sub-sweeps that produce the non-HIL results reported
 in this paper, then merges the resulting figures and CSVs into the
 publication set. The paper tier completes
-approximately $13{,}000$ Chrono closed-loop trials on a single
+over ten thousand Chrono closed-loop trials on a single
 24-core workstation; the human-in-the-loop protocol of
 Sec.~\ref{sec:safety_hil} is run separately because it requires an
 operator at the wheel.
@@ -2149,7 +2149,7 @@ population of adversarial intents attributes the averted collisions causally to
 the filter ($31$ of $39$, collision rate $89\%\!\to\!20\%$) --- a causal,
 exactly reproducible safety measure that needs no human trials. The forward
 collision warning closes the advisory gap the override-style filter
-leave open: its analytical stopping-distance prediction lands within
+leaves open: its analytical stopping-distance prediction lands within
 $0.17\,\mathrm{m}$ of the actual Chrono stop ($2.6\times$ better than
 the prior hand-tuned fallback), and lead time grows monotonically
 with both softer soil and longer one-way delay.
@@ -2207,7 +2207,7 @@ manifold; soils with large independent excursions in cohesion, friction,
 or stiffness fall outside the present scope, and $n$-recovery degrades
 off the manifold.
 
-The safety filters are fundamentally \emph{forward}-collision-avoidance: their
+The safety filter is fundamentally \emph{forward}-collision-avoidance: its
 barriers guard the ego's path ahead, and a threat from behind is the harder
 case, since escaping it requires accelerating or changing lanes rather than
 the braking/steering the minimum-deviation formulation favors. We added a
@@ -2241,9 +2241,10 @@ near-oracle tracking with no prior terrain knowledge --- within
 $\approx\!3\,\mathrm{mm}$ median RMS crosstrack error of the
 matched-prior oracle and well below SCM-calibrated analytical baselines;
 the deployed proprioceptive-fused UKF tracks $n$ across the deployable
-range at $4.5\,\%$ median error; both safety filters cut collisions by
-more than $90\,\%$ under a learned 5G latency profile; and the collision
-warning predicts stopping distance to $0.17\,\mathrm{m}$. The modular
+range at $4.5\,\%$ median error; the DOB-CBF safety filter cuts collisions
+by $86\,\%$ under a learned 5G latency profile, with a deterministic
+counterfactual causally attributing $31$ of $39$ averted collisions to it;
+and the collision warning predicts stopping distance to $0.17\,\mathrm{m}$. The modular
 swap points make each of these a replaceable component rather than a
 fixed pipeline, which is what positions the framework for the
 hardware-in-the-loop and full-soil-estimation extensions above.
