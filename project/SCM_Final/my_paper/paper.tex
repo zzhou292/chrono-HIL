@@ -1632,7 +1632,8 @@ behaviour that motivates it as the shipped safety filter.
     as Table~\ref{tab:safety_aware}, blind rows only. DOB-CBF, the shipped
     intent-preserving filter (Sec.~\ref{sec:safety_hil}), cuts collisions
     $79\,\%$ and recovers a positive clearance margin at a low intervention
-    rate. $|\Delta\delta|$, $|\Delta\tau|$ are the mean absolute steering and
+    rate. Collisions and clearance are mean$\pm$std over the 405 runs/filter;
+    $|\Delta\delta|$, $|\Delta\tau|$ are the mean absolute steering and
     throttle command corrections the filter applies.}
   \label{tab:safety_blind}
   \centering
@@ -1642,8 +1643,8 @@ behaviour that motivates it as the shipped safety filter.
     \toprule
     \textbf{Filter} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
     \midrule
-    None         & $3.07$ & $-1.81$ & --- & --- & ---\\
-    \textbf{DOB-CBF} & $\mathbf{0.66}$ & $\mathbf{+0.50}$ & $57$ & $0.28$ & $0.39$\\
+    None         & $3.07\!\pm\!1.18$ & $-1.81\!\pm\!0.72$ & --- & --- & ---\\
+    \textbf{DOB-CBF} & $\mathbf{0.66\!\pm\!0.76}$ & $\mathbf{+0.50\!\pm\!1.97}$ & $57$ & $0.28$ & $0.39$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1684,16 +1685,16 @@ designed for.
     relative to the filter-only (blind) configuration.}
   \label{tab:safety_aware}
   \centering
-  \setlength{\tabcolsep}{3pt}
+  \setlength{\tabcolsep}{2pt}
   \footnotesize
   \begin{tabular}{lccccc}
     \toprule
     \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
     \midrule
-    None, blind          & $2.99$ & $-1.81$ & --- & --- & ---\\
-    None, aware          & $0.52$ & $+0.41$ & --- & --- & ---\\
-    DOB-CBF, blind       & $0.66$ & $+0.40$ & $56$ & $0.29$ & $0.36$\\
-    \textbf{DOB-CBF, aware} & $\mathbf{0.13}$ & $\mathbf{+2.00}$ & $40$ & $0.14$ & $0.31$\\
+    None, blind          & $2.99\!\pm\!1.22$ & $-1.81\!\pm\!0.36$ & --- & --- & ---\\
+    None, aware          & $0.52\!\pm\!0.87$ & $+0.41\!\pm\!1.08$ & --- & --- & ---\\
+    DOB-CBF, blind       & $0.66\!\pm\!0.75$ & $+0.40\!\pm\!2.03$ & $56$ & $0.29$ & $0.36$\\
+    \textbf{DOB-CBF, aware} & $\mathbf{0.13\!\pm\!0.44}$ & $\mathbf{+2.00\!\pm\!1.64}$ & $40$ & $0.14$ & $0.31$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1717,15 +1718,15 @@ two variants over 1215 closed-loop trials.
   \caption{DOB-CBF neural-surrogate ablation. 1215 runs.}
   \label{tab:dobcbf_nn}
   \centering
-  \setlength{\tabcolsep}{3pt}
+  \setlength{\tabcolsep}{2pt}
   \footnotesize
   \begin{tabular}{lccccc}
     \toprule
     \textbf{Variant} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
     \midrule
-    None (no filter) & $3.06$ & $-1.84$ & --- & --- & ---\\
-    DOB-CBF, no NN   & $1.86$ & $-0.62$ & $44$ & $0.29$ & $0.27$\\
-    \textbf{DOB-CBF, NN} & $\mathbf{0.65}$ & $\mathbf{+0.32}$ & $56$ & $0.28$ & $0.36$\\
+    None (no filter) & $3.06\!\pm\!1.20$ & $-1.84\!\pm\!0.32$ & --- & --- & ---\\
+    DOB-CBF, no NN   & $1.86\!\pm\!0.74$ & $-0.62\!\pm\!0.38$ & $44$ & $0.29$ & $0.27$\\
+    \textbf{DOB-CBF, NN} & $\mathbf{0.65\!\pm\!0.78}$ & $\mathbf{+0.32\!\pm\!1.76}$ & $56$ & $0.28$ & $0.36$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1763,9 +1764,9 @@ safety outcome.
     \textbf{Planner tire model} & \textbf{Coll./run} &
     \textbf{Clearance (m)} & \textbf{CTE (m)}\\
     \midrule
-    Pacejka              & $0.64$ & $+0.81$ & $0.77$\\
-    TMeasy               & $0.67$ & $+0.77$ & $0.84$\\
-    NN rate-MLP          & $0.61$ & $+0.73$ & $0.90$\\
+    Pacejka              & $0.64\!\pm\!0.95$ & $+0.81\!\pm\!1.99$ & $0.77$\\
+    TMeasy               & $0.67\!\pm\!1.00$ & $+0.77\!\pm\!2.00$ & $0.84$\\
+    NN rate-MLP          & $0.61\!\pm\!0.98$ & $+0.73\!\pm\!1.91$ & $0.90$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1832,8 +1833,8 @@ unchanged, so the measure carries over directly to logged human intent.
     \toprule
     \textbf{Filter} & \textbf{Coll.\ rate} & \textbf{Prevented} & \textbf{Clear.\,(m)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
     \midrule
-    None      & $0.89$ ($40/45$) & --- & $-1.69$ & --- & ---\\
-    \textbf{DOB-CBF} & $\mathbf{0.20}$ ($9/44$) & $\mathbf{31/39}$ & $\mathbf{+1.94}$ & $0.13$ & $0.28$\\
+    None      & $0.89$ ($40/45$) & --- & $-1.69\!\pm\!1.15$ & --- & ---\\
+    \textbf{DOB-CBF} & $\mathbf{0.20}$ ($9/44$) & $\mathbf{31/39}$ & $\mathbf{+1.94\!\pm\!2.10}$ & $0.13$ & $0.28$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1897,8 +1898,8 @@ even under the profile's outage spikes.
     \toprule
     \textbf{Filter} & \textbf{Coll./run} & \textbf{Clearance (m)} & \textbf{Interv. (\%)}\\
     \midrule
-    None      & $2.85$ & $-1.48$ & ---\\
-    \textbf{DOB-CBF}   & $\mathbf{0.39}$ & $\mathbf{+0.35}$ & $51$\\
+    None      & $2.85\!\pm\!1.14$ & $-1.48\!\pm\!0.53$ & ---\\
+    \textbf{DOB-CBF}   & $\mathbf{0.39\!\pm\!0.58}$ & $\mathbf{+0.35\!\pm\!1.02}$ & $51$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -2252,6 +2253,9 @@ hardware-in-the-loop and full-soil-estimation extensions above.
 %======================================================================
 \section*{Reproducibility}
 
+The framework, the swappable-component registries, and the full
+benchmarking suite are released as open source at
+\url{https://github.com/ANON/scm-shared-control} (anonymized for review).
 The complete autonomous sweep, including the non-HIL figures and
 CSV-backed tables in this paper, is reproduced by the following single
 command in the provided conda environment:
