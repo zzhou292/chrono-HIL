@@ -764,6 +764,10 @@ def run_sim_node(args):
             driver_cam.PushFilter(sens.ChFilterVisualize(
                 args.cam_width, args.cam_height, "Driver POV", args.cam_fullscreen
             ))
+            if getattr(args, "cam_save_dir", ""):
+                os.makedirs(args.cam_save_dir, exist_ok=True)
+                driver_cam.PushFilter(sens.ChFilterSave(args.cam_save_dir + "/"))
+                print(f"  Chrono Sensor: saving driver-POV frames to {args.cam_save_dir}")
             sensor_manager.AddSensor(driver_cam)
             print("  Chrono Sensor: driver POV camera active")
         except Exception as e:
@@ -1595,6 +1599,9 @@ def main():
     p.add_argument("--cam-fullscreen", action="store_true",
                    help="Display the driver POV fullscreen (renders at "
                         "--cam-width x --cam-height, scaled to the screen).")
+    p.add_argument("--cam-save-dir", type=str, default="",
+                   help="If set, also save driver-POV camera frames (PNG) to this "
+                        "directory (for figures/screenshots).")
     p.add_argument("--convoy", type=str, default="",
                    help="Spawn PID-driven traffic vehicles for a convoy safety "
                         "scenario (lead_brake/cut_in/stalled/swerver/convoy/platoon/"

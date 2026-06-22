@@ -1558,39 +1558,46 @@ $\Delta_\mathrm{cam} = s\,\Delta_\mathrm{cmd}$, where the camera-delay
 scale $s$ defaults to $1.0$ for a symmetric link. The same script
 supports a profile-driven delay for learned 5G traces.
 
-The HIL comparison repeats each (filter, delay) cell over multiple
-driver rounds and logs both safety and intrusiveness metrics:
-collisions, minimum clearance, intervention rate, mean steering
-correction, mean throttle/brake correction, and speed retention. The
-intervention metrics matter because the safety filter should preserve
-operator intent whenever the human command is already safe. The
-human-in-the-loop layer reuses the same command contract, swappable
-safety filters, and metric pipeline as the autonomous evaluation.
-The human-driven rounds are the realism source for the counterfactual
-replay (Sec.~\ref{sec:safety_convoy}); the autonomous protocol of the following
-section complements them with a large, fully repeatable multi-seed matrix
-that removes inter-operator variance. Because the simulator is
-deterministic, the recorded operator command trace can additionally be
-replayed with the filter off and through each filter on the identical
-scenario, yielding a per-operator \emph{counterfactual} harm-prevented
-measurement --- the collisions averted and clearance recovered on the
-operator's own intent --- with no inter-operator variance to average out
-and no crosstrack-tracking proxy.
+The HIL layer reuses the same command contract, swappable safety filters,
+latency injection, and metric pipeline as the autonomous evaluation, logging
+the same safety and intrusiveness signals (collisions, minimum clearance,
+intervention rate, mean steering and throttle/brake correction, speed
+retention). Fig.~\ref{fig:hil_hud} shows the operator's view: the
+Chrono::Sensor driver point-of-view over the deformable terrain and boulder
+field, with the live heads-up display overlaying the delayed command and the
+filtered command actually sent to the vehicle.
 
-\paragraph{Human-in-the-loop results.}
-Teleoperation under 5G latency over rough, obstacle-strewn terrain produces
-\emph{high-variance} command streams: even an experienced operator cannot
-reproduce a round, so raw per-operator collision counts are a noisy estimator
-of a filter's effect. Rather than average over that variance, we make the
-quantitative safety claim with the deterministic
-\emph{counterfactual replay} of Sec.~\ref{sec:safety_convoy}, which
-replays each recorded operator intent filter-off versus DOB-CBF-on on the
-\emph{identical} scenario and so isolates the filter's causal effect with zero
-inter-operator variance. The live human rounds
-(\texttt{human\_delay\_compensation\_rounds.py}) serve as the realism source
-for those traces and a qualitative demonstration that the intent-preserving
-filter is comfortable to drive behind; the autonomous sweeps of
-Sec.~\ref{sec:safety_blind} supply the large, fully repeatable matrix.
+\paragraph{Scope: capability, not a human-subjects study.}
+We report the HIL pipeline as a \emph{demonstrated capability} rather than as a
+quantitative human-subjects study. A controlled study --- multiple operators,
+repeated trials, and the attendant human-subjects protocol --- is out of scope
+for this systems paper, and a single-operator pilot under latency is too
+high-variance to support a quantitative filter claim: even an experienced
+operator cannot reproduce a round, so raw per-operator collision counts are a
+noisy estimator of a filter's effect. We therefore make the quantitative safety
+claim with the deterministic \emph{counterfactual replay} of
+Sec.~\ref{sec:safety_convoy}, which removes inter-operator variance entirely by
+replaying one command trace filter-off versus DOB-CBF-on on the \emph{identical}
+scenario. The trace reported there is a synthetic aggressive-operator proxy
+(constant throttle into the hazard, the autonomous stand-in for an operator who
+fails to react under latency); because the simulator is bit-for-bit
+deterministic, the same machinery replays a \emph{recorded} G29 trace unchanged.
+A full human-subjects evaluation, for which the pipeline of
+Fig.~\ref{fig:hil_hud} is built, is left to future work.
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{hil_hud_pov.png}
+  \caption{The human-in-the-loop operator view: the Chrono::Sensor driver
+    point-of-view over the SCM deformable terrain and boulder field (the same
+    camera feed that carries the downlink latency), with the live HUD
+    (\texttt{hil\_hud.py}) overlaying the steering and throttle/brake state ---
+    the ghost mark is the delayed operator command, the solid mark the filtered
+    command sent to the vehicle. The pipeline is a demonstrated capability;
+    the quantitative safety result is obtained from the deterministic
+    counterfactual of Sec.~\ref{sec:safety_convoy}, not from human rounds.}
+  \label{fig:hil_hud}
+\end{figure}
 
 
 \subsection{Autonomous validation: safety-filter-only collision avoidance}
