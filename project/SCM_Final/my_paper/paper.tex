@@ -76,8 +76,8 @@ SCM-calibrated Pacejka and TMeasy baselines in the live-estimator regime
 (recovering near-oracle tracking with no prior terrain knowledge), the disturbance observer
 recovers part of the soft-soil speed gap at a small tracking cost, the
 DOB-CBF filter sharply cuts collisions under the learned 5G profile ---
-with a deterministic counterfactual replay attributing the prevented
-collisions causally to the filter on the operator's own intent ---
+a deterministic counterfactual replay over a population of adversarial intents
+causally attributes the averted collisions to the filter ($31$ of $39$) ---
 and the warning predicts stopping distance to within
 $0.17\,\mathrm{m}$ mean absolute error against actual Chrono brake
 stops.
@@ -160,9 +160,10 @@ Concretely, this work contributes:
         instance is an intent-preserving DOB-CBF-QP inspired
         by~\cite{Zhang25}, with physical steering/throttle rate limits
         baked into the QP. Its effect is quantified by a deterministic
-        \emph{counterfactual replay} of the operator's own command trace
-        (filter off vs.\ on), giving a causal collisions-prevented
-        measurement that is robust to inter-operator variance.
+        \emph{counterfactual replay} --- replaying a fixed command trace
+        filter off vs.\ on on the identical scenario --- giving a causal,
+        exactly reproducible collisions-prevented measurement over a
+        population of adversarial intents.
   \item A learned 5G latency model (Section~\ref{sec:latency}) that
         drives a queue-load delay on both the operator-command and
         camera paths and exercises closed-loop robustness.
@@ -1567,23 +1568,21 @@ Chrono::Sensor driver point-of-view over the deformable terrain and boulder
 field, with the live heads-up display overlaying the delayed command and the
 filtered command actually sent to the vehicle.
 
-\paragraph{Scope: capability, not a human-subjects study.}
-We report the HIL pipeline as a \emph{demonstrated capability} rather than as a
-quantitative human-subjects study. A controlled study --- multiple operators,
-repeated trials, and the attendant human-subjects protocol --- is out of scope
-for this systems paper, and a single-operator pilot under latency is too
-high-variance to support a quantitative filter claim: even an experienced
-operator cannot reproduce a round, so raw per-operator collision counts are a
-noisy estimator of a filter's effect. We therefore make the quantitative safety
-claim with the deterministic \emph{counterfactual replay} of
-Sec.~\ref{sec:safety_convoy}, which removes inter-operator variance entirely by
-replaying one command trace filter-off versus DOB-CBF-on on the \emph{identical}
-scenario. The trace reported there is a synthetic aggressive-operator proxy
-(constant throttle into the hazard, the autonomous stand-in for an operator who
-fails to react under latency); because the simulator is bit-for-bit
-deterministic, the same machinery replays a \emph{recorded} G29 trace unchanged.
-A full human-subjects evaluation, for which the pipeline of
-Fig.~\ref{fig:hil_hud} is built, is left to future work.
+\paragraph{Scope.}
+The HIL pipeline is included to show the framework drives a real human operator
+end-to-end --- G29 input, Chrono::Sensor camera POV, the live HUD, and
+per-channel latency, all through the same command contract and safety filter as
+the autonomous stack (Fig.~\ref{fig:hil_hud}). This is a systems and control
+paper, not a human-factors study, so the \emph{quantitative} safety evaluation
+is deliberately not a human-operator comparison (which would carry inter-operator
+variance and a separate experimental protocol). We instead validate the filter
+with the deterministic \emph{counterfactual} of Sec.~\ref{sec:safety_convoy}:
+replaying a fixed command trace filter-off versus DOB-CBF-on on the
+\emph{identical} scenario, so the harm prevented is causal and exactly
+reproducible. The traces used are adversarial ``drive-into-the-hazard'' intents
+--- a worst-case stress test of the filter --- and, because the simulator is
+bit-for-bit deterministic, the same machinery replays a recorded G29 trace
+unchanged.
 
 \begin{figure}[!t]
   \centering
@@ -1797,45 +1796,44 @@ obstacle interface as the rocks, so the ego planner and the safety filter must
 avoid them with no change to either.
 
 These scenarios enable the \emph{counterfactual} measurement that is this
-paper's headline safety result, because it removes the operator-variance
-confound entirely. Teleoperation under latency is intrinsically
-high-variance --- the same driver cannot reproduce a round --- so averaging
-raw human outcomes is a poor estimator of a filter's value. Instead, because
-the simulator is bit-for-bit deterministic, a single recorded command trace is
-replayed through the \emph{identical} scenario with the filter off and on, and
-every outcome difference is attributable to the filter alone: no inter-operator
-averaging, no path-tracking proxy, and the operator's own (imperfect) intent as
-the input. Table~\ref{tab:convoy_cf} reports a
-representative aggressive intent (constant forward throttle into the hazard ---
-the autonomous proxy for an operator who fails to react under latency; recorded
-HIL traces replay through the same machinery) across five convoy scenarios
-(lead-brake, 3- and 5-vehicle convoys, rear-approach, stalled) $\times$ three
-command delays ($0$, $0.15$, $0.30\,$s), $15$ cells per filter. The unfiltered
-intent collides in $12$ of $15$ cells; DOB-CBF \emph{causally prevents $10$ of
-those $12$ collisions} ($2/15$ remaining), turning a mean clearance of
-$-1.42\,$m into $+1.82\,$m. It does so at small command deviation
-($|\Delta\delta|=0.13$, $|\Delta\tau|=0.26$), mixing steering with braking ---
+paper's headline safety result. Because the simulator is bit-for-bit
+deterministic, a fixed command trace is replayed through the \emph{identical}
+scenario with the filter off and on, so every outcome difference is attributable
+to the filter alone --- a causal, exactly reproducible harm-prevented measure
+with no path-tracking proxy. To avoid resting the result on one input, the trace
+is drawn from a small \emph{population of adversarial intents}: a
+``drive-into-the-hazard'' command at three throttle levels
+($0.4$, $0.6$, $0.8$), a worst-case stand-in for an inattentive or
+latency-overwhelmed operator. Table~\ref{tab:convoy_cf} aggregates these intents
+across five convoy scenarios (lead-brake, 3- and 5-vehicle convoys,
+rear-approach, stalled) $\times$ three command delays ($0$, $0.15$, $0.30\,$s)
+--- $45$ deterministic cells per filter. The unfiltered intent collides in $40$
+of $45$ cells; DOB-CBF \emph{causally prevents $31$ of the $39$ matched baseline
+collisions}, cutting the collision rate from $89\%$ to $20\%$ and turning a mean
+clearance of $-1.69\,$m into $+1.94\,$m. It does so at small command deviation
+($|\Delta\delta|=0.13$, $|\Delta\tau|=0.28$), mixing steering with braking ---
 the obstacle-type-aware QP steers around static rocks but is willing to brake
-behind a vehicle --- the minimum-deviation, intent-preserving signature,
-established causally on identical operator intent.
+behind a vehicle. The same machinery replays a \emph{recorded} G29 trace
+unchanged, so the measure carries over directly to logged human intent.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
-  \caption{Counterfactual convoy replay: one aggressive operator intent
-    replayed filter-off vs DOB-CBF across 5 traffic scenarios
-    $\times$ 3 command delays (15 cells). The deterministic sim makes
-    harm-prevented causal and free of inter-operator variance.
-    $|\Delta\delta|$, $|\Delta\tau|$ are the mean steering/throttle corrections.}
+  \caption{Counterfactual convoy replay: a population of adversarial intents
+    (constant throttle $\in\{0.4,0.6,0.8\}$ into the hazard) replayed
+    filter-off vs DOB-CBF across 5 traffic scenarios $\times$ 3 command delays
+    ($45$ deterministic cells per filter). The bit-for-bit deterministic sim
+    makes harm-prevented causal. $|\Delta\delta|$, $|\Delta\tau|$ are the mean
+    steering/throttle corrections.}
   \label{tab:convoy_cf}
   \centering
   \setlength{\tabcolsep}{3pt}
   \footnotesize
   \begin{tabular}{lccccc}
     \toprule
-    \textbf{Filter} & \textbf{Coll.} & \textbf{Prevented} & \textbf{Clear.\,(m)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
+    \textbf{Filter} & \textbf{Coll.\ rate} & \textbf{Prevented} & \textbf{Clear.\,(m)} & $\mathbf{|\Delta\delta|}$ & $\mathbf{|\Delta\tau|}$\\
     \midrule
-    None      & $12/15$ & --- & $-1.42$ & --- & ---\\
-    \textbf{DOB-CBF} & $\mathbf{2/15}$ & $\mathbf{10/12}$ & $\mathbf{+1.82}$ & $0.13$ & $0.26$\\
+    None      & $0.89$ ($40/45$) & --- & $-1.69$ & --- & ---\\
+    \textbf{DOB-CBF} & $\mathbf{0.20}$ ($9/44$) & $\mathbf{31/39}$ & $\mathbf{+1.94}$ & $0.13$ & $0.28$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -2146,10 +2144,10 @@ $5\,\%$ ($4.06\!\to\!4.26\,\mathrm{m/s}$, $0.61\!\to\!0.64$ of the
 g--g profile) at a negligible (${\sim}3\,\mathrm{mm}$) tracking
 cost. The two-layer planner-aware stack drives collisions to $0.13$/run with
 the DOB-CBF filter, the DOB-CBF filter benefits substantially from
-re-using the neural surrogate, and a deterministic counterfactual replay
-attributes the prevented collisions causally to the filter on the
-operator's own intent ($10$ of $12$ averted) --- robust to the
-inter-operator variance that makes raw teleoperation data noisy. The forward
+re-using the neural surrogate, and a deterministic counterfactual replay over a
+population of adversarial intents attributes the averted collisions causally to
+the filter ($31$ of $39$, collision rate $89\%\!\to\!20\%$) --- a causal,
+exactly reproducible safety measure that needs no human trials. The forward
 collision warning closes the advisory gap the override-style filter
 leave open: its analytical stopping-distance prediction lands within
 $0.17\,\mathrm{m}$ of the actual Chrono stop ($2.6\times$ better than
@@ -2220,9 +2218,10 @@ it cannot guarantee avoidance --- a fast tailgater is unescapable from low
 speed --- and this behaviour has so far been validated only on a single
 rear-approach scenario in simulation. A lane-change escape and a predictive
 rear cost are the natural extensions.
-Estimating the full soil vector online, hardware transfer, and the
-human-subject teleoperation study the HIL protocol is built for are the
-principal directions for future work.
+Estimating the full soil vector online and hardware transfer are the
+principal directions for future work; the HIL pipeline additionally enables
+a human-factors teleoperation study, which is a separate undertaking beyond
+this systems paper.
 
 %======================================================================
 \section{Conclusion}

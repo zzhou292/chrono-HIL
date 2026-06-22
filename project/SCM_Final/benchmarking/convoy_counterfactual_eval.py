@@ -61,8 +61,11 @@ def parse_args() -> argparse.Namespace:
                         "is replayed filter-off vs each filter at its recorded delay; "
                         "harm-prevented is aggregated per filter across rounds. Use "
                         "--convoy to set the scenario the rounds were collected in.")
-    p.add_argument("--reckless-throttle", type=float, default=0.6,
-                   help="Throttle of the generated reckless intent (when no --trace).")
+    p.add_argument("--reckless-throttle", type=float, nargs="+", default=[0.4, 0.6, 0.8],
+                   help="Throttle level(s) of the generated reckless intent (when no "
+                        "--trace). Multiple values sweep a small population of "
+                        "adversarial 'drive-into-the-hazard' intents so the "
+                        "harm-prevented result is not tied to a single intent.")
     p.add_argument("--convoy", nargs="+", default=["lead_brake", "cut_in", "stalled"],
                    help="Convoy preset(s) to sweep (lead_brake/cut_in/stalled/convoy/"
                         "jam/gauntlet/...). Each is replayed off vs each filter.")
@@ -244,18 +247,37 @@ def main() -> None:
             trace = str(Path(args.trace).expanduser().resolve())
             print(f"Replaying recorded trace: {trace}")
         else:
-            trace = str(out_dir / "reckless_trace.csv")
-            generate_reckless_trace(Path(trace), args.time, args.reckless_throttle)
-            print(f"Generated reckless intent (throttle={args.reckless_throttle}): {trace}")
-        for preset in args.convoy:
-            for filt in args.filters:
-                for delay in args.delays:
-                    run_dir = out_dir / "raw" / f"{idx:03d}_{preset}_{filt}_d{delay:.2f}"
-                    tasks.append(Task(idx, filt, delay, args.base_port + 2 * idx, str(run_dir),
-                                      trace, preset, args.terrain, args.time, args.mesh_resolution,
-                                      args.safety_buffer, args.shield_horizon, args.mppi_samples,
-                                      args.timeout, cell=f"{preset}@d{delay:.2f}"))
-                    idx += 1
+            # Sweep a small population of adversarial intents (different
+            # constant-throttle "drive-into-the-hazard" levels) so harm-prevented
+            # aggregates over the population, not a single intent.
+            traces = {}
+            for thr in args.reckless_throttle:
+                tp = str(out_dir / f"reckless_trace_t{thr:.2f}.csv")
+                generate_reckless_trace(Path(tp), args.time, thr)
+                traces[thr] = tp
+            print(f"Generated {len(traces)} reckless intent(s): "
+                  f"throttle {args.reckless_throttle}")
+        if not args.trace:
+            for thr in args.reckless_throttle:
+                for preset in args.convoy:
+                    for filt in args.filters:
+                        for delay in args.delays:
+                            run_dir = out_dir / "raw" / f"{idx:03d}_{preset}_{filt}_d{delay:.2f}_t{thr:.2f}"
+                            tasks.append(Task(idx, filt, delay, args.base_port + 2 * idx, str(run_dir),
+                                              traces[thr], preset, args.terrain, args.time, args.mesh_resolution,
+                                              args.safety_buffer, args.shield_horizon, args.mppi_samples,
+                                              args.timeout, cell=f"{preset}@d{delay:.2f}@t{thr:.2f}"))
+                            idx += 1
+        else:
+            for preset in args.convoy:
+                for filt in args.filters:
+                    for delay in args.delays:
+                        run_dir = out_dir / "raw" / f"{idx:03d}_{preset}_{filt}_d{delay:.2f}"
+                        tasks.append(Task(idx, filt, delay, args.base_port + 2 * idx, str(run_dir),
+                                          trace, preset, args.terrain, args.time, args.mesh_resolution,
+                                          args.safety_buffer, args.shield_horizon, args.mppi_samples,
+                                          args.timeout, cell=f"{preset}@d{delay:.2f}"))
+                        idx += 1
 
     rows = []
     # Cache prewarm: run task 0 solo (acados/CasADi codegen) then pool the rest.
