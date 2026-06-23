@@ -1000,12 +1000,14 @@ lateral-force channel adds complementary information
   \caption{Open-loop excitation vs.\ closed-loop tracking, all four
     estimators, canonical soils (tail $|\Delta n|$). A scripted
     $0.6\,$rad sine-steer maneuver (green) is compared to closed-loop
-    NMPC path-tracking (red). On firm sand the force-only NN-UKF goes
-    $0.44\!\to\!0.09$ --- \emph{observability}-limited, a dedicated maneuver
-    resolves it --- whereas the Bekker-UKF remains $\approx\!0.47$ in both
-    (\emph{model}-limited: its analytical contact law is inaccurate on sand).
-    The proprioceptive MLP is excitation-agnostic ($0.04\!\to\!0.00$),
-    and the deployed Fused-UKF is accurate in both ($\approx\!0.01$),
+    NMPC path-tracking (red). On firm sand the force-only NN-UKF is
+    \emph{observability}-limited --- accurate under the scripted maneuver
+    ($0.09$) but drifting under closed-loop tracking ($0.44$), so a
+    dedicated maneuver resolves it --- whereas the Bekker-UKF remains
+    $\approx\!0.47$ in both (\emph{model}-limited: its analytical contact
+    law is inaccurate on sand). The proprioceptive MLP is
+    excitation-agnostic ($0.00\!\to\!0.04$), and the deployed Fused-UKF is
+    accurate in both ($\approx\!0.01$),
     so it needs no dedicated maneuver at runtime
     (cf.\ Sec.~\ref{sec:ukf}).}
   \label{fig:estimator_open_loop}
@@ -1098,17 +1100,18 @@ dirt and sand presets sit on the \emph{edges} of the deployed
 \texttt{TRAINING\_RANGES\_V6} box (clay's $K_\phi$ is at $5\,\%$ of
 range and its Janosi shear at the $0\,\%$ floor), so a surrogate
 trained on that box has to extrapolate to reach them and fails on
-clay. Widening the box (never narrowing — CLAUDE.md §8) turns those
-soils into interior points the surrogate interpolates to.
+clay. Widening the box (never narrowing, so the uniform LHS coverage
+is preserved) turns those soils into interior points the surrogate
+interpolates to.
 Targets are extracted directly from each Chrono log:
 $F_{y,\mathrm{total}}\!=\!m\,a_y$ and
 $M_{\mathrm{yaw,total}}\!=\!I_z\,\dot\omega$ (5-point central
 difference). Held-out (30 of 300 scenarios, scenario-split) $R^2$ is
-$0.90$ on $F_y$ and $0.88$ on $M_{\mathrm{yaw}}$. CLAUDE.md §8 holds:
-every input axis is uniformly sampled over its (widened) box, with
-no narrowing toward a canonical preset or controller-conditioned
-operating point, and the trained model is plugged into the UKF
-\emph{without} any per-soil scalar correction. This surrogate is the
+$0.90$ on $F_y$ and $0.88$ on $M_{\mathrm{yaw}}$. The sampling
+discipline is strict: every input axis is uniformly sampled over its
+(widened) box, with no narrowing toward a canonical preset or
+controller-conditioned operating point, and the trained model is
+plugged into the UKF \emph{without} any per-soil scalar correction. This surrogate is the
 UKF's force channel for both the Fused-UKF and the force-only NN-UKF.
 
 \paragraph{Force observability of $n$ (the key issue).}
@@ -1159,9 +1162,10 @@ comparing each estimator's tail $|\Delta n|$ on firm sand under a
 scripted excitation maneuver against the same soil under closed-loop
 tracking. The force-only NN-UKF goes from $0.09$ (open-loop) to $0.44$
 (closed-loop): it is observability-limited, and a dedicated excitation
-maneuver \emph{resolves} it. The Bekker-UKF remains model-limited in both
-($0.48\!\to\!0.47$): it is model-limited --- the analytical Bekker law
-is inaccurate on sand, and no amount of excitation can compensate. The
+maneuver \emph{resolves} it. The Bekker-UKF, by contrast, is essentially
+unchanged across the two ($0.48\!\to\!0.47$): it is \emph{model}-limited
+--- the analytical Bekker law is inaccurate on sand, and no amount of
+excitation can compensate. The
 proprioceptive MLP, which reads vibration and is excitation-agnostic,
 is accurate in both ($0.00\!\to\!0.04$), and the Fused-UKF inherits that
 robustness ($0.01\!\to\!0.01$). This is the observability story seen
