@@ -58,12 +58,12 @@ def parse_args() -> argparse.Namespace:
                         "(forwarded to every Chrono sub-script that accepts --workers; "
                         "latency_profile has no Chrono runs and is skipped). Default: "
                         "each sub-script's own default (6). Lower this (e.g. 4) for the "
-                        "MPPI-heavy sweeps if the box is memory-constrained.")
+                        "memory-heaviest sweeps if the box is memory-constrained.")
     p.add_argument("--timeout", type=float, default=None,
                    help="Override the per-run wall-clock timeout (s) forwarded to every "
                         "Chrono sub-script that accepts --timeout (latency_profile skipped). "
                         "Default: each sub-script's own (180-240 s). Raise this (e.g. 400) "
-                        "to give MPPI-shield runs head-room under worker contention.")
+                        "to give the slowest runs head-room under worker contention.")
     p.add_argument("--base-port", type=int, default=20000,
                    help="First port block. Each experiment gets a separated block.")
     p.add_argument("--port-stride", type=int, default=3500,

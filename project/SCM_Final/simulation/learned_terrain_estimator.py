@@ -508,7 +508,7 @@ class LearnedTerrainEstimator:
 
     def get_phi_uncertainty_deg(self) -> float:
         """phi uncertainty in degrees, derived from sigma_n via the preset
-        n -> phi slope. Wired into the MPPI shield's friction-cone gate."""
+        n -> phi slope. Exposed for downstream safety consumers."""
         return float(self.get_n_uncertainty() * self._dphi_dn_deg)
 
     @property

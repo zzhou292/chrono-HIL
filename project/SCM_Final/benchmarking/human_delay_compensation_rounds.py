@@ -3,7 +3,7 @@
 
 This is the canonical human-in-the-loop (HIL) obstacle-avoidance benchmark:
 a human drives the HMMWV through a rock field while the sim-side safety
-filter (none / MPPI / DOB-CBF / NMPC) screens the delayed operator
+filter (none / DOB-CBF) screens the delayed operator
 commands.  Each round delays *both* the operator command path and the
 driver POV camera feed -- the command delay models the uplink and the
 camera delay models the downlink of the teleoperation link.  Camera delay
@@ -150,8 +150,6 @@ def parse_args() -> argparse.Namespace:
                         "a large deformable terrain, so it allows more traffic at "
                         "real-time. 'sensor' adds modelled camera (downlink) latency.")
     p.add_argument("--shield-horizon", type=int, default=12)
-    p.add_argument("--mppi-samples", type=int, default=384)
-    p.add_argument("--nmpc-iter", type=int, default=6)
     p.add_argument("--safety-buffer", type=float, default=0.25)
     p.add_argument("--auto-start", action="store_true",
                    help="Do not wait for Enter before each round.")
@@ -229,10 +227,6 @@ def command_for_round(args: argparse.Namespace, run_dir: Path, idx: int, filter_
             # In profile mode the sim samples the control channel and feeds
             # the sim-side filter; a fixed --teleop-delay would override it.
             cmd += ["--teleop-delay", str(delay)]
-        if filter_name == "mppi":
-            cmd += ["--mppi-samples", str(args.mppi_samples)]
-        if filter_name == "nmpc":
-            cmd += ["--nmpc-iter", str(args.nmpc_iter)]
     return cmd
 
 

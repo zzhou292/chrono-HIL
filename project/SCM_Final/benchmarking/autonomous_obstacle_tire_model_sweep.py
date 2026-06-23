@@ -68,8 +68,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--safety-flavor", choices=["none", "dob_cbf"], default="none",
                    help="Optional fixed downstream safety filter used for every tire model.")
     p.add_argument("--shield-horizon", type=int, default=18)
-    p.add_argument("--mppi-samples", type=int, default=384)
-    p.add_argument("--nmpc-iter", type=int, default=8)
     p.add_argument("--safety-buffer", type=float, default=0.50)
     p.add_argument("--mpc-blind-obstacles", action="store_true",
                    help="Hide rocks from the MPC so the fixed safety filter is the sole avoider.")
@@ -234,10 +232,6 @@ def main() -> None:
             "--shield-horizon", str(args.shield_horizon),
             "--safety-buffer", str(args.safety_buffer),
         ]
-        if args.safety_flavor == "mppi":
-            safety_extra += ["--mppi-samples", str(args.mppi_samples)]
-        elif args.safety_flavor == "nmpc":
-            safety_extra += ["--nmpc-iter", str(args.nmpc_iter)]
     if args.mpc_blind_obstacles:
         safety_label += "_mpc_blind"
         safety_extra.append("--mpc-blind-obstacles")

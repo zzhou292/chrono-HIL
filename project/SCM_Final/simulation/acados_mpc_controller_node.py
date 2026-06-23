@@ -1861,8 +1861,8 @@ def main():
     p = argparse.ArgumentParser(description="ACADOS MPC Controller Node (decoupled)")
     p.add_argument("--mpc-blind-obstacles", action="store_true",
                    help="Drop obstacle data on the controller side so the NMPC is a "
-                        "pure path-tracker. The downstream safety shield (MPPI/NMPC/"
-                        "DOB-CBF) becomes the sole collision-avoidance layer — "
+                        "pure path-tracker. The downstream DOB-CBF safety filter "
+                        "becomes the sole collision-avoidance layer — "
                         "useful as a proxy for an oblivious teleoperator.")
 
     # Model (NN or analytical tire model)

@@ -234,12 +234,6 @@ Examples:
     p.add_argument("--no-safety-nn", action="store_true",
                    help="Disable NN tire model inside the sim-side safety filter. "
                         "Useful for DOB-CBF NN ablations.")
-    p.add_argument("--mppi-samples", type=int, default=384)
-    p.add_argument("--mppi-sigma-steer", type=float, default=0.35)
-    p.add_argument("--mppi-sigma-alpha", type=float, default=0.35)
-    p.add_argument("--mppi-temperature", type=float, default=1.0)
-    p.add_argument("--mppi-no-seeds", action="store_true",
-                   help="Ablation: disable hand-crafted MPPI seed trajectories.")
     p.add_argument("--shield-no-sigma-gate", action="store_true",
                    help="Ablation: zero out phi_sigma at the sim-node hop (equivalent to mode=off).")
     p.add_argument("--shield-sigma-mode", type=str, default="off",
@@ -249,7 +243,6 @@ Examples:
                         "retained for the sigma_gate_ablation experiment only.")
     p.add_argument("--shield-sigma-buffer-gain", type=float, default=0.05,
                    help="Metres of extra obstacle buffer per degree of phi_sigma.")
-    p.add_argument("--nmpc-iter", type=int, default=6)
     p.add_argument("--shield-horizon", type=int, default=12)
     p.add_argument("--mpc-blind-obstacles", action="store_true",
                    help="Make the MPC controller ignore obstacles — safety shield "

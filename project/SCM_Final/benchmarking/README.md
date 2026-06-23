@@ -56,16 +56,15 @@ non-human suite — see below.
 | Script | Tests |
 | --- | --- |
 | `mpc_tire_model_sweep.py` | Standard NMPC closed-loop tracking vs tire model (Pacejka / TMeasy / Vehicle NN rate-MLP). Source of the master CTE heatmap in §III. |
-| `safety_filter_sweep.py` | Planner-blind shield-only validation (none / DOB-CBF / MPPI / NMPC). `--blind-and-aware` repeats the matrix with the in-horizon NMPC barrier re-enabled. Source of §VI.A–§VI.C. |
+| `safety_filter_sweep.py` | Planner-blind filter-only validation (none / DOB-CBF). `--blind-and-aware` repeats the matrix with the in-horizon NMPC barrier re-enabled. Source of §VI.A–§VI.C. |
 | `dob_cbf_nn_ablation.py` | DOB-CBF with the neural tire surrogate vs a kinematic/linear fallback. Source of §VI.D. |
-| `mppi_seed_ablation.py` | MPPI shield with / without hand-crafted recovery seeds. Source of §VI.E. |
-| `autonomous_obstacle_tire_model_sweep.py` | Planner-tire-model sweep under a fixed MPPI shield, no separate filter ablation. Source of §VI.F. |
+| `autonomous_obstacle_tire_model_sweep.py` | Planner-tire-model sweep under a fixed DOB-CBF filter, no separate filter ablation. Source of §VI.F. |
 | `terrain_estimator_benchmark.py` | Live terrain estimator under closed-loop NMPC and Buzhardt-style scripted open-loop on canonical + 100 random LHS terrains. Source of §IV. |
 | `open_loop_terrain_estimator_benchmark.py` | Estimator-only diagnostic with no NMPC in the loop. Used to isolate the role of deliberate command excitation (paper Fig. of the open-loop diagnostic). |
 | `tire_model_with_estimator_ablation.py` | Live-estimator-conditioned closed-loop tracking comparison; outputs `tire_model_with_estimator_*` and feeds tab:tires_estimator. |
 | `throttle_dob_ablation.py` | Asymmetric throttle DOB on vs off, fair-loop ablation. Source of §V. |
 | `latency_profile_figure.py` | Generates the synthetic 5G latency trace and figures. Driven by `--profile-json` (default `config/latency_profiles/5g_nhits_youtube_ul_*.json`). |
-| `latency_compensation_sweep.py` | Closed-loop obstacle scenario under the synthetic 5G profile with no-filter / DOB-CBF / MPPI. Source of §VII. |
+| `latency_compensation_sweep.py` | Closed-loop obstacle scenario under the synthetic 5G profile with no-filter / DOB-CBF. Source of §VII. |
 | `collision_warning_test.py` | Forward collision warning lead-time sweep over terrain × one-way latency; vehicle drives blindly at a single rock. Source of `cw_lead_vs_terrain.png` and `cw_timeline.png`. |
 | `brake_test.py` | 27 actual Chrono SCM brake stops used to validate the warning module's analytical `a_b(n̂)` table. Source of `cw_brake_validation.png` and the 0.17 m mean-absolute-error claim. |
 | `train_5g_nhits.py` | Trains the N-HiTS 5G traffic model from the public YouTube uplink dataset. Re-running is optional; the suite ships with the trained checkpoint cache. |
@@ -86,13 +85,13 @@ human driver. It does **not** participate in `--tier paper`.
 ```bash
 # Default G29 protocol, symmetric link (camera delay = command delay)
 python benchmarking/human_delay_compensation_rounds.py \
-    --filters none mppi dob_cbf nmpc \
+    --filters none dob_cbf \
     --delays 0.0 0.15 0.30 \
     --rounds 3 --manual-mode g29
 
 # Asymmetric 5G-style link (heavier video downlink)
 python benchmarking/human_delay_compensation_rounds.py \
-    --filters none dob_cbf mppi \
+    --filters none dob_cbf \
     --delays 0.0 0.15 0.30 \
     --camera-delay-scale 1.6 \
     --rounds 3 --manual-mode g29

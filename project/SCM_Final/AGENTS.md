@@ -220,7 +220,7 @@ with ProcessPoolExecutor(max_workers=workers) as ex:
 | Path | What lives there |
 | --- | --- |
 | `simulation/` | Runtime: sim node, NMPC controller, ZMQ messaging, reference paths, tire surrogates (loaders + CasADi export), terrain estimator (`learned_terrain_estimator.py` — runtime only; trainer lives in `nn_training/`), and the spatially-varying soil callback `spatial_terrain.py` (one preset blends into another along +x via `SCMTerrain.RegisterSoilParametersCallback`) |
-| `simulation/safety/` | Predictive safety shields (`predictive_shield.py` MPPI + NMPC, DOB-CBF in `safety/__init__.py`) AND the modular forward collision-warning module `collision_warning.py` (terrain-aware + latency-aware TTC warning; factory `make_collision_warning_system`) |
+| `simulation/safety/` | The shipped DOB-CBF safety filter (`CBFSafetyFilter` in `safety/__init__.py`; `make_safety_filter`) AND the modular forward collision-warning module `collision_warning.py` (terrain-aware + latency-aware TTC warning; factory `make_collision_warning_system`). The predictive MPPI + SLSQP-NMPC shields were archived 2026-06-21 (`archive/2026-06-21_mppi_nmpc_removal/`); DOB-CBF is the only filter. |
 | `benchmarking/` | The single benchmarking folder. `run.py` is the orchestrator (flagged by `--tier` and `--only`); each sub-script tests one paper claim and writes a timestamped folder under `benchmarking/results/`. `collision_warning_test.py` is the standalone sweep that exercises the warning module under terrain × latency without a controller. `terrain_transition_benchmark.py` is the spatial soil-transition experiment (online estimator tracking a mid-run soil change). |
 | `nn_training/` | Canonical trainers: `train_static_v3.sh` (rig static), `train_rate_v2.sh` (rig rate), `train_vehicle_lhs.sh` (whole-vehicle variants), `train_terrain_window_mlp.py` (window terrain estimator, deployed), `train_terrain_window_lstm.py` (LSTM smoke variant, not deployed), and `train_vehicle_fy_surrogate.py` (whole-vehicle Fy surrogate for the Dallas UKF, §VI). `train_variant.py` is the shared tire-NN trainer |
 | `data_collection/` | Chrono SCM tire-rig binaries (`collect_static_data.cpp`, `collect_rate_data.cpp`), closed-loop tire-surrogate collector (`collect_closed_loop_data.py`), the broad multi-axis terrain-estimator collector (`collect_broad_terrain.py`), and the Dallas-UKF SCM collectors (`run_dallas_scm.py` single scripted run, `collect_lhs_training_scms.py` parallel LHS sweep) |
@@ -286,14 +286,14 @@ broken `make_fig_terrain_est` aggregator was replaced by
 ```bash
 # Default G29 protocol (symmetric link, camera delay = command delay)
 python benchmarking/human_delay_compensation_rounds.py \
-    --filters none mppi dob_cbf nmpc \
+    --filters none dob_cbf \
     --delays 0.0 0.15 0.30 \
     --rounds 3 --manual-mode g29
 
 # Asymmetric 5G-style link (camera downlink is heavier than command
 # uplink). The learned 5G profile measures ~1.6x.
 python benchmarking/human_delay_compensation_rounds.py \
-    --filters none mppi dob_cbf \
+    --filters none dob_cbf \
     --delays 0.0 0.15 0.30 \
     --camera-delay-scale 1.6 \
     --rounds 3 --manual-mode g29
@@ -500,20 +500,23 @@ publishing `ControlCommand`.
 
 ---
 
-## Safety shield architecture
+## Safety filter architecture
 
-* `simulation/safety/predictive_shield.py` contains the predictive MPPI
-  shield and the SLSQP NMPC comparison filter. Both consume the same
-  `surrogate_dynamics.py` rollout that the planner uses. The paper
-  frames the safety layer as swappable: DOB-CBF is the
-  minimum-deviation, intent-preserving filter for HIL commands, while
-  MPPI is the predictive learned-dynamics shield.
-* The MPPI sample set is augmented with six **hand-crafted seed
-  trajectories** (passthrough, full brake, coast, evade-left,
-  evade-right, brake-while-turn) injected unconditionally. The ablation
-  in paper §VI-C shows removing the seeds multiplies the collision
-  rate by ≈31×.
-* The shield receives terrain updates from the controller over the
+* `CBFSafetyFilter` in `simulation/safety/__init__.py` (constructed via
+  `make_safety_filter('dob_cbf', ...)`) is the **only** shipped safety
+  filter: an intent-preserving, minimum-deviation DOB-CBF-QP solved once
+  per control tick, with physical steering/throttle rate limits baked
+  into the QP. It optionally reads the same neural tire surrogate the
+  planner uses for its terrain-aware traction budget, and exposes
+  `update_terrain(...)` so the online estimator can re-condition its
+  grip-limited accel/brake authority on the live Bekker `n`.
+* The predictive **MPPI** shield and the SLSQP **NMPC** comparison
+  shield (formerly in `predictive_shield.py` + `surrogate_dynamics.py`)
+  were archived 2026-06-21 to `archive/2026-06-21_mppi_nmpc_removal/`.
+  `make_safety_filter` and `--safety-flavor` now reject those flavors
+  with a pointer to the archive; the registry stays swappable, but
+  DOB-CBF is the shipped instance.
+* The filter receives terrain updates from the controller over the
   same ZMQ socket as `ControlCommand` (terrain fields are piggy-backed
   on `ControlCommand` because `ZMQ_CONFLATE` drops any separate
   message).
@@ -568,7 +571,7 @@ publishing `ControlCommand`.
 ## Adding a new sweep
 
 1. Write the sub-script in `benchmarking/` modeled on
-   `mppi_seed_ablation.py` (or one of the other simple ablations).
+   `safety_filter_sweep.py` (or one of the other simple ablations).
    The script must define a `plot_figures(results_csv, out_dir)` if
    `publish_paper_figures.py` is going to re-plot on merge.
 2. Add the sweep to `benchmarking/run.py`'s port allocation list and

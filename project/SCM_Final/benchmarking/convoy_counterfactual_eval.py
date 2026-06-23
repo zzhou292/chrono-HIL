@@ -14,12 +14,12 @@ headline is the counterfactual delta vs the filter-OFF baseline on the same
 intent: collisions prevented, clearance gained.
 
 Examples:
-  # generated reckless intent into a braking lead, off vs DOB-CBF vs MPPI:
-  python convoy_counterfactual_eval.py --convoy lead_brake --filters none dob_cbf mppi
+  # generated reckless intent into a braking lead, off vs DOB-CBF:
+  python convoy_counterfactual_eval.py --convoy lead_brake --filters none dob_cbf
 
   # replay a recorded human trace under teleop latency:
   python convoy_counterfactual_eval.py --trace runs/op1/sim_diag.csv \
-      --convoy gauntlet --delays 0.0 0.30 --filters none dob_cbf mppi
+      --convoy gauntlet --delays 0.0 0.30 --filters none dob_cbf
 """
 from __future__ import annotations
 
@@ -78,7 +78,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mesh-resolution", type=float, default=0.12)
     p.add_argument("--safety-buffer", type=float, default=0.25)
     p.add_argument("--shield-horizon", type=int, default=12)
-    p.add_argument("--mppi-samples", type=int, default=384)
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--timeout", type=float, default=400.0)
     p.add_argument("--base-port", type=int, default=11200)
@@ -122,7 +121,6 @@ class Task:
     mesh: float
     buffer: float
     horizon: int
-    mppi_samples: int
     timeout: float
     cell: str = ""          # baseline-matching key (scenario or recorded round)
 
@@ -141,8 +139,6 @@ def _build_cmd(t: Task) -> list[str]:
     if t.filter_name != "none":
         cmd += ["--safety-filter", "--safety-flavor", t.filter_name,
                 "--safety-buffer", str(t.buffer), "--shield-horizon", str(t.horizon)]
-        if t.filter_name == "mppi":
-            cmd += ["--mppi-samples", str(t.mppi_samples)]
     return cmd
 
 
@@ -196,8 +192,8 @@ def plot_figures(summary: pd.DataFrame, out_dir: Path) -> None:
     if summary.empty:
         return
     s = summary.set_index("filter")
-    order = [f for f in ("none", "dob_cbf", "mppi", "nmpc") if f in s.index]
-    colors = {"none": "#b0392b", "dob_cbf": "#28c76f", "mppi": "#2d6cdf", "nmpc": "#9b59b6"}
+    order = [f for f in ("none", "dob_cbf") if f in s.index]
+    colors = {"none": "#b0392b", "dob_cbf": "#28c76f"}
     x = range(len(order)); cols = [colors.get(f, "#888") for f in order]
     fig, axes = plt.subplots(1, 3, figsize=(12, 3.8))
     axes[0].bar(x, [s.loc[f, "collision_rate"] for f in order], color=cols)
@@ -238,7 +234,7 @@ def main() -> None:
                 run_dir = out_dir / "raw" / f"{idx:03d}_{name}_{filt}"
                 tasks.append(Task(idx, filt, delay, args.base_port + 2 * idx, str(run_dir),
                                   trace_f, preset0, args.terrain, args.time, args.mesh_resolution,
-                                  args.safety_buffer, args.shield_horizon, args.mppi_samples,
+                                  args.safety_buffer, args.shield_horizon,
                                   args.timeout, cell=name))
                 idx += 1
     else:
@@ -265,7 +261,7 @@ def main() -> None:
                             run_dir = out_dir / "raw" / f"{idx:03d}_{preset}_{filt}_d{delay:.2f}_t{thr:.2f}"
                             tasks.append(Task(idx, filt, delay, args.base_port + 2 * idx, str(run_dir),
                                               traces[thr], preset, args.terrain, args.time, args.mesh_resolution,
-                                              args.safety_buffer, args.shield_horizon, args.mppi_samples,
+                                              args.safety_buffer, args.shield_horizon,
                                               args.timeout, cell=f"{preset}@d{delay:.2f}@t{thr:.2f}"))
                             idx += 1
         else:
@@ -275,7 +271,7 @@ def main() -> None:
                         run_dir = out_dir / "raw" / f"{idx:03d}_{preset}_{filt}_d{delay:.2f}"
                         tasks.append(Task(idx, filt, delay, args.base_port + 2 * idx, str(run_dir),
                                           trace, preset, args.terrain, args.time, args.mesh_resolution,
-                                          args.safety_buffer, args.shield_horizon, args.mppi_samples,
+                                          args.safety_buffer, args.shield_horizon,
                                           args.timeout, cell=f"{preset}@d{delay:.2f}"))
                         idx += 1
 

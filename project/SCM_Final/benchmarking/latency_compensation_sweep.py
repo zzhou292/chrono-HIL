@@ -61,7 +61,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--rocks", type=int, default=5)
     p.add_argument("--safety-buffer", type=float, default=0.5)
     p.add_argument("--shield-horizon", type=int, default=18)
-    p.add_argument("--mppi-samples", type=int, default=384)
     p.add_argument("--mpc-delay-comp", choices=["on", "off", "both"], default="on",
                    help="Ablate the standard MPC state delay predictor.")
     p.add_argument("--latency-profile-json", default="",
@@ -95,8 +94,6 @@ def extra_args(filter_name: str, delay: float, mpc_delay_comp: bool,
             "--safety-buffer", str(args.safety_buffer),
             "--shield-horizon", str(args.shield_horizon),
         ]
-        if filter_name == "mppi":
-            out += ["--mppi-samples", str(args.mppi_samples)]
     return out
 
 

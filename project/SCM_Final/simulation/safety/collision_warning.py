@@ -1,7 +1,7 @@
 """Modular collision-warning system for the HIL teleoperation stack.
 
-Unlike the predictive shields in ``safety/predictive_shield.py`` and
-``CBFSafetyFilter`` in ``safety/__init__.py``, this component does **not**
+Unlike the DOB-CBF filter (``CBFSafetyFilter`` in ``safety/__init__.py``),
+this component does **not**
 modify commands. It runs in parallel with whatever filter the operator
 has selected (or none), and emits a discrete *warning signal* that is
 piped back to the remote driver.

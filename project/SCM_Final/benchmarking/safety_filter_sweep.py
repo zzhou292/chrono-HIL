@@ -59,8 +59,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--blind-and-aware", action="store_true",
                    help="Run both planner-aware and planner-blind obstacle cases.")
     p.add_argument("--shield-horizon", type=int, default=18)
-    p.add_argument("--mppi-samples", type=int, default=384)
-    p.add_argument("--nmpc-iter", type=int, default=6)
     p.add_argument("--safety-buffer", type=float, default=0.50,
                    help="Extra obstacle clearance buffer passed to safety filters. "
                         "Default 0.50 m gives the predictive shields a practical "
@@ -125,10 +123,6 @@ def extra_args_for(flavor: str, blind: bool, args: argparse.Namespace) -> list[s
             "--shield-horizon", str(args.shield_horizon),
             "--safety-buffer", str(args.safety_buffer),
         ]
-        if flavor == "mppi":
-            extra += ["--mppi-samples", str(args.mppi_samples)]
-        if flavor == "nmpc":
-            extra += ["--nmpc-iter", str(args.nmpc_iter)]
     if blind:
         extra.append("--mpc-blind-obstacles")
     return extra

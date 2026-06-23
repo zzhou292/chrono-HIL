@@ -8,7 +8,7 @@ behavior?
 
     surrogate axis :  rig_rate (rig_rate_64_32)
                       vehicle_rate (vehicle_rate_64_32_lhs)
-    filter axis    :  none, dob_cbf, mppi, nmpc
+    filter axis    :  none, dob_cbf
 
 Configurations follow `safety_filter_sweep.py` so the metric set
 (collisions, near-misses, min clearance, intervention rate, dsteer, RMS
@@ -65,10 +65,6 @@ def extra_args_for(flavor: str, args: argparse.Namespace) -> list[str]:
             "--shield-horizon", str(args.shield_horizon),
             "--safety-buffer", str(args.safety_buffer),
         ]
-        if flavor == "mppi":
-            extra += ["--mppi-samples", str(args.mppi_samples)]
-        if flavor == "nmpc":
-            extra += ["--nmpc-iter", str(args.nmpc_iter)]
     return extra
 
 
@@ -87,8 +83,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--base-seed", type=int, default=800)
     p.add_argument("--rocks", type=int, default=5)
     p.add_argument("--shield-horizon", type=int, default=18)
-    p.add_argument("--mppi-samples", type=int, default=384)
-    p.add_argument("--nmpc-iter", type=int, default=6)
     p.add_argument("--safety-buffer", type=float, default=0.5)
     p.add_argument("--time", type=float, default=12.0)
     p.add_argument("--lead-in", type=float, default=5.0)

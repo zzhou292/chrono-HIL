@@ -6,23 +6,19 @@ This is an in-process plugin boundary inside `chrono_sim_node.py`: the
 sim gathers the latest command, applies optional latency, calls the
 selected safety filter, and then passes the filtered command to Chrono.
 
-- **`dob_cbf`:** Single-step DOB-CBF-QP filter. This is the most natural
-  human-in-the-loop/shared-control safety mechanism because the QP
-  minimizes deviation from the operator command while enforcing obstacle
-  constraints.
-- **`mppi` (default CLI flavor):** Model Predictive Path Integral shield over
-  an NN-surrogate-based vehicle rollout.  Terrain- and latency-aware; uses
-  the same tire surrogate the planning NMPC uses, so the filter "thinks"
-  about consequences with the same dynamics the planner does.
-- **`nmpc`:** Gradient-based (scipy SLSQP) finite-horizon NMPC over the
-  identical rollout.  Provided as an ablation against the sampling
-  approach.
+- **`dob_cbf` (the only shipped flavor):** Single-step DOB-CBF-QP filter.
+  This is the most natural human-in-the-loop/shared-control safety
+  mechanism because the QP minimizes deviation from the operator command
+  while enforcing obstacle constraints.
 
-The MPPI / NMPC flavors share `surrogate_dynamics.py` (numpy-vectorized
-batched bicycle model with sub-stepping and a low-speed kinematic blend
-for stability) and a common cost in `predictive_shield.py`.
+The predictive **`mppi`** and SLSQP **`nmpc`** shields (and the shared
+`surrogate_dynamics.py` / `predictive_shield.py` rollout) were **archived
+2026-06-21** to `archive/2026-06-21_mppi_nmpc_removal/`. `make_safety_filter`
+and `--safety-flavor` now reject those names with a pointer to the archive.
+The registry stays swappable, but DOB-CBF is the shipped instance. The
+architecture notes below are retained for the archived shields.
 
-## MPPI / NMPC architecture
+## MPPI / NMPC architecture (archived 2026-06-21)
 
 Inspired by sampling-based MPC for off-road driving (e.g., Williams et al.)
 but adapted to a *safety filter* setting: the operator/autonomous command

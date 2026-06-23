@@ -594,32 +594,27 @@ def run_sim_node(args):
             except Exception as _e:
                 print(f"  [CBF] NN load failed ({_e}), using kinematic fallback")
 
-        flavor = (args.safety_flavor or 'dob_cbf').lower()
-        if flavor in ('mppi', 'nmpc'):
-            raise SystemExit(
-                f"--safety-flavor {flavor} was removed on 2026-06-21 (MPPI/NMPC "
-                f"shields archived in archive/2026-06-21_mppi_nmpc_removal/). "
-                f"DOB-CBF is the only safety filter; use --safety-flavor dob_cbf.")
-        else:
-            safety_filter = make_safety_filter(
-                'dob_cbf', vehicle_params=vehicle_params,
-                nn_model=_nn_cbf,
-                cbf_alpha=args.cbf_alpha,
-                obstacle_buffer=args.safety_buffer,
-                delay_steps=args.delay_steps,
-                control_dt=0.1,
-                w_long=args.cbf_w_long,
-                w_lat=args.cbf_w_lat,
-                forward_bias=args.cbf_forward_bias,
-                dob_bandwidth=args.dob_bandwidth,
-                cbf_flavor=args.cbf_flavor,
-                teleop_delay=initial_control_delay,
-                stale_cmd_timeout=args.stale_cmd_timeout,
-            )
-            delay_msg = (f", teleop_delay={initial_control_delay*1000:.0f}ms"
-                         if initial_control_delay > 0 else "")
-            print(f"  [SAFETY] DOB-CBF filter enabled: alpha={args.cbf_alpha}, "
-                  f"buffer={args.safety_buffer}m, flavor={args.cbf_flavor}{delay_msg}")
+        # DOB-CBF is the only shipped filter (MPPI/NMPC shields archived
+        # 2026-06-21; --safety-flavor is restricted to dob_cbf at the parser).
+        safety_filter = make_safety_filter(
+            'dob_cbf', vehicle_params=vehicle_params,
+            nn_model=_nn_cbf,
+            cbf_alpha=args.cbf_alpha,
+            obstacle_buffer=args.safety_buffer,
+            delay_steps=args.delay_steps,
+            control_dt=0.1,
+            w_long=args.cbf_w_long,
+            w_lat=args.cbf_w_lat,
+            forward_bias=args.cbf_forward_bias,
+            dob_bandwidth=args.dob_bandwidth,
+            cbf_flavor=args.cbf_flavor,
+            teleop_delay=initial_control_delay,
+            stale_cmd_timeout=args.stale_cmd_timeout,
+        )
+        delay_msg = (f", teleop_delay={initial_control_delay*1000:.0f}ms"
+                     if initial_control_delay > 0 else "")
+        print(f"  [SAFETY] DOB-CBF filter enabled: alpha={args.cbf_alpha}, "
+              f"buffer={args.safety_buffer}m, flavor={args.cbf_flavor}{delay_msg}")
 
     # ------------------------------------------------------------------
     # Collision warning system (modular, runs in parallel with any safety filter)
@@ -1753,23 +1748,10 @@ def main():
     # Safety filter
     p.add_argument("--safety-filter", action="store_true",
                    help="Enable the safety filter (flavor controlled by --safety-flavor)")
-    p.add_argument("--safety-flavor", type=str, default="mppi",
-                   choices=["mppi", "nmpc", "dob_cbf"],
-                   help="Filter flavor: mppi (primary predictive shield), "
-                        "nmpc (gradient ablation), dob_cbf (legacy DOB-CBF-QP).")
-    # MPPI shield parameters
-    p.add_argument("--mppi-samples", type=int, default=384,
-                   help="MPPI rollouts per step (K).")
-    p.add_argument("--mppi-sigma-steer", type=float, default=0.35,
-                   help="Stddev of steering-norm noise per MPPI sample.")
-    p.add_argument("--mppi-sigma-alpha", type=float, default=0.35,
-                   help="Stddev of throttle-norm noise per MPPI sample.")
-    p.add_argument("--mppi-temperature", type=float, default=1.0,
-                   help="MPPI temperature lambda (smaller = sharper weighting).")
-    p.add_argument("--mppi-no-seeds", action="store_true",
-                   help="Ablation: disable the hand-crafted MPPI seed trajectories "
-                        "(passthrough/brake/evade). Rollouts then rely solely on "
-                        "Gaussian sampling around the operator command.")
+    p.add_argument("--safety-flavor", type=str, default="dob_cbf",
+                   choices=["dob_cbf"],
+                   help="Safety filter flavor. DOB-CBF is the only shipped filter "
+                        "(MPPI/NMPC shields archived 2026-06-21).")
     p.add_argument("--shield-no-sigma-gate", action="store_true",
                    help="Ablation: zero out the controller's phi_sigma_deg before "
                         "the shield sees it (equivalent to --shield-sigma-mode off).")
@@ -1782,9 +1764,6 @@ def main():
                         "only for the sigma_gate_ablation experiment.")
     p.add_argument("--shield-sigma-buffer-gain", type=float, default=0.05,
                    help="Metres of extra obstacle buffer per degree of phi_sigma.")
-    # NMPC shield parameters
-    p.add_argument("--nmpc-iter", type=int, default=6,
-                   help="L-BFGS-B iteration cap for the NMPC shield ablation.")
     # Common shield params
     p.add_argument("--shield-horizon", type=int, default=12,
                    help="Prediction horizon steps (latency adds more dynamically).")
@@ -1801,8 +1780,7 @@ def main():
                    help="NN model version directory for CBF traction limits")
     p.add_argument("--no-safety-nn", action="store_true",
                    help="Disable the NN tire model inside the safety filter. "
-                        "DOB-CBF then uses its kinematic fallback; predictive "
-                        "MPPI/NMPC shields still require NN dynamics and will fail fast.")
+                        "DOB-CBF then uses its kinematic fallback.")
     p.add_argument("--teleop-delay", type=float, default=0.0,
                    help="Initial one-way teleop delay estimate in seconds "
                         "(0 = local, auto-measured from cmd timestamps)")
