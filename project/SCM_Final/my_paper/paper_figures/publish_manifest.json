@@ -28,7 +28,7 @@
       "safety_filter_planner_aware_results.csv",
       "safety_filter_planner_aware_summary.csv"
     ],
-    "merged_rows": 3240,
+    "merged_rows": 1620,
     "merged_from": [
       "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Final/benchmarking/results/safety_filter_sweep_planner_aware_20260613_231543",
       "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Final/benchmarking/results/safety_filter_sweep_planner_aware_20260621_034953"
@@ -45,7 +45,7 @@
       "safety_filter_results.csv",
       "safety_filter_summary.csv"
     ],
-    "merged_rows": 1620,
+    "merged_rows": 810,
     "merged_from": [
       "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Final/benchmarking/results/safety_filter_sweep_20260613_212953",
       "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Final/benchmarking/results/safety_filter_sweep_20260621_031111",
@@ -59,7 +59,8 @@
     "copied": [
       "dob_cbf_nn_ablation_summary.png",
       "dob_cbf_nn_ablation_heatmap.png",
-      "dob_cbf_nn_ablation_results.csv"
+      "dob_cbf_nn_ablation_results.csv",
+      "dob_cbf_nn_ablation_summary.csv"
     ],
     "merged_rows": 1215,
     "merged_from": [
@@ -75,7 +76,8 @@
       "autonomous_obstacle_collision_heatmap.png",
       "autonomous_obstacle_clearance_heatmap.png",
       "autonomous_obstacle_distributions.png",
-      "autonomous_obstacle_results.csv"
+      "autonomous_obstacle_results.csv",
+      "autonomous_obstacle_summary.csv"
     ],
     "merged_rows": 1215,
     "merged_from": [
@@ -166,9 +168,10 @@
       "latency_compensation_summary.png",
       "latency_compensation_collision_heatmap.png",
       "latency_compensation_distributions.png",
-      "latency_compensation_results.csv"
+      "latency_compensation_results.csv",
+      "latency_compensation_summary.csv"
     ],
-    "merged_rows": 1215,
+    "merged_rows": 810,
     "merged_from": [
       "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Final/benchmarking/results/latency_compensation_sweep_20260614_164034",
       "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Final/benchmarking/results/latency_compensation_sweep_20260621_031408",
@@ -194,7 +197,7 @@
   {
     "prefix": "tire_model_with_estimator_ablation",
     "status": "ok",
-    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Final/benchmarking/results/tire_model_with_estimator_ablation_20260614_213058",
+    "source": "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Final/benchmarking/results/tire_model_with_estimator_ablation_20260614_084507",
     "copied": [
       "tire_model_with_estimator_summary.png",
       "tire_model_with_estimator_rms_cte_heatmap.png",
@@ -202,11 +205,9 @@
       "tire_model_with_estimator_results.csv",
       "tire_model_with_estimator_summary.csv"
     ],
-    "merged_rows": 1800,
+    "merged_rows": 1620,
     "merged_from": [
-      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Final/benchmarking/results/tire_model_with_estimator_ablation_20260614_084507",
-      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Final/benchmarking/results/tire_model_with_estimator_ablation_20260614_192441",
-      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Final/benchmarking/results/tire_model_with_estimator_ablation_20260614_213058"
+      "/home/ksha/Documents/sbel/chrono_hil/chrono-HIL/project/SCM_Final/benchmarking/results/tire_model_with_estimator_ablation_20260614_084507"
     ]
   },
   {

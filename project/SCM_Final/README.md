@@ -11,8 +11,8 @@ code and data shipped in this directory.
 | Path | Contents |
 | --- | --- |
 | `simulation/` | Runtime: Chrono sim node, acados NMPC controller, ZMQ messaging, learned terrain estimator, safety shields, tire surrogates |
-| `simulation/framework/` | The six-swap-point contract: `interfaces.py` declares one `Protocol` per role (CommandSource, SafetyFilter, CollisionWarning, TireModel, TerrainEstimator, LatencyProfile); `registry.py` keeps a per-role `Registry` with a `@register("flavor")` decorator; `builtins.py` wires the shipped concrete classes into those registries; `test_conformance.py` instantiates one of each shipped flavor and `isinstance`-checks it against its Protocol so the swap-ability claim is structural rather than rhetorical. |
-| `simulation/safety/` | Swappable safety filters (DOB-CBF for intent-preserving HIL, MPPI predictive shield, NMPC gradient comparison) and the terrain- and latency-aware `collision_warning.py` warning module |
+| `simulation/framework/` | The six-extension-point contract: `interfaces.py` declares one `Protocol` per role (CommandSource, SafetyFilter, CollisionWarning, TireModel, TerrainEstimator, LatencyProfile); `registry.py` keeps a per-role `Registry`; `builtins.py` currently registry-wires the safety-filter, collision-warning, and latency-profile roles; `test_conformance.py` checks those registry-instantiated roles against their Protocols. |
+| `simulation/safety/` | The active DOB-CBF safety filter for intent-preserving HIL and the terrain- and latency-aware `collision_warning.py` warning module. The older MPPI and SLSQP-NMPC shields are archived under `archive/2026-06-21_mppi_nmpc_removal/`. |
 | `benchmarking/` | The full benchmarking suite. `benchmarking/run.py` is the single orchestrator; `publish_paper_figures.py` writes canonical figures into `my_paper/paper_figures/`. Sub-scripts test one paper claim each |
 | `nn_training/` | Canonical trainers: `train_static_v3.sh` (rig static), `train_rate_v2.sh` (rig rate), `train_vehicle_lhs.sh` (whole-vehicle variants), `train_terrain_window_mlp.py` (window terrain estimator), `train_vehicle_fy_surrogate.py` (whole-vehicle Fy surrogate for the Dallas UKF). `train_variant.py` is the shared tire-NN trainer |
 | `data_collection/` | Tire-rig (`collect_static_data.cpp`, `collect_rate_data.cpp`), closed-loop tire-surrogate (`collect_closed_loop_data.py`), the broad multi-axis terrain-estimator collector (`collect_broad_terrain.py`), and the Dallas-UKF SCM collectors (`run_dallas_scm.py` single-run, `collect_lhs_training_scms.py` LHS sweep) |
@@ -27,10 +27,13 @@ code and data shipped in this directory.
 
 ## Framework contracts
 
-The runtime is organised around six swap points. Each has one
+The runtime is organised around six extension points. Each has one
 `Protocol` in `simulation/framework/interfaces.py` and one `Registry`
-in `simulation/framework/registry.py`. Adding a new flavor is one
-decorator with no edits to the consumers:
+in `simulation/framework/registry.py`. The safety, warning, and latency
+roles are currently registry-instantiated; command-source, tire-model,
+and terrain-estimator variants are still selected through the established
+CLI/factory paths used by the benchmarks. Adding a new registry-backed
+safety flavor is one decorator with no edits to the consumers:
 
 ```python
 from simulation.framework import SAFETY_FILTERS, SafetyFilter
@@ -46,19 +49,19 @@ class MyFilter:
 shield = SAFETY_FILTERS.create("my_filter", vehicle_params=..., ...)
 ```
 
-| Registry | Protocol method | Shipped flavors |
+| Registry | Protocol method | Current flavors |
 | --- | --- | --- |
 | `COMMAND_SOURCES`    | `next_command`     | acados NMPC, Logitech G29, WASD |
-| `SAFETY_FILTERS`     | `filter`           | DOB-CBF, MPPI, NMPC, none |
+| `SAFETY_FILTERS`     | `filter`           | DOB-CBF; no-filter bypass |
 | `COLLISION_WARNINGS` | `evaluate`         | ttc (terrain + latency) |
 | `TIRE_MODELS`        | `predict`          | rate-MLP, axle-rate-MLP, Pacejka, TMeasy |
 | `TERRAIN_ESTIMATORS` | `observe`/`estimate` | sliding-window MLP (`n`), Dallas-style UKF (offline only) |
 | `LATENCY_PROFILES`   | `delay`            | constant, replay, learned 5G N-HiTS |
 
-`python simulation/framework/test_conformance.py` instantiates one of
-each shipped flavor and `isinstance`-checks it against the declared
-Protocol; a flavor that drifts from its API fails the check rather
-than producing silent runtime errors. See
+`python simulation/framework/test_conformance.py` instantiates the
+registry-wired DOB-CBF and TTC warning roles and `isinstance`-checks them
+against their declared Protocols; a registry-wired flavor that drifts
+from its API fails the check rather than producing silent runtime errors. See
 `docs/FRAMEWORK_CONTRACTS.md` for the full contract map and current
 boundary limitations.
 
@@ -194,13 +197,13 @@ because they require a human driver. Run separately:
 ```bash
 # Default G29 protocol, symmetric link (camera delay = command delay)
 python benchmarking/human_delay_compensation_rounds.py \
-    --filters none mppi dob_cbf nmpc \
+    --filters none dob_cbf \
     --delays 0.0 0.15 0.30 \
     --rounds 3 --manual-mode g29 --vis-mode sensor
 
 # 5G-style asymmetric link (heavier video downlink than command uplink)
 python benchmarking/human_delay_compensation_rounds.py \
-    --filters none dob_cbf mppi \
+    --filters none dob_cbf \
     --delays 0.0 0.15 0.30 \
     --camera-delay-scale 1.6 \
     --rounds 3 --manual-mode g29 --vis-mode sensor
@@ -329,10 +332,11 @@ estimated `n` along the retained clay--dirt--sand Bekker--Mohr manifold
 to recover the complete soil vector used by NMPC and the safety shield.
 
 The safety layer is presented as swappable rather than as a single
-winning filter. DOB-CBF has the cleanest intent-preserving HIL story
-because it solves for the closest safe command. MPPI is still
-important as a predictive learned-dynamics shield, especially for
-testing seeded recovery rollouts under the same scenarios.
+hard-coded filter. DOB-CBF is the active filter because it solves for
+the closest safe command and therefore has the cleanest
+intent-preserving HIL story. The older MPPI and SLSQP-NMPC shield
+experiments remain archived for reproducibility but are not part of the
+current framework story.
 
 Archived exploratory ablations remain in `archive/` and in the raw
 paper-figure directory for reproducibility, but the current paper and

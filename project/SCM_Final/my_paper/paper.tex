@@ -51,36 +51,39 @@
 \setlength{\dblfloatsep}{6pt plus 2pt minus 1pt}
 
 \begin{abstract}
-We present a modular, latency-aware framework for safe shared and
-autonomous control of ground vehicles on deformable Soil Contact
-Model (SCM) terrain. The runtime is organised around six explicit
-swap points --- command source, safety filter, collision warning, tire
-model, terrain estimator, and latency profile --- each declared as a
-Python \texttt{Protocol} and resolved through a per-role registry, so
-new variants register without touching consumers. A differentiable
-neural tire surrogate is embedded in an \emph{acados} nonlinear MPC
-(NMPC), a sliding-window estimator re-conditions the surrogate online
-from inertial and wheel-speed signals, and an asymmetric throttle
-disturbance observer closes the residual soft-soil speed gap. A
-two-layer obstacle-avoidance stack pairs in-horizon NMPC softplus
-barriers with a swappable downstream safety filter; the shipped filter
-is an intent-preserving DOB-CBF, the minimum-deviation screen suited to
-human teleoperation. A parallel terrain- and latency-aware forward
+We present a modular, latency-aware framework for shared and autonomous
+control of ground vehicles on deformable Soil Contact Model (SCM)
+terrain. The central problem is integration: terrain adaptation,
+command screening, latency compensation, and advisory warning must
+operate on the same plant, message stream, and timing assumptions if
+their cross-layer effects are to be measured. The software is
+structured around six explicit extension points --- command source,
+safety filter, collision warning, tire model, terrain estimator, and
+latency profile --- declared through Python \texttt{Protocol}
+interfaces and selected by the runtime factories used by the benchmark
+harness. A differentiable neural tire surrogate is embedded in an
+\emph{acados} nonlinear MPC (NMPC), a force/proprioceptive terrain
+estimator re-conditions the surrogate online from inertial and
+wheel-speed signals, and an asymmetric throttle disturbance observer
+reduces the residual soft-soil speed deficit. A two-layer
+obstacle-avoidance stack pairs in-horizon NMPC softplus barriers with a
+swappable downstream safety filter; the default filter is an
+intent-preserving DOB-CBF, a minimum-deviation screen suited to human
+teleoperation. In parallel, a terrain- and latency-aware forward
 collision warning re-uses the same tire surrogate to derive a
 soil-conditioned braking budget and advise the operator without
 overriding commands. Chrono::Vehicle inside Chrono::HIL provides the
-plant; a learned 5G profile drives the configurable command and
-camera delays. A multi-seed evaluation shows the terrain-aware neural
-stack cuts median RMS crosstrack error by $37$--$38\,\%$ over
-SCM-calibrated Pacejka and TMeasy baselines in the live-estimator regime
-(recovering near-oracle tracking with no prior terrain knowledge), the disturbance observer
-recovers part of the soft-soil speed gap at a small tracking cost, the
-DOB-CBF filter sharply cuts collisions under the learned 5G profile ---
-a deterministic counterfactual replay over a population of adversarial intents
-causally attributes the averted collisions to the filter ($31$ of $39$) ---
-and the warning predicts stopping distance to within
-$0.17\,\mathrm{m}$ mean absolute error against actual Chrono brake
-stops.
+plant, and a learned 5G profile drives the configurable command and
+camera delays. Repeatable simulation experiments show that the
+terrain-aware neural stack reduces median RMS crosstrack error by
+$37$--$38\,\%$ relative to SCM-calibrated Pacejka and TMeasy baselines
+in the live-estimator regime, the disturbance observer increases
+achieved speed with a small tracking penalty, the DOB-CBF filter reduces
+collisions under the learned 5G profile, a deterministic
+counterfactual replay attributes $31$ of $39$ matched averted
+collisions to the filter under scripted adversarial intents, and the
+warning predicts stopping distance to within $0.17\,\mathrm{m}$ mean
+absolute error against Chrono brake stops.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -102,8 +105,8 @@ arbitration~\cite{Choi23,Zhang25}. Existing approaches address these
 in isolation: terrain-adaptive trajectory planning typically assumes
 nominal communication, while delay-compensated safety filters
 typically assume rigid-terrain dynamics. This paper integrates the two
-into a single closed-loop framework and reports a multi-seed empirical
-evaluation of every architectural choice.
+into a single closed-loop framework and reports paired simulation
+studies that isolate the main cross-layer design choices.
 
 The framework spans four coupled layers around a single deformable-terrain
 plant: (i) a terrain-aware NMPC built on a differentiable neural tire
@@ -115,17 +118,18 @@ latency-aware forward collision warning that re-uses the same tire
 surrogate to provide an advisory channel when an override-style filter
 is undesirable. All four layers share the same Chrono::Vehicle plant
 inside Chrono::HIL, the same ZeroMQ messaging substrate, and the same
-benchmarking harness, so the architectural choices are comparable on
-the same matrix.
+benchmarking harness, so the main ablations are comparable within one
+controlled experimental matrix.
 
-Concretely, this work contributes:
+Concretely, this integration paper contributes:
 \begin{enumerate}
   \item A modular framework (Section~\ref{sec:arch}) in which six
-        runtime roles are declared as Python \texttt{Protocol}s and
-        resolved through per-role registries; a runtime conformance
-        test rejects any variant that drifts from its declared API,
-        making the swap-ability claim structural rather than
-        rhetorical.
+        runtime roles are declared as Python \texttt{Protocol}s with
+        corresponding registry interfaces. The registry-instantiated
+        safety-filter and warning layers are covered by a runtime
+        conformance test, while command-source, tire-model, and
+        terrain-estimator variants retain the established CLI/factory
+        selection paths used by the benchmark suite.
   \item A differentiable neural SCM tire surrogate
         (Section~\ref{sec:tires}) that augments the static MLP of
         Dallas et al.~\cite{Dallas21} with rate-aware and
@@ -156,14 +160,14 @@ Concretely, this work contributes:
         integrator.
   \item A two-layer obstacle-avoidance stack
         (Section~\ref{sec:safety}) pairing in-horizon NMPC softplus
-        barriers with a swappable downstream safety filter; the shipped
+        barriers with a swappable downstream safety filter; the default
         instance is an intent-preserving DOB-CBF-QP inspired
         by~\cite{Zhang25}, with physical steering/throttle rate limits
-        baked into the QP. Its effect is quantified by a deterministic
+        imposed directly in the QP. Its effect is quantified by a deterministic
         \emph{counterfactual replay} --- replaying a fixed command trace
-        (filter off vs.\ on) on the identical scenario --- giving a causal,
-        exactly reproducible collisions-prevented measurement over a
-        population of adversarial intents.
+        (filter off vs.\ on) on the identical scenario --- giving a
+        paired, reproducible collision-prevention measurement over a
+        scripted population of adversarial intents.
   \item A learned 5G latency model (Section~\ref{sec:latency}) that
         drives a queue-load delay on both the operator-command and
         camera paths and exercises closed-loop robustness.
@@ -196,10 +200,13 @@ they are measured together on the same matrix.
 \label{sec:arch}
 %======================================================================
 
-The runtime is organised around six explicit swap points
-(Fig.~\ref{fig:sysarch}, Table~\ref{tab:swap_points}). Each swap point
-is a single Python protocol with a corresponding registry; adding a
-new variant is a one-line registration with no edits to the consumers.
+The runtime is organised around six explicit extension points
+(Fig.~\ref{fig:sysarch}, Table~\ref{tab:swap_points}). Each extension
+point is declared as a Python protocol with a corresponding registry
+interface. In the current implementation the safety filter, collision
+warning, and latency profile are registry-instantiated; command-source,
+tire-model, and terrain-estimator variants use the established
+CLI/factory paths while satisfying the same protocol boundaries.
 Chrono::Vehicle simulates
 an HMMWV on a Soil Contact Model (SCM)~\cite{Krenn09} patch within
 Chrono::HIL~\cite{Zhou23}. The simulation and controller
@@ -220,8 +227,8 @@ arriving between estimator ticks.
 \begin{figure*}[t]
   \centering
   \includegraphics[width=0.92\textwidth]{sys_arch.png}
-  \caption{Shared-control framework. Yellow nodes are in-process swap
-    points resolved by the corresponding registry; blue/green nodes
+  \caption{Shared-control framework. Yellow nodes are in-process
+    extension points selected by the runtime factories; blue/green nodes
     are process-boundary or operator endpoints. Solid arrows are
     runtime data flow over ZeroMQ; dashed arrows are the
     latency-affected operator paths; dotted arrows are tire-surrogate
@@ -232,21 +239,20 @@ arriving between estimator ticks.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.15}
-  \caption{The six swap points of the framework. Each role is defined
-    by one Protocol and resolved through one registry. A conformance
-    test instantiates one of each shipped variant and checks it against
-    the declared Protocol, so the swap-ability is structural rather
-    than rhetorical.}
+  \caption{The six extension points of the framework. Each role is
+    defined by one Protocol and has a corresponding registry interface;
+    the current runtime conformance test exercises the registry-wired
+    safety-filter and collision-warning roles.}
   \label{tab:swap_points}
   \centering
   \scriptsize
   \setlength{\tabcolsep}{3pt}
   \begin{tabular}{@{}lll@{}}
     \toprule
-    \textbf{Role} & \textbf{Protocol method} & \textbf{Shipped variants}\\
+    \textbf{Role} & \textbf{Protocol method} & \textbf{Current variants}\\
     \midrule
     Command source     & \texttt{next\_command}  & NMPC, G29, WASD\\
-    Safety filter      & \texttt{filter}         & DOB-CBF, none\\
+    Safety filter      & \texttt{filter}         & DOB-CBF; no-filter bypass\\
     Collision warning  & \texttt{evaluate}       & TTC\\
     Tire-force model   & \texttt{predict}        & rate-MLP, axle-rate-MLP,\\
                        &                         & Pacejka, TMeasy\\
@@ -450,9 +456,8 @@ mode at dirt/sinusoidal and dirt/right-left visible at a glance.
     terrain-aware speed planner of Sec.~\ref{sec:speedplan} is held out
     so the comparison isolates the tracking tire model), so the
     reference, not the tire force model, binds speed here. The NN's higher solve time
-    reflects the embedded surrogate evaluation; the reported solve times are
-    representative single-controller timings (absolute values rise under the
-    parallel sweep).}
+    reflects the embedded surrogate evaluation; all three rows remain below the
+    $100\,\mathrm{ms}$ controller period.}
   \label{tab:tires_static}
   \centering
   \begin{tabular}{lccc}
@@ -460,9 +465,9 @@ mode at dirt/sinusoidal and dirt/right-left visible at a glance.
     \textbf{Tire model} & \textbf{RMS CTE (m)} & \textbf{Speed} & \textbf{Solve}\\
                          &                       & \textbf{ratio} & \textbf{(ms)}\\
     \midrule
-    Pacejka                       & $0.35 \pm 0.45$ & $0.66$ & $4.2$\\
-    TMeasy                        & $0.34 \pm 0.44$ & $0.65$ & $4.6$\\
-    \textbf{Vehicle NN rate-MLP}  & $\mathbf{0.18 \pm 0.17}$ & $0.67$ & $14.0$\\
+    Pacejka                       & $0.35 \pm 0.45$ & $0.66$ & $9.7$\\
+    TMeasy                        & $0.34 \pm 0.44$ & $0.65$ & $10.1$\\
+    \textbf{Vehicle NN rate-MLP}  & $\mathbf{0.18 \pm 0.17}$ & $0.67$ & $28.4$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -527,7 +532,8 @@ variant so the median and tail behaviour are both visible.
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.15}
   \caption{Live-estimator-conditioned tire-model benchmark, full
-    1620-run matrix (405 per variant), KPI window from $t=8\,\mathrm{s}$.
+    1620-run scheduled matrix (405 per variant), KPI window from
+    $t=8\,\mathrm{s}$.
     Values are \emph{median} RMS CTE: the per-variant distributions are
     strongly right-skewed by a few high-error dirt scenarios
     (Fig.~\ref{fig:tires_estimator_heatmap}), so the median is the
@@ -560,7 +566,7 @@ regardless of the plant terrain gives the
 wrong-prior baseline, comparable directly against the matched-prior
 oracle and the estimator-on variant on the same matrix
 (clay$+$sand $\times$ sinusoidal $\times$ $v\in\{5,7\}\,\mathrm{m/s}$
-$\times$ $5$ seeds, $20$ runs per variant).
+$\times$ flat terrain $\times$ $5$ seeds, $20$ runs per variant).
 Table~\ref{tab:wrong_prior} reports the result. On clay the wrong
 dirt prior gives RMS CTE $1.56\,\mathrm{m}$, the estimator-on variant
 (the deployed Fused-UKF, Sec.~\ref{sec:ukf}) adapts from the same dirt
@@ -598,12 +604,13 @@ $\approx 95\,\%$ of the prior-mismatch gap on the harder terrain.
   \centering
   \includegraphics[width=\columnwidth]{tire_model_with_estimator_rms_cte_heatmap.png}
   \caption{Same benchmark, RMS CTE distribution per variant.
-    Box plots show interquartile range and median across all 405 runs
-    per variant; jittered scatter points are coloured by terrain
+    Box plots show interquartile range and median across the valid KPI
+    rows from the 405 scheduled runs per variant; jittered scatter
+    points are coloured by terrain
     (clay, dirt, sand). The two analytical baselines (Pacejka, TMeasy)
     carry long right tails driven by a few dirt cases at higher
-    $v_{\mathrm{ref}}$; both neural variants compress the distribution
-    sharply. The estimator-on variant nearly matches the matched-prior
+    $v_{\mathrm{ref}}$; both neural variants substantially compress the distribution
+    tail. The estimator-on variant nearly matches the matched-prior
     static row, the deployable claim of Sec.~\ref{sec:tires_estimator}.}
   \label{fig:tires_estimator_heatmap}
 \end{figure}
@@ -768,7 +775,7 @@ default \emph{when the training data is LHS-sampled across the same
 operating-point box the rig spans}. Replacing the legacy
 canonical-preset jitter with the LHS-terrain dataset closed the
 generalisation gap that the rig pipeline previously exposed; the
-shipped DOB-CBF safety filter, which reads the surrogate as a static
+default DOB-CBF safety filter, which reads the surrogate as a static
 traction-ceiling query, pairs cleanly with either surrogate. The full
 retrain log -- the offline force-prediction tables on both evaluation
 sets and the complete smoothness aggregation -- is omitted here for
@@ -784,8 +791,10 @@ this directly: the controller logs its full predicted horizon trajectory
 state at each horizon stage against the actual Chrono trajectory that
 many steps later, aggregated over $18$ runs (clay/dirt/sand $\times$
 sinusoidal $\times\,v\!\in\!\{5,7\}\,$m/s $\times$ 3 seeds, deployed
-vehicle-rate surrogate). Fig.~\ref{fig:pred_validation} reports the
-drift by component and terrain.
+vehicle-rate surrogate). Fig.~\ref{fig:pred_validation} overlays the
+controller's predicted horizons directly on the actual plant trace for a
+representative firm-sand run; the per-terrain drift magnitudes quoted
+below are means over the full matrix.
 
 The NMPC predicts the \emph{path geometry} accurately --- heading drift
 stays below $0.15\,$rad over the full $4\,$s horizon on every terrain ---
@@ -807,14 +816,18 @@ channel is already accurate.
 \begin{figure*}[!t]
   \centering
   \includegraphics[width=\textwidth]{rollout_prediction_validation.png}
-  \caption{Open-loop NMPC prediction drift versus the Chrono plant, by
-    horizon time and terrain (mean over 18 runs, deployed vehicle-rate
-    surrogate). Left: front-axle position drift. Middle: longitudinal-speed
-    drift --- the deployment measure of $F_x$ prediction quality. Right:
-    heading drift (lateral, $F_y$). The model predicts heading well
-    ($\le 0.15\,$rad over $4\,$s) but carries a persistent
-    ${\approx}0.5\,$m/s speed bias, so $F_x$ is the dominant prediction
-    error.}
+  \caption{Open-loop NMPC prediction versus the Chrono plant for a
+    representative firm-sand sinusoidal run (deployed vehicle-rate
+    surrogate). Each $4\,$s predicted horizon (thin, colour-graded by
+    launch time; dots mark the launch point) branches off the actual
+    plant trace (bold black). \textbf{Left:} longitudinal speed $u$ ---
+    the horizons run \emph{above} the plant and the gap widens along the
+    horizon, the $F_x$ motion-resistance bias the throttle disturbance
+    observer absorbs online. \textbf{Right:} heading $\psi$ --- the
+    horizons hug the plant, so the path geometry (lateral $F_y$) is
+    predicted accurately. Aggregate drifts across the 18-run matrix are
+    quoted in the text ($\le 0.15\,$rad heading over $4\,$s versus a
+    speed bias growing to ${\approx}1\,$m/s on firm sand).}
   \label{fig:pred_validation}
 \end{figure*}
 
@@ -831,7 +844,7 @@ lateral-load-transfer estimate, and their first differences --- and
 report held-out RMSE per axle (Table~\ref{tab:feature_headroom}). IMU
 accelerations are excluded as force consequences (label leakage).
 
-The response is sharply asymmetric. Front-axle lateral force improves by
+The response is strongly asymmetric. Front-axle lateral force improves by
 $14\%$ once the dynamic state and its rates are supplied: $F_{y,f}$
 genuinely benefits from richer vehicle context. The longitudinal channel
 is already at its feature floor --- $F_x$ RMSE falls at most $3\%$ on
@@ -1422,7 +1435,7 @@ runs per variant.
     itself caps below the cruise target -- the cruise target is the
     \emph{intent}, the profile is what the controller is
     asked to track. The observer increases achieved speed by approximately
-    $5\,\%$ at a negligible ($\sim$3\,mm) increase in tracking error.}
+    $5\,\%$ at a small ($\sim$7\,mm) increase in mean tracking error.}
   \label{tab:throttledob}
   \centering
   \setlength{\tabcolsep}{4pt}
@@ -1430,8 +1443,8 @@ runs per variant.
     \toprule
     \textbf{Variant} & \textbf{RMS CTE (m)} & \textbf{Speed/profile} & \textbf{$\bar u$ (m/s)}\\
     \midrule
-    DOB off & $0.096 \pm 0.044$ & $0.61$ & $4.06$\\
-    DOB on  & $0.099 \pm 0.053$ & $\mathbf{0.64}$ & $\mathbf{4.26}$\\
+    DOB off & $0.094 \pm 0.043$ & $0.61$ & $4.07$\\
+    DOB on  & $0.101 \pm 0.088$ & $\mathbf{0.64}$ & $\mathbf{4.26}$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1537,7 +1550,7 @@ any deceleration and, with the path ahead clear, accelerates to escape (even
 from a standstill), since slowing into a rear approach only worsens the impact
 (scope and limits in Sec.~\ref{sec:limitations}). The DOB-CBF output
 is passed through a steering/throttle actuator model --- a physical
-rate limit baked into the QP and enforced at the physics step --- so
+rate limit imposed in the QP and enforced at the physics step --- so
 the filter never commands a non-physical instantaneous reversal that
 would otherwise destabilise the front end under teleoperation.
 
@@ -1545,7 +1558,7 @@ would otherwise destabilise the front end under teleoperation.
 The safety layer is evaluated as DOB-CBF (the intent-preserving filter
 of Zhang et al.~\cite{Zhang25}, optionally reading the same neural
 surrogate) versus no filter. The registry remains swappable, but
-DOB-CBF is the shipped instance: it is the only candidate that screens
+DOB-CBF is the default instance: it is the only candidate that screens
 a human command by minimum deviation rather than re-optimising it, which
 is what teleoperation requires.
 
@@ -1576,7 +1589,7 @@ field, with the live heads-up display overlaying the delayed command and the
 filtered command actually sent to the vehicle.
 
 \paragraph{Scope.}
-The HIL pipeline is included to show the framework drives a real human operator
+The HIL pipeline is included to show the framework can drive a real human operator
 end-to-end --- G29 input, Chrono::Sensor camera POV, the live HUD, and
 per-channel latency, all through the same command contract and safety filter as
 the autonomous stack (Fig.~\ref{fig:hil_hud}). This is a systems and control
@@ -1585,11 +1598,11 @@ is deliberately not a human-operator comparison (which would carry inter-operato
 variance and a separate experimental protocol). We instead validate the filter
 with the deterministic \emph{counterfactual} of Sec.~\ref{sec:safety_convoy}:
 replaying a fixed command trace (filter-off versus DOB-CBF-on) over the
-\emph{identical} scenario, so the harm prevented is causal and exactly
+\emph{identical} scenario, so the collision-prevention measurement is paired and
 reproducible. The traces used are adversarial ``drive-into-the-hazard'' intents
---- a worst-case stress test of the filter --- and, because the simulator is
-bit-for-bit deterministic, the same machinery replays a recorded G29 trace
-unchanged.
+that stress the filter; because the simulator is deterministic, the same replay
+machinery can also be applied to recorded G29 traces without changing the
+evaluation code.
 
 \begin{figure}[!t]
   \centering
@@ -1630,13 +1643,13 @@ cost a teleoperator would feel. DOB-CBF cuts mean collisions by $79\,\%$
 the obstacle footprint) into $+0.50\,$m, while intervening on $57\,\%$ of
 steps with small corrections ($|\Delta\delta|\!=\!0.28$,
 $|\Delta\tau|\!=\!0.39$) --- the minimum-deviation, intent-preserving
-behaviour that motivates it as the shipped safety filter.
+behaviour that motivates it as the default safety filter.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
   \caption{Autonomous safety-filter-only validation (planner blind to
     obstacles). 405 runs per filter (810 total); same scenario matrix
-    as Table~\ref{tab:safety_aware}, blind rows only. DOB-CBF, the shipped
+    as Table~\ref{tab:safety_aware}, blind rows only. DOB-CBF, the default
     intent-preserving filter (Sec.~\ref{sec:safety_hil}), cuts collisions
     $79\,\%$ and recovers a positive clearance margin at a low intervention
     rate. Collisions and clearance are mean$\pm$std over the 405 runs/filter;
@@ -1804,33 +1817,37 @@ obstacle interface as the rocks, so the ego planner and the safety filter must
 avoid them with no change to either.
 
 These scenarios enable the \emph{counterfactual} measurement that is this
-paper's headline safety result. Because the simulator is bit-for-bit
-deterministic, a fixed command trace is replayed through the \emph{identical}
+paper's most direct filter-attribution result. Because Chrono replay is deterministic,
+a fixed command trace is replayed through the \emph{identical}
 scenario with the filter off and on, so every outcome difference is attributable
-to the filter alone --- a causal, exactly reproducible harm-prevented measure
+to the filter alone in a paired, reproducible collision-prevention measure
 with no path-tracking proxy. To avoid resting the result on one input, the trace
 is drawn from a small \emph{population of adversarial intents}: a
 ``drive-into-the-hazard'' command at three throttle levels
-($0.4$, $0.6$, $0.8$), a worst-case stand-in for an inattentive or
+($0.4$, $0.6$, $0.8$), an adversarial stand-in for an inattentive or
 latency-overwhelmed operator. Table~\ref{tab:convoy_cf} aggregates these intents
 across five convoy scenarios (lead-brake, 3- and 5-vehicle convoys,
 rear-approach, stalled) $\times$ three command delays ($0$, $0.15$, $0.30\,$s)
---- $45$ deterministic cells per filter. The unfiltered intent collides in $40$
-of $45$ cells; DOB-CBF \emph{causally prevents $31$ of the $39$ matched baseline
-collisions}, cutting the collision rate from $89\%$ to $20\%$ and turning a mean
+for $45$ unfiltered baseline cells and $44$ completed DOB-CBF replays. The
+unfiltered intent collides in $40$ of $45$ cells; DOB-CBF \emph{prevents $31$ of
+the $39$ matched baseline collisions}, cutting the collision rate from $89\%$
+to $20\%$ and turning a mean
 clearance of $-1.69\,$m into $+1.94\,$m. It does so at small command deviation
 ($|\Delta\delta|=0.13$, $|\Delta\tau|=0.28$), mixing steering with braking ---
 the obstacle-type-aware QP steers around static rocks but is willing to brake
 behind a vehicle. The same machinery replays a \emph{recorded} G29 trace
-unchanged, so the measure carries over directly to logged human intent.
+unchanged, making logged human intent a compatible input to the same
+counterfactual protocol.
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
   \caption{Counterfactual convoy replay: a population of adversarial intents
     (constant throttle $\in\{0.4,0.6,0.8\}$ into the hazard) replayed
     filter-off vs DOB-CBF across 5 traffic scenarios $\times$ 3 command delays
-    ($45$ deterministic cells per filter). The bit-for-bit deterministic sim
-    makes harm-prevented causal. $|\Delta\delta|$, $|\Delta\tau|$ are the mean
+    ($45$ unfiltered cells, $44$ completed DOB-CBF replays). The paired
+    deterministic replay isolates collision prevention by the filter for these
+    scripted intents.
+    $|\Delta\delta|$, $|\Delta\tau|$ are the mean
     steering/throttle corrections.}
   \label{tab:convoy_cf}
   \centering
@@ -1931,17 +1948,18 @@ by $\Delta_\mathrm{cmd}$ in \emph{every} run, but the filter is either
 \emph{told} the delay ($\texttt{teleop\_delay}\!=\!\Delta_\mathrm{cmd}$,
 ``aware'') or not ($\texttt{teleop\_delay}\!=\!0$, ``blind''); everything else
 is identical, and the same adversarial intents (Sec.~\ref{sec:safety_convoy})
-are replayed, so blind-vs-aware is causal. Over $30$ cells per variant ($5$
-convoy scenarios $\times$ two delays $\times$ three intents), both filters cut
-collisions sharply relative to no filter ($0.87$), but the delay-aware filter
+are replayed, so blind-vs-aware is paired. Over $30$ cells per variant ($5$
+convoy scenarios $\times$ two delays $\times$ three intents), both filters reduce
+collisions substantially relative to no filter ($0.87$), but the delay-aware filter
 is strictly better: a $0.13$ collision rate vs the delay-blind $0.23$, at nearly
 twice the clearance margin ($+2.12$ vs $+1.10\,$m). Crucially the gap
 \emph{grows with delay} (Fig.~\ref{fig:latency_ablation}): at
 $\Delta_\mathrm{cmd}\!=\!0.15\,$s the two tie on collisions ($0.27$) but the
 aware filter already holds more margin ($+1.67$ vs $+0.97\,$m), while at
-$0.30\,$s delay-awareness \emph{eliminates} the residual collisions the
-delay-blind filter still suffers ($0.20\!\to\!0.00$). This substantiates the
-\emph{latency-aware} claim specifically, not merely a latency-robust one.
+$0.30\,$s delay-awareness removes the residual collisions the
+delay-blind filter still suffers ($0.20\!\to\!0.00$). This supports the
+\emph{latency-aware} claim specifically, rather than only showing generic
+latency robustness.
 
 \begin{figure}[!t]
   \centering
@@ -2099,9 +2117,9 @@ earlier.
     \toprule
      & \textbf{lat=0\,ms} & \textbf{lat=150\,ms} & \textbf{lat=300\,ms}\\
     \midrule
-    clay ($\hat n\!=\!0.5$) & $1.56\,\mathrm{s}$ & $1.74\,\mathrm{s}$ & $1.76\,\mathrm{s}$\\
-    dirt ($\hat n\!=\!0.7$) & $1.09\,\mathrm{s}$ & $1.25\,\mathrm{s}$ & $1.48\,\mathrm{s}$\\
-    sand ($\hat n\!=\!1.1$) & $0.68\,\mathrm{s}$ & $1.00\,\mathrm{s}$ & $1.30\,\mathrm{s}$\\
+    clay ($\hat n\!=\!0.5$) & $1.36\,\mathrm{s}$ & $1.57\,\mathrm{s}$ & $1.67\,\mathrm{s}$\\
+    dirt ($\hat n\!=\!0.7$) & $1.02\,\mathrm{s}$ & $1.20\,\mathrm{s}$ & $1.38\,\mathrm{s}$\\
+    sand ($\hat n\!=\!1.1$) & $0.82\,\mathrm{s}$ & $1.04\,\mathrm{s}$ & $1.38\,\mathrm{s}$\\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -2110,12 +2128,12 @@ The benchmark
 sweeps three terrains and three one-way latency settings.
 Table~\ref{tab:cw_lead} reports the time between the first
 \textsc{red} warning and the rock impact: on soft clay the warning
-fires approximately $1.6\text{--}1.8\,\mathrm{s}$ before impact; on firm
-sand the same vehicle reaches the rock with about $0.7\text{--}1.3\,\mathrm{s}$
+fires approximately $1.36\text{--}1.67\,\mathrm{s}$ before impact; on firm
+sand the same vehicle reaches the rock with about $0.82\text{--}1.38\,\mathrm{s}$
 of lead. The lead time also grows with the configured operator
-latency on every terrain (clay $1.56\!\to\!1.76\,\mathrm{s}$ as
-latency goes $0\!\to\!300\,\mathrm{ms}$, dirt $1.09\!\to\!1.48$, sand
-$0.68\!\to\!1.30$), confirming that the warning correctly couples both
+latency on every terrain (clay $1.36\!\to\!1.67\,\mathrm{s}$ as
+latency goes $0\!\to\!300\,\mathrm{ms}$, dirt $1.02\!\to\!1.38$, sand
+$0.82\!\to\!1.38$), confirming that the warning correctly couples both
 the terrain-conditioned stopping budget and the latency-conditioned
 operator-reaction budget.
 
@@ -2168,7 +2186,8 @@ stack is itself an integration test: it exercises the cross-layer interfaces
 that per-component evaluation does not --- here the estimator's live-terrain
 update re-conditions the safety filter's grip-limited braking authority, the
 same socket the controller uses to re-condition its own surrogate. The run is
-reproduced by \texttt{benchmarking/integrated\_hero\_run.py}.
+reproduced by \texttt{benchmarking/integrated\_hero\_run.py}. This single run
+is an integration check rather than a separate statistical safety claim.
 
 \begin{figure}[!t]
   \centering
@@ -2212,24 +2231,26 @@ mismatch -- consistent with our own earlier finding that a learned
 dynamics residual offered little benefit on this plant -- so this
 paper does not adopt RL compensation.
 
-The empirical evidence supports each architectural choice. The
-whole-vehicle neural tire surrogate solves in
-${\sim}14\,\mathrm{ms}$ (well within the $100\,\mathrm{ms}$ MPC step)
-and reduces median RMS crosstrack error against the
+The empirical evidence supports the central integration claim and the principal
+component choices. The
+whole-vehicle neural tire surrogate averages
+$28\,\mathrm{ms}$ in the static tire-model sweep and
+$32\,\mathrm{ms}$ in the live-estimator sweep (both within the
+$100\,\mathrm{ms}$ MPC step) and reduces median RMS crosstrack error against the
 \emph{SCM-calibrated} analytical baselines by $37$--$38\,\%$ in the
 live-estimator regime (Table~\ref{tab:tires_estimator}), separating
 clearly from them in the tail across the full terrain matrix
 (Table~\ref{tab:tires_static}), where even the calibrated baselines
 diverge on off-nominal dirt. The asymmetric
 throttle disturbance observer increases achieved speed by approximately
-$5\,\%$ ($4.06\!\to\!4.26\,\mathrm{m/s}$, $0.61\!\to\!0.64$ of the
-g--g profile) at a negligible (${\sim}3\,\mathrm{mm}$) tracking
+$5\,\%$ ($4.07\!\to\!4.26\,\mathrm{m/s}$, $0.61\!\to\!0.64$ of the
+g--g profile) at a small (${\sim}7\,\mathrm{mm}$) tracking
 cost. The two-layer planner-aware stack drives collisions to $0.13$/run with
 the DOB-CBF filter, the DOB-CBF filter benefits substantially from
 re-using the neural surrogate, and a deterministic counterfactual replay over a
-population of adversarial intents attributes the averted collisions causally to
-the filter ($31$ of $39$, collision rate $89\%\!\to\!20\%$) --- a causal,
-exactly reproducible safety measure that needs no human trials. The forward
+population of adversarial intents attributes the averted collisions to
+the filter ($31$ of $39$, collision rate $89\%\!\to\!20\%$) in a paired,
+reproducible safety measure that avoids human-operator variance. The forward
 collision warning closes the advisory gap the override-style filter
 leaves open: its analytical stopping-distance prediction lands within
 $0.17\,\mathrm{m}$ of the actual Chrono stop ($2.6\times$ better than
@@ -2254,7 +2275,7 @@ deformable-terrain plant~\cite{Krenn09,Tasora16}. Those comparisons ---
 learned surrogate versus analytical tire model, safety filter versus no safety filter,
 estimator-on versus wrong-prior --- are internal to one plant and one
 harness, so they are unaffected by any absolute sim-to-real offset; and
-the plant is itself a swap point, so porting to hardware or another
+the plant is itself an extension point, so porting to hardware or another
 terramechanics model is a registration rather than a rewrite. The
 neural surrogate is trained and evaluated on the same SCM plant, so the
 analytical baselines are calibrated to that plant's mean lateral
@@ -2317,17 +2338,17 @@ where prior work treats terrain adaptation and delay-compensated safety
 in isolation, here a differentiable SCM tire surrogate, an online
 $n$-estimator that re-conditions it, swappable safety filters, and an
 advisory warning share one plant, one messaging substrate, and one
-benchmarking harness, so every architectural choice is measured on the
-same matrix. Empirically, the surrogate-plus-estimator recovers
+benchmarking harness, so the main cross-layer choices are measured on
+controlled, comparable matrices. Empirically, the surrogate-plus-estimator recovers
 near-oracle tracking with no prior terrain knowledge --- within
 $\approx\!3\,\mathrm{mm}$ median RMS crosstrack error of the
 matched-prior oracle and well below SCM-calibrated analytical baselines;
 the deployed proprioceptive-fused UKF tracks $n$ across the deployable
 range at $4.5\,\%$ median error; the DOB-CBF safety filter cuts collisions
 by $86\,\%$ under a learned 5G latency profile, with a deterministic
-counterfactual causally attributing $31$ of $39$ averted collisions to it;
+counterfactual attributing $31$ of $39$ matched averted collisions to it;
 and the collision warning predicts stopping distance to $0.17\,\mathrm{m}$. The modular
-swap points make each of these a replaceable component rather than a
+extension points make each of these a replaceable component rather than a
 fixed pipeline, which is what positions the framework for the
 hardware-in-the-loop and full-soil-estimation extensions above.
 
@@ -2353,9 +2374,11 @@ python benchmarking/latency\_awareness\_ablation.py\\
 python benchmarking/integrated\_hero\_run.py
 \end{quote}
 The exact result folders backing each figure are catalogued alongside
-the published figures. The HIL rounds are intentionally excluded from
-the automated commands because they require a human operator; they
-are run through a separate human-in-the-loop script.
+the published figures, and a table-value provenance sheet maps each
+paper table to its backing CSV, script, or code location. The HIL
+rounds are intentionally excluded from the automated commands because
+they require a human operator; they are run through a separate
+human-in-the-loop script.
 
 %======================================================================
 \section*{Acknowledgements}

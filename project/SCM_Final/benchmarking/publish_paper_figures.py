@@ -59,6 +59,7 @@ class PublishSpec:
     figures: dict[str, str]         # src filename -> destination filename
     extra_files: dict[str, str]     # extra src filename (e.g. summary csv) -> dst filename
     plotter_module: Optional[str] = None
+    active_variants: tuple[str, ...] | None = None
 
 
 SPECS: list[PublishSpec] = [
@@ -91,6 +92,7 @@ SPECS: list[PublishSpec] = [
             "summary_by_filter.csv": "safety_filter_planner_aware_summary.csv",
         },
         plotter_module="safety_filter_sweep",
+        active_variants=("none_blind", "none_aware", "dob_cbf_blind", "dob_cbf_aware"),
     ),
     PublishSpec(
         prefix="safety_filter_sweep",
@@ -104,6 +106,7 @@ SPECS: list[PublishSpec] = [
             "summary_by_filter.csv": "safety_filter_summary.csv",
         },
         plotter_module="safety_filter_sweep",
+        active_variants=("none_blind", "dob_cbf_blind"),
     ),
     PublishSpec(
         prefix="dob_cbf_nn_ablation",
@@ -111,7 +114,10 @@ SPECS: list[PublishSpec] = [
             "dob_cbf_nn_ablation_summary.png": "dob_cbf_nn_ablation_summary.png",
             "dob_cbf_nn_ablation_heatmap.png": "dob_cbf_nn_ablation_heatmap.png",
         },
-        extra_files={"results.csv": "dob_cbf_nn_ablation_results.csv"},
+        extra_files={
+            "results.csv": "dob_cbf_nn_ablation_results.csv",
+            "summary_by_variant.csv": "dob_cbf_nn_ablation_summary.csv",
+        },
         plotter_module="dob_cbf_nn_ablation",
     ),
     # autonomous_obstacle_tire_model_sweep encodes the safety flavor in its
@@ -128,7 +134,10 @@ SPECS: list[PublishSpec] = [
             "autonomous_obstacle_metric_distributions.png":
                 "autonomous_obstacle_distributions.png",
         },
-        extra_files={"results.csv": "autonomous_obstacle_results.csv"},
+        extra_files={
+            "results.csv": "autonomous_obstacle_results.csv",
+            "summary_by_model.csv": "autonomous_obstacle_summary.csv",
+        },
         plotter_module="autonomous_obstacle_tire_model_sweep",
     ),
     PublishSpec(
@@ -204,8 +213,12 @@ SPECS: list[PublishSpec] = [
             "latency_metric_distributions.png":
                 "latency_compensation_distributions.png",
         },
-        extra_files={"results.csv": "latency_compensation_results.csv"},
+        extra_files={
+            "results.csv": "latency_compensation_results.csv",
+            "summary_by_filter_delay.csv": "latency_compensation_summary.csv",
+        },
         plotter_module="latency_compensation_sweep",
+        active_variants=("none_d0.00_mpc_delay_on", "dob_cbf_d0.00_mpc_delay_on"),
     ),
     PublishSpec(
         prefix="throttle_dob_ablation",
@@ -222,7 +235,7 @@ SPECS: list[PublishSpec] = [
         },
         plotter_module="throttle_dob_ablation",
     ),
-    # (mppi_seed_ablation removed 2026-06-21 with the MPPI shield.)
+    # Legacy seed-ablation figure removed with the archived shield.
     PublishSpec(
         prefix="tire_model_with_estimator_ablation",
         figures={
@@ -238,6 +251,7 @@ SPECS: list[PublishSpec] = [
             "summary_by_variant.csv": "tire_model_with_estimator_summary.csv",
         },
         plotter_module="tire_model_with_estimator_ablation",
+        active_variants=("pacejka_static", "tmeasy_static", "nn_static", "nn_estimator"),
     ),
     # Human-in-the-loop safety-filter rounds. Figures are pre-rendered by
     # the HIL script itself; no plotter_module re-plot because the merge
@@ -398,6 +412,14 @@ def _filter_terrain_estimator_rows(df: pd.DataFrame) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
+def _filter_active_variants(df: pd.DataFrame, spec: PublishSpec) -> pd.DataFrame:
+    """Drop archived/exploratory variants from the current paper artifacts."""
+    if df.empty or spec.active_variants is None or "variant" not in df.columns:
+        return df
+    keep = set(spec.active_variants)
+    return df[df["variant"].astype(str).isin(keep)].reset_index(drop=True)
+
+
 def _select_terrain_estimator_dirs(dirs: list[Path]) -> list[Path]:
     """Use the newest complete active terrain-estimator generation only."""
     scored: list[tuple[int, float, Path]] = []
@@ -405,6 +427,28 @@ def _select_terrain_estimator_dirs(dirs: list[Path]) -> list[Path]:
         rows = _filter_terrain_estimator_rows(_read_results(d))
         if not rows.empty:
             scored.append((len(rows), d.stat().st_mtime, d))
+    if not scored:
+        return []
+    max_rows = max(n for n, _, _ in scored)
+    candidates = [(mtime, d) for n, mtime, d in scored if n == max_rows]
+    return [max(candidates, key=lambda item: item[0])[1]]
+
+
+def _select_tire_estimator_dirs(dirs: list[Path]) -> list[Path]:
+    """Use the current live-estimator comparison, not the wrong-prior mini-run."""
+    required = {"pacejka_static", "tmeasy_static", "nn_static", "nn_estimator"}
+    scored: list[tuple[int, float, Path]] = []
+    for d in dirs:
+        rows = _read_results(d)
+        if rows.empty or "variant" not in rows.columns:
+            continue
+        variants = set(rows["variant"].astype(str))
+        if "nn_wrong_prior" in variants:
+            continue
+        if not required.issubset(variants):
+            continue
+        active = rows[rows["variant"].astype(str).isin(required)]
+        scored.append((len(active), d.stat().st_mtime, d))
     if not scored:
         return []
     max_rows = max(n for n, _, _ in scored)
@@ -440,11 +484,12 @@ def publish_spec(spec: PublishSpec, suite_dir: Path | None, manifest_rows: list[
     # Window the merge to the current generation. Terrain-estimator runs have
     # changed matrix shape over time, so pick the newest largest filtered
     # n-only/sinusoidal generation instead of the largest raw results.csv.
-    dirs = (
-        _select_terrain_estimator_dirs(all_dirs)
-        if spec.prefix == "terrain_estimator_benchmark"
-        else _select_merge_window(all_dirs)
-    )
+    if spec.prefix == "terrain_estimator_benchmark":
+        dirs = _select_terrain_estimator_dirs(all_dirs)
+    elif spec.prefix == "tire_model_with_estimator_ablation":
+        dirs = _select_tire_estimator_dirs(all_dirs)
+    else:
+        dirs = _select_merge_window(all_dirs)
     if not dirs:
         manifest_rows.append({"prefix": spec.prefix, "status": "no_match",
                               "source": None, "copied": [], "merged_rows": 0,
@@ -456,6 +501,7 @@ def publish_spec(spec: PublishSpec, suite_dir: Path | None, manifest_rows: list[
     merged = _merge_results(dirs)
     if spec.prefix == "terrain_estimator_benchmark" and not merged.empty:
         merged = _filter_terrain_estimator_rows(merged)
+    merged = _filter_active_variants(merged, spec)
     primary = dirs[-1]
     fig_src = primary / "figures"
     fig_src.mkdir(parents=True, exist_ok=True)

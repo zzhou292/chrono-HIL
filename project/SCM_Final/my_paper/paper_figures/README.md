@@ -15,6 +15,9 @@ re-run a short estimator pass over already-collected SCM logs; no
 Chrono). Run the sweeps/benches first if the data is stale (see the
 repo `README.md` "Reproducing the paper" and `AGENTS.md`).
 
+For table values, see `../../docs/PAPER_TABLE_VALUE_PROVENANCE.md`; it maps each
+paper table to the backing CSV, result folder, or code location.
+
 **All figure generators now live in `benchmarking/`** (they were moved
 out of `deliverables/` in the 2026-06-04 consolidation). The two
 offline engines they call — `deliverables/ukf_paper_validation.py`
@@ -38,7 +41,6 @@ offline engines they call — `deliverables/ukf_paper_validation.py`
 | `throttle_dob_ablation_speed_heatmap.png` | Fig. 11 | `run.py --only throttle_dob_ablation` → `publish_paper_figures.py` |
 | `safety_filter_collision_heatmap.png` | Fig. 13 | `run.py --only safety` → publish |
 | `dob_cbf_nn_ablation_heatmap.png` | Fig. 14 | `run.py --only dob_cbf_ablation` → publish |
-| `mppi_seed_ablation_collision_heatmap.png` | Fig. 15 | `run.py --only mppi_seed_ablation` → publish |
 | `autonomous_obstacle_collision_heatmap.png` | Fig. 16 | `run.py --only autonomous_obstacle_tire` → publish |
 | `latency_profile_histogram.png` | Fig. 17 | `latency_profile_figure.py` → publish |
 | `latency_compensation_collision_heatmap.png` | Fig. 18 | `run.py --only latency_compensation` → publish |
