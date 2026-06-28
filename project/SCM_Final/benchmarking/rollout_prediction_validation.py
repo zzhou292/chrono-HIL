@@ -125,8 +125,26 @@ def plot_overlay(npz, diag, terrain, every_s=1.2, max_h=40, out=None):
     launches = list(range(0, len(times), stride))
     cmap = plt.get_cmap("viridis")
 
-    fig, (axu, axp) = plt.subplots(1, 2, figsize=(11.0, 3.7))
-    # (a) longitudinal speed u, (b) heading psi
+    fig, (axxy, axu, axp) = plt.subplots(1, 3, figsize=(15.5, 3.7))
+
+    # (a) position: X-Y trajectory overlay (Dallas-style path comparison)
+    axxy.plot(cols["x"], cols["y"], color="black", lw=2.2, zorder=5,
+              label="actual path")
+    for j, i in enumerate(launches):
+        c = cmap(j / max(1, len(launches) - 1))
+        axxy.plot(Z[i, 0, :H + 1], Z[i, 1, :H + 1], color=c, lw=1.0, alpha=0.7,
+                  zorder=3, label="predicted horizons ($4\\,$s)" if j == 0 else None)
+        # actual front-axle position at the same wall-clock as the horizon end,
+        # so the gap to the predicted endpoint is the along-track position drift.
+        te = times[i] + H * dt
+        axxy.plot(Z[i, 0, H], Z[i, 1, H], 'o', color=c, ms=3.5, zorder=4)
+        axxy.plot(np.interp(te, t, cols["x"]), np.interp(te, t, cols["y"]),
+                  'x', color=c, ms=5, mew=1.4, zorder=4)
+    axxy.set_xlabel("$x$ (m)"); axxy.set_ylabel("$y$ (m)")
+    axxy.grid(alpha=0.3)
+    axxy.legend(fontsize=8.0, loc="best")
+
+    # (b) longitudinal speed u, (c) heading psi -- vs time
     for ax, comp, actual_key, ylab in [
             (axu, 3, "u", "longitudinal speed $u$ (m/s)"),
             (axp, 2, "psi", "heading $\\psi$ (rad)")]:

@@ -819,15 +819,20 @@ channel is already accurate.
   \caption{Open-loop NMPC prediction versus the Chrono plant for a
     representative firm-sand sinusoidal run (deployed vehicle-rate
     surrogate). Each $4\,$s predicted horizon (thin, colour-graded by
-    launch time; dots mark the launch point) branches off the actual
-    plant trace (bold black). \textbf{Left:} longitudinal speed $u$ ---
-    the horizons run \emph{above} the plant and the gap widens along the
-    horizon, the $F_x$ motion-resistance bias the throttle disturbance
-    observer absorbs online. \textbf{Right:} heading $\psi$ --- the
-    horizons hug the plant, so the path geometry (lateral $F_y$) is
-    predicted accurately. Aggregate drifts across the 18-run matrix are
-    quoted in the text ($\le 0.15\,$rad heading over $4\,$s versus a
-    speed bias growing to ${\approx}1\,$m/s on firm sand).}
+    launch time) branches off the actual plant trace (bold black).
+    \textbf{Left ($x$--$y$ path):} the predicted horizons trace the
+    actual path --- the geometry is predicted well --- but on firm sand
+    the over-predicted speed carries each predicted endpoint (filled
+    dot) \emph{ahead} of the vehicle's actual position at the same
+    instant (cross): the along-track position drift (${\approx}2.7\,$m
+    by $4\,$s). \textbf{Middle (speed $u$):} the horizons run
+    \emph{above} the plant and the gap widens along the horizon --- the
+    $F_x$ motion-resistance bias the throttle disturbance observer
+    absorbs online. \textbf{Right (heading $\psi$):} the horizons hug
+    the plant, confirming the lateral ($F_y$) channel is accurate.
+    Aggregate drifts across the 18-run matrix are quoted in the text
+    ($\le 0.15\,$rad heading over $4\,$s; position drift dominated by
+    the longitudinal speed bias, not lateral error).}
   \label{fig:pred_validation}
 \end{figure*}
 
