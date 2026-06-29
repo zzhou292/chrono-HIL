@@ -228,7 +228,7 @@ with ProcessPoolExecutor(max_workers=workers) as ex:
 | `nn_models/` | Active runtime checkpoints: `rig_rate_64_32`, `vehicle_rate_64_32_lhs`, `terrain_window_mlp`, plus the paper118-spec rig surrogate `rig_rate_paper118_v2_64_32` used by the Dallas-style UKF reproducer in `deliverables/ukf_paper_validation.py` |
 | `data/` | Four categories: `tire_rig/`, `whole_vehicle/`, `terrain_estimator/` (window-MLP traces), and `dallas_scm/` (Dallas-UKF SCM logs: `lhs_train300/` training sweep, `lhs100/`+`lhs100_cl/` benchmarks, canonical `clay/sandy_loam/sand.npz`) |
 | `config/` | `latency_profiles/` (5G latency profile JSONs) and `terrain_yamls/` (LHS-sampled terrain configs) |
-| `docs/` | Active design docs: `FRAMEWORK_CONTRACTS.md`, `SURROGATE_RETRAIN_FINDINGS.md` |
+| `docs/` | Active design docs: `FRAMEWORK_CONTRACTS.md`, `SURROGATE_RETRAIN_FINDINGS.md`, `SCM_FORCE_MODEL.md` (how Chrono SCM actually computes tire forces + why static `Fx(κ)` surrogates floor on longitudinal prediction) |
 | `experiment_results/` | Output sink for orchestrator logs (and any timestamped snapshot a re-run cares to keep) |
 | `my_paper/` | The paper draft (`paper.tex` / `paper.pdf`) and `paper_figures/`. Figures are refreshed by `publish_paper_figures.py` |
 

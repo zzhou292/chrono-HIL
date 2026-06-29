@@ -295,19 +295,34 @@ $\boldsymbol{\theta}_{\mathrm{soil}}\!=\!(K_\phi,K_c,n,c,\phi,k)$
 (Bekker--Wong-style rig inputs~\cite{Shibly05}) to longitudinal and
 lateral tire forces $(F_x, F_y)$. Where Dallas et
 al.~\cite{Dallas21} use a static MLP only, we train three variants:
-the static baseline, a \emph{rate-augmented} MLP that takes the
+the static baseline, a \emph{rate-augmented} MLP that adds the
 steering rate $\dot\delta$ as an explicit input, and an
 \emph{axle-rate} MLP with per-axle rate inputs
-$(\dot\delta_f,\dot\delta_r)$. All three export as CasADi
-expressions through which the acados solver auto-differentiates at
-every horizon stage. Two surrogate generations are kept distinct: a
-\emph{tire-rig surrogate} trained from controlled single-tire SCM
-sweeps (a reproducible baseline against~\cite{Dallas21}) and a
-\emph{whole-vehicle surrogate} trained from closed-loop
-Chrono::Vehicle HMMWV runs (the model used for the main NMPC and
-safety-filter results). The first generation tests whether the
-single-tire learning problem is solved; the second tests whether the
-controller sees accurate forces in the regimes it actually visits.
+$(\dot\delta_f,\dot\delta_r)$. The rate input lets the surrogate
+represent the tire force while the operating point is \emph{changing}
+--- the transient during fast steering --- rather than only the
+quasi-steady force a static map returns; in practice
+(Sec.~\ref{sec:tires_rig_vs_vehicle}) this mainly buys robustness
+against a transient failure mode rather than a bulk accuracy gain. All
+three export as CasADi expressions through which the acados solver
+auto-differentiates at every horizon stage.
+
+Two surrogate \emph{generations} are kept distinct, and the
+distinction recurs throughout the paper. The \emph{tire-rig surrogate}
+is trained from controlled single-tire SCM sweeps --- one tire on a
+virtual test rig, stepped over a grid of
+$(\kappa,\alpha,F_z,\boldsymbol{\theta}_{\mathrm{soil}})$ with the
+exact SCM force logged at each operating point (the reproducible
+protocol of~\cite{Dallas21}). The \emph{whole-vehicle surrogate} is
+trained from closed-loop Chrono::Vehicle HMMWV runs that log each
+tire's live operating point alongside the SCM ground-truth force, so
+it captures the coupled regimes a driven vehicle actually reaches ---
+load transfer, yaw, and the body-frame force conventions the isolated
+rig never produces. The rig generation tests whether the single-tire
+learning problem is solved in isolation; the whole-vehicle generation
+(deployed for the main NMPC and safety-filter results) tests whether
+the controller sees accurate forces in the regimes it actually drives
+through.
 
 \subsection{Training data: from rig sweeps to closed-loop rollouts}
 \label{sec:tires_rig_to_cl}
@@ -846,8 +861,17 @@ architecture fixed ($64\!\times\!32$ tanh, scenario split, three seeds),
 we retrain it with progressively richer inputs --- body-frame lateral
 velocity $v$, yaw rate $\omega$, road-wheel angle $\delta$, a kinematic
 lateral-load-transfer estimate, and their first differences --- and
-report held-out RMSE per axle (Table~\ref{tab:feature_headroom}). IMU
-accelerations are excluded as force consequences (label leakage).
+report held-out RMSE per axle (Table~\ref{tab:feature_headroom}). The
+candidate set is deliberately confined to causal, MPC-available state.
+Wheel speed is \emph{not} added as a separate input because the slip
+ratio $\kappa\!=\!(\omega_w r - u)/u$ already encodes the
+wheel-versus-vehicle speed the tire force depends on; promoting wheel
+speed to a dynamic \emph{state} (rather than an input) is the
+wheelspeed-state reformulation of~\cite{Onozuka25}, out of scope here.
+Body accelerations $(a_x,a_y,a_z)$ are excluded on principle: by
+Newton's second law the body accelerations \emph{are} the net forces
+($a=\Sigma F/m$), so feeding any acceleration channel to a force
+predictor is label leakage rather than prediction.
 
 The response is strongly asymmetric. Front-axle lateral force improves by
 $14\%$ once the dynamic state and its rates are supplied: $F_{y,f}$
@@ -2300,11 +2324,18 @@ sinkage as an oracle), or a $0.32$\,s slip/state history --- all of
 which leave it within $4\%$ of the deployed model. We therefore treat
 rear $F_y$ as irreducible at the deployed capacity rather than a tuning
 target. Separately, the longitudinal channel's soft-soil speed bias is a
-dynamics-level motion-resistance term, not a learnable tire feature
-($F_x$ RMSE moves at most $3\%$ under the same feature sweep); we compensate it
-with the throttle disturbance observer (Sec.~\ref{sec:throttledob})
-online, and a feedforward sinkage-drag term in the prediction model is
-the natural future replacement.
+dynamics-level effect, not a learnable tire feature ($F_x$ RMSE moves at
+most $3\%$ under the same feature sweep). In the SCM contact model the
+net longitudinal force is two mechanisms~\cite{Krenn09}: a sinkage-driven
+\emph{compaction resistance} (the horizontal projection of the Bekker
+normal stress on the deformed rut, present even at zero slip) plus a
+slip-driven Janosi shear traction --- and the kinematic prediction model
+($\dot u\!=\!a_x$) carries neither. We compensate the net bias online with
+the throttle disturbance observer (Sec.~\ref{sec:throttledob}); a
+feedforward term for the slip-independent compaction resistance in the
+prediction model is the natural future replacement, while the
+slip-dependent part settles within a contact-patch transit and so is
+well approximated by the static surrogate at the control rate.
 
 The online estimator recovers only the sinkage exponent $n$ and
 reconstructs the remaining five Bekker--Mohr parameters from $\hat n$
