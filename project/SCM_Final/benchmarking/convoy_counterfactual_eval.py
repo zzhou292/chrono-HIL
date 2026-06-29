@@ -69,6 +69,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--convoy", nargs="+", default=["lead_brake", "cut_in", "stalled"],
                    help="Convoy preset(s) to sweep (lead_brake/cut_in/stalled/convoy/"
                         "jam/gauntlet/...). Each is replayed off vs each filter.")
+    p.add_argument("--latency-profile-json", default="",
+                   help="Replay under a learned latency profile (e.g. config/"
+                        "latency_profiles/5g_hil_usable.json) instead of a fixed "
+                        "delay; applies the variable 5G command-channel delay and "
+                        "the filter auto-measures it (delay-aware). Used for "
+                        "replaying recorded human traces under realistic 5G latency.")
     p.add_argument("--filters", nargs="+", default=["none", "dob_cbf"],
                    choices=["none", "dob_cbf"])
     p.add_argument("--delays", nargs="+", type=float, default=[0.0],
@@ -123,6 +129,7 @@ class Task:
     horizon: int
     timeout: float
     cell: str = ""          # baseline-matching key (scenario or recorded round)
+    profile: str = ""       # learned latency-profile JSON; overrides the fixed delay
 
 
 def _build_cmd(t: Task) -> list[str]:
@@ -134,7 +141,12 @@ def _build_cmd(t: Task) -> list[str]:
         "--replay-cmds", t.trace,
         "--sim-diag-csv", str(Path(t.run_dir) / "sim_diag.csv"),
     ]
-    if t.delay > 0:
+    if t.profile:
+        # Replay under the learned 5G profile (variable command-channel delay);
+        # the filter auto-measures command staleness and is therefore delay-aware.
+        prof = t.profile if Path(t.profile).is_absolute() else str(PROJECT_ROOT / t.profile)
+        cmd += ["--latency-profile-json", prof]
+    elif t.delay > 0:
         cmd += ["--manual-input-delay", str(t.delay), "--teleop-delay", str(t.delay)]
     if t.filter_name != "none":
         cmd += ["--safety-filter", "--safety-flavor", t.filter_name,
@@ -235,7 +247,7 @@ def main() -> None:
                 tasks.append(Task(idx, filt, delay, args.base_port + 2 * idx, str(run_dir),
                                   trace_f, preset0, args.terrain, args.time, args.mesh_resolution,
                                   args.safety_buffer, args.shield_horizon,
-                                  args.timeout, cell=name))
+                                  args.timeout, cell=name, profile=args.latency_profile_json))
                 idx += 1
     else:
         # Single trace (recorded or generated) replayed across preset x delay cells.

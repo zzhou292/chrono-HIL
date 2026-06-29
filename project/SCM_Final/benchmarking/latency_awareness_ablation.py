@@ -118,20 +118,23 @@ def plot_figures(per_delay: pd.DataFrame, out_dir: Path) -> None:
     colors = {"none": "#b0392b", "dob_blind": "#e0a30c", "dob_aware": "#28c76f"}
     labels = {"none": "no filter", "dob_blind": "DOB-CBF, delay-blind",
               "dob_aware": "DOB-CBF, delay-aware"}
-    fig, ax = plt.subplots(figsize=(6, 3.6))
-    w = 0.26
-    import numpy as np
-    x = np.arange(len(delays))
-    for i, v in enumerate(variants):
-        sub = per_delay[per_delay["variant"] == v].set_index("delay_s").reindex(delays)
-        ax.bar(x + (i - 1) * w, sub["collision_rate"].values, width=w,
-               color=colors.get(v, "#888"), edgecolor="black", linewidth=0.4,
-               label=labels.get(v, v))
-    ax.set_xticks(x); ax.set_xticklabels([f"{d:g}" for d in delays])
-    ax.set_xlabel("command-path delay $\\Delta_\\mathrm{cmd}$ (s)")
-    ax.set_ylabel("collision rate")
-    ax.set_title("Latency-awareness ablation (same adversarial intent)")
-    ax.legend(fontsize=8); ax.grid(axis="y", alpha=0.3)
+    # Dose-response curves: collision rate, clearance, and intrusiveness vs delay.
+    panels = [("collision_rate", "collision rate", "Collisions vs delay"),
+              ("mean_clearance_m", "mean clearance (m)", "Clearance vs delay"),
+              ("intervention_pct", "intervention (%)", "Intrusiveness vs delay")]
+    fig, axes = plt.subplots(1, 3, figsize=(13.5, 3.7))
+    for ax, (col, ylab, ttl) in zip(axes, panels):
+        if col not in per_delay.columns:
+            continue
+        for v in variants:
+            sub = per_delay[per_delay["variant"] == v].set_index("delay_s").reindex(delays)
+            ax.plot(delays, sub[col].values, "o-", lw=1.6, color=colors.get(v, "#888"),
+                    label=labels.get(v, v))
+        ax.set_xlabel("command delay $\\Delta_\\mathrm{cmd}$ (s)"); ax.set_ylabel(ylab)
+        ax.set_title(ttl, fontsize=10.5); ax.grid(alpha=0.3)
+    axes[0].legend(fontsize=8)
+    fig.suptitle("Latency-awareness dose-response: delay-aware vs delay-blind DOB-CBF "
+                 "(same replayed intent)", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_dir / "latency_awareness_ablation.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -175,12 +178,17 @@ def main() -> None:
     df.to_csv(out_dir / "results.csv", index=False)
 
     ok = df[df["status"] == "ok"].copy()
-    # Per (variant, delay): collision rate + mean clearance.
+    if "intervention_rate_pct" not in ok.columns:
+        ok["intervention_rate_pct"] = float("nan")
+    # Per (variant, delay): collision rate + clearance margin + intrusiveness.
     per_delay = (ok.groupby(["variant", "delay_s"])
                  .agg(n=("collided", "size"), collisions=("collided", "sum"),
-                      mean_clearance_m=("min_clearance_m", "mean"))
+                      mean_clearance_m=("min_clearance_m", "mean"),
+                      intervention_pct=("intervention_rate_pct", "mean"))
                  .reset_index())
     per_delay["collision_rate"] = (per_delay["collisions"] / per_delay["n"]).round(3)
+    per_delay["mean_clearance_m"] = per_delay["mean_clearance_m"].round(3)
+    per_delay["intervention_pct"] = per_delay["intervention_pct"].round(1)
     per_delay.to_csv(out_dir / "summary_by_delay.csv", index=False)
 
     # Per variant overall, with blind->aware harm-prevented matched by cell.
