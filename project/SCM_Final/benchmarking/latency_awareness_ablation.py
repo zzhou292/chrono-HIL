@@ -121,7 +121,7 @@ def plot_figures(per_delay: pd.DataFrame, out_dir: Path) -> None:
     # Dose-response curves: collision rate, clearance, and intrusiveness vs delay.
     panels = [("collision_rate", "collision rate", "Collisions vs delay"),
               ("mean_clearance_m", "mean clearance (m)", "Clearance vs delay"),
-              ("intervention_pct", "intervention (%)", "Intrusiveness vs delay")]
+              ("dsteer", "mean $|\\Delta\\mathrm{steer}|$", "Intrusiveness vs delay")]
     fig, axes = plt.subplots(1, 3, figsize=(13.5, 3.7))
     for ax, (col, ylab, ttl) in zip(axes, panels):
         if col not in per_delay.columns:
@@ -178,17 +178,18 @@ def main() -> None:
     df.to_csv(out_dir / "results.csv", index=False)
 
     ok = df[df["status"] == "ok"].copy()
-    if "intervention_rate_pct" not in ok.columns:
-        ok["intervention_rate_pct"] = float("nan")
-    # Per (variant, delay): collision rate + clearance margin + intrusiveness.
+    if "mean_abs_dsteer" not in ok.columns:
+        ok["mean_abs_dsteer"] = float("nan")
+    # Per (variant, delay): collision rate + clearance margin + intrusiveness
+    # (mean |Delta steer| the filter applies; the per-step correction magnitude).
     per_delay = (ok.groupby(["variant", "delay_s"])
                  .agg(n=("collided", "size"), collisions=("collided", "sum"),
                       mean_clearance_m=("min_clearance_m", "mean"),
-                      intervention_pct=("intervention_rate_pct", "mean"))
+                      dsteer=("mean_abs_dsteer", "mean"))
                  .reset_index())
     per_delay["collision_rate"] = (per_delay["collisions"] / per_delay["n"]).round(3)
     per_delay["mean_clearance_m"] = per_delay["mean_clearance_m"].round(3)
-    per_delay["intervention_pct"] = per_delay["intervention_pct"].round(1)
+    per_delay["dsteer"] = per_delay["dsteer"].round(3)
     per_delay.to_csv(out_dir / "summary_by_delay.csv", index=False)
 
     # Per variant overall, with blind->aware harm-prevented matched by cell.
