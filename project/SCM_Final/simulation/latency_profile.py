@@ -148,6 +148,36 @@ def _infer_duration(cfg: dict[str, Any]) -> float:
     return duration if duration > 0 else 60.0
 
 
+def _lognormal_spikes_trace(cfg: dict[str, Any], n: int, sample_period_s: float,
+                            rng: random.Random) -> np.ndarray:
+    """Direct realistic-latency model (independent of the traffic trace).
+
+    A continuous right-skewed (lognormal) baseline -- the normal 5G delay
+    variability -- plus brief Poisson handover/congestion spikes. Parameters
+    are calibrated to representative published 5G remote-driving latency
+    figures (this is a *model*, not a measurement). Returns delay in seconds.
+    """
+    median_ms = float(cfg.get("median_ms", 35.0))
+    sigma = float(cfg.get("lognormal_sigma", 0.5))         # right-skew of the baseline
+    spike_rate = float(cfg.get("spike_rate_per_s", 0.06))  # handover/congestion arrivals/s
+    spike_ms = float(cfg.get("spike_ms", 200.0))           # added delay during a spike
+    spike_dur_s = float(cfg.get("spike_dur_s", 0.3))
+    min_ms = float(cfg.get("min_delay_ms", 8.0))
+    max_ms = float(cfg.get("max_delay_ms", 600.0))
+    mu = math.log(max(median_ms, 1e-3))                    # exp(mu) = median
+    p_spike = spike_rate * sample_period_s
+    spike_left = 0
+    trace_ms = np.empty(n, dtype=float)
+    for i in range(n):
+        base = math.exp(rng.gauss(mu, sigma))
+        if spike_left <= 0 and rng.random() < p_spike:
+            spike_left = max(1, int(round(spike_dur_s / sample_period_s)))
+        extra = spike_ms if spike_left > 0 else 0.0
+        spike_left -= 1
+        trace_ms[i] = min(max(base + extra, min_ms), max_ms)
+    return trace_ms / 1000.0
+
+
 def _build_channel_trace(
     *,
     name: str,
@@ -159,6 +189,9 @@ def _build_channel_trace(
 ) -> np.ndarray:
     n = max(1, int(math.ceil(duration_s / sample_period_s)))
     rng = random.Random(int(cfg.get("seed", root_cfg.get("seed", 1))) + _stable_name_offset(name))
+
+    if str(cfg.get("latency_model", "")).lower() == "lognormal_spikes":
+        return _lognormal_spikes_trace(cfg, n, sample_period_s, rng)
 
     base_delay_ms = float(cfg.get("base_delay_ms", 20.0))
     jitter_ms = float(cfg.get("jitter_ms", 4.0))

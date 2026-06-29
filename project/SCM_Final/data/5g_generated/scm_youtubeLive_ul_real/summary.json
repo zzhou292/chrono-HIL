@@ -1,0 +1,13 @@
+{
+  "dataset": "youtubeLive",
+  "datatype": "ul",
+  "experiment_id": "scm_youtubeLive_ul_real",
+  "horizon": 10,
+  "n_samples": 60000,
+  "mean_bps": 2442.897319374231,
+  "std_bps": 8027.319114756662,
+  "min_bps": 0.0,
+  "p50_bps": 0.0,
+  "p95_bps": 14054.406711626938,
+  "max_bps": 43294.0
+}

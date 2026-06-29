@@ -1,0 +1,13 @@
+{
+  "dataset": "geforce",
+  "datatype": "dl",
+  "experiment_id": "scm_geforce_dl_real",
+  "horizon": 10,
+  "n_samples": 60000,
+  "mean_bps": 823045.5542273523,
+  "std_bps": 887802.8189147844,
+  "min_bps": 0.0,
+  "p50_bps": 274990.83185396815,
+  "p95_bps": 2006320.9415968987,
+  "max_bps": 2637418.0
+}

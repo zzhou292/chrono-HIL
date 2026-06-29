@@ -1,0 +1,40 @@
+{
+  "description": "Realistic, drivable 5G remote-driving latency from the FULL N-HiTS pipeline (paper methodology, end-to-end): a real N-HiTS model trained on the public 0913ktg/5G-Traffic-Generator youtubeLive uplink dataset (72k samples) generates a 60k-sample UL bitrate trace (data/5g_generated/scm_youtubeLive_ul_real), mapped through the queue-load model with the traffic SCALE calibrated so the real bursts actually create congestion (peak load ~0.9, not the smoke trace's 0.22). Generated one-way distribution: command/uplink p50 31 ms, p95 95 ms, handover spikes to 350 ms; camera/downlink p50 97 ms, p95 170 ms, spikes to 600 ms. Two brief (0.4-0.5 s) handover outages, no sustained outage -> stays drivable. control=uplink command, camera=downlink video (independent channel, not a scaled copy), manual mirrors control. Supersedes the calibrated-lognormal 5g_realistic.json stopgap; the harsher autonomous-sweep profile keeps the full outage.",
+  "sample_period_s": 0.05,
+  "duration_s": 300.0,
+  "loop": true,
+  "seed": 41,
+  "channels": {
+    "control": {
+      "source": {"kind": "5g_repo_csv", "path": "../../data/5g_generated/scm_youtubeLive_ul_real/generated_traffic.csv", "direction": "UL_bitrate", "start_index": 0},
+      "traffic_scale": 400.0,
+      "base_delay_ms": 30.0,
+      "jitter_ms": 9.0,
+      "min_delay_ms": 12.0,
+      "max_delay_ms": 350.0,
+      "capacity_bps": 9000000.0,
+      "queue_gain_ms": 75.0,
+      "segments": [
+        {"start_s": 0.0, "end_s": 300.0, "regime": "nominal"},
+        {"start_s": 40.0, "end_s": 40.4, "regime": "outage"},
+        {"start_s": 150.0, "end_s": 150.5, "regime": "outage"}
+      ]
+    },
+    "manual": {"copy_from": "control"},
+    "camera": {
+      "source": {"kind": "5g_repo_csv", "path": "../../data/5g_generated/scm_youtubeLive_ul_real/generated_traffic.csv", "direction": "UL_bitrate", "start_index": 0},
+      "traffic_scale": 400.0,
+      "base_delay_ms": 95.0,
+      "jitter_ms": 16.0,
+      "min_delay_ms": 60.0,
+      "max_delay_ms": 600.0,
+      "capacity_bps": 9000000.0,
+      "queue_gain_ms": 85.0,
+      "segments": [
+        {"start_s": 0.0, "end_s": 300.0, "regime": "nominal"},
+        {"start_s": 40.0, "end_s": 40.4, "regime": "outage"},
+        {"start_s": 150.0, "end_s": 150.5, "regime": "outage"}
+      ]
+    }
+  }
+}

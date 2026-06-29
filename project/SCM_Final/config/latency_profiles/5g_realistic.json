@@ -1,0 +1,30 @@
+{
+  "description": "Realistic 5G remote-driving latency (one-way). Models the latency distribution directly: a continuous right-skewed (lognormal) baseline -- the normal 5G delay variability -- plus brief Poisson handover/congestion spikes, per channel. Calibrated to representative published 5G teleoperation figures, NOT measured. Generated distribution: command/uplink median 35 ms, p95 87 ms, p99 231 ms, spikes to ~330 ms; camera/downlink glass-to-glass median 101 ms, p95 268 ms, p99 434 ms, spikes to ~570 ms. This replaces the earlier traffic-driven profiles, whose N-HiTS source (scm_youtube_ul_smoke) was a sparse 25 s smoke trace (97% zero) that degenerated to a constant baseline with rare max-pinned spikes. Drivable: no sustained outage. control=uplink command, camera=downlink video, manual mirrors control. Verify/regenerate the histogram via the snippet in the commit message or config/latency_profiles/5g_realistic_hist.png.",
+  "sample_period_s": 0.05,
+  "duration_s": 60.0,
+  "loop": true,
+  "seed": 41,
+  "channels": {
+    "control": {
+      "latency_model": "lognormal_spikes",
+      "median_ms": 35.0,
+      "lognormal_sigma": 0.5,
+      "spike_rate_per_s": 0.06,
+      "spike_ms": 200.0,
+      "spike_dur_s": 0.3,
+      "min_delay_ms": 10.0,
+      "max_delay_ms": 450.0
+    },
+    "manual": {"copy_from": "control"},
+    "camera": {
+      "latency_model": "lognormal_spikes",
+      "median_ms": 100.0,
+      "lognormal_sigma": 0.4,
+      "spike_rate_per_s": 0.05,
+      "spike_ms": 300.0,
+      "spike_dur_s": 0.5,
+      "min_delay_ms": 60.0,
+      "max_delay_ms": 700.0
+    }
+  }
+}

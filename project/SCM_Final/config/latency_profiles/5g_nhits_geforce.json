@@ -1,0 +1,200 @@
+{
+  "description": "Realistic teleoperation 5G latency from the FULL N-HiTS pipeline on the cloud-gaming geforce dataset (the closest analog to remote driving: thin control on the uplink, heavy video on the downlink). control channel = N-HiTS-generated geforce UPLINK traffic (control inputs); camera channel = N-HiTS-generated geforce DOWNLINK traffic (video stream). Each 60k-sample trace is mapped through the queue-load model, calibrated per channel so the real traffic drives congestion; brief handover outages + congestion bursts add a realistic tail. Drivable, no sustained outage. Generated one-way: command p50 29 / p95 ~90 / spikes to 350 ms; camera p50 95 / p95 200 / spikes to ~540 ms.",
+  "sample_period_s": 0.05,
+  "duration_s": 300.0,
+  "loop": true,
+  "seed": 41,
+  "channels": {
+    "control": {
+      "source": {
+        "kind": "5g_repo_csv",
+        "path": "../../data/5g_generated/scm_geforce_ul_real/generated_traffic.csv",
+        "direction": "UL_bitrate",
+        "start_index": 0
+      },
+      "traffic_scale": 85,
+      "base_delay_ms": 24,
+      "jitter_ms": 8,
+      "min_delay_ms": 12,
+      "max_delay_ms": 350,
+      "capacity_bps": 9000000.0,
+      "queue_gain_ms": 35,
+      "segments": [
+        {
+          "start_s": 0.0,
+          "end_s": 25,
+          "regime": "nominal"
+        },
+        {
+          "start_s": 25,
+          "end_s": 25.4,
+          "regime": "outage"
+        },
+        {
+          "start_s": 25.4,
+          "end_s": 70,
+          "regime": "nominal"
+        },
+        {
+          "start_s": 70,
+          "end_s": 70.5,
+          "regime": "outage"
+        },
+        {
+          "start_s": 70.5,
+          "end_s": 90,
+          "regime": "nominal"
+        },
+        {
+          "start_s": 90,
+          "end_s": 91.5,
+          "regime": "poor",
+          "extra_ms": 40
+        },
+        {
+          "start_s": 91.5,
+          "end_s": 130,
+          "regime": "nominal"
+        },
+        {
+          "start_s": 130,
+          "end_s": 130.4,
+          "regime": "outage"
+        },
+        {
+          "start_s": 130.4,
+          "end_s": 200,
+          "regime": "nominal"
+        },
+        {
+          "start_s": 200,
+          "end_s": 200.5,
+          "regime": "outage"
+        },
+        {
+          "start_s": 200.5,
+          "end_s": 220,
+          "regime": "nominal"
+        },
+        {
+          "start_s": 220,
+          "end_s": 221.5,
+          "regime": "poor",
+          "extra_ms": 40
+        },
+        {
+          "start_s": 221.5,
+          "end_s": 260,
+          "regime": "nominal"
+        },
+        {
+          "start_s": 260,
+          "end_s": 260.4,
+          "regime": "outage"
+        },
+        {
+          "start_s": 260.4,
+          "end_s": 300.0,
+          "regime": "nominal"
+        }
+      ]
+    },
+    "manual": {
+      "copy_from": "control"
+    },
+    "camera": {
+      "source": {
+        "kind": "5g_repo_csv",
+        "path": "../../data/5g_generated/scm_geforce_dl_real/generated_traffic.csv",
+        "direction": "DL_bitrate",
+        "start_index": 0
+      },
+      "traffic_scale": 2.9,
+      "base_delay_ms": 80,
+      "jitter_ms": 16,
+      "min_delay_ms": 60,
+      "max_delay_ms": 650,
+      "capacity_bps": 9000000.0,
+      "queue_gain_ms": 90,
+      "segments": [
+        {
+          "start_s": 0.0,
+          "end_s": 25,
+          "regime": "nominal"
+        },
+        {
+          "start_s": 25,
+          "end_s": 25.4,
+          "regime": "outage"
+        },
+        {
+          "start_s": 25.4,
+          "end_s": 70,
+          "regime": "nominal"
+        },
+        {
+          "start_s": 70,
+          "end_s": 70.5,
+          "regime": "outage"
+        },
+        {
+          "start_s": 70.5,
+          "end_s": 90,
+          "regime": "nominal"
+        },
+        {
+          "start_s": 90,
+          "end_s": 91.5,
+          "regime": "poor",
+          "extra_ms": 40
+        },
+        {
+          "start_s": 91.5,
+          "end_s": 130,
+          "regime": "nominal"
+        },
+        {
+          "start_s": 130,
+          "end_s": 130.4,
+          "regime": "outage"
+        },
+        {
+          "start_s": 130.4,
+          "end_s": 200,
+          "regime": "nominal"
+        },
+        {
+          "start_s": 200,
+          "end_s": 200.5,
+          "regime": "outage"
+        },
+        {
+          "start_s": 200.5,
+          "end_s": 220,
+          "regime": "nominal"
+        },
+        {
+          "start_s": 220,
+          "end_s": 221.5,
+          "regime": "poor",
+          "extra_ms": 40
+        },
+        {
+          "start_s": 221.5,
+          "end_s": 260,
+          "regime": "nominal"
+        },
+        {
+          "start_s": 260,
+          "end_s": 260.4,
+          "regime": "outage"
+        },
+        {
+          "start_s": 260.4,
+          "end_s": 300.0,
+          "regime": "nominal"
+        }
+      ]
+    }
+  }
+}
