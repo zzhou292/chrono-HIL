@@ -94,6 +94,12 @@ def main() -> None:
     p.add_argument("--teleop-bumpiness", type=int, default=0,
                    help="single bumpiness level for the human drives (0 = smooth). "
                         "Pinned so one scenario = one drive.")
+    p.add_argument("--teleop-goal-distance", type=float, default=40.0,
+                   help="distance (m of path) that counts as reaching the goal in a "
+                        "drive. 40 (vs human_delay's 50 default) leaves headroom for a "
+                        "cautious, hazard-dodging drive under heavy latency to still "
+                        "register as REACHED -- the recorded trace is replayed either "
+                        "way; this only sets the 'reached' label.")
     p.add_argument("--rounds", type=int, default=1, help="G29 rounds per (filter,delay) cell")
     p.add_argument("--workers", type=int, default=10)
     p.add_argument("--timeout", type=float, default=400.0)
@@ -114,11 +120,13 @@ def main() -> None:
             "1/3  latency-awareness dose-response (automated)")
         outs["latency"] = newest("latency_awareness_ablation") or "(none found)"
 
-    # ---- Phases 2-3: per (link, scenario), drive (interactive) then replay (auto) ----
-    # Looped per scenario so each recorded human trace is replayed on the SAME
-    # convoy preset AND under the SAME link it was driven on. Each scenario is
-    # ONE drive per link (terrain/path/speed/bumpiness pinned below), so the
-    # variety the human experiences is the scenario and the link, not the soil.
+    # ---- Phases 2-3: ALL drives first (interactive, back-to-back), THEN all
+    # replays (automated, batched at the end). The two are SEPARATED on purpose:
+    # interleaving a slow automated replay sweep between live drives stalls the
+    # human for minutes after every round. You drive every round in one sitting,
+    # then the machine crunches all the counterfactuals while you step away.
+    # Each (link, scenario) is ONE drive (terrain/path/speed/bumpiness pinned),
+    # so the variety you experience is the scenario and the link, not the soil.
     if not args.skip_teleop:
         profiles = [p for p in args.latency_profiles if p]  # drop '' entries
         use_profile = bool(profiles)
@@ -127,18 +135,22 @@ def main() -> None:
         n_drives = len(args.teleop_convoy) * (
             len(profiles) if use_profile else len(args.hil_delays))
         print("\n" + "*" * 72)
-        print("  PHASE 2 IS INTERACTIVE: you drive the G29 for each short round.")
+        print("  PHASE 2 IS INTERACTIVE: you drive the G29 for every round, back to back.")
         if use_profile:
             print(f"  {len(profiles)} link condition(s): "
                   + ", ".join(Path(p).stem for p in profiles))
         else:
             print(f"  fixed delays {args.hil_delays}s, command channel only")
         print(f"  {len(args.teleop_convoy)} scenario(s) x the above -> {n_drives} short drives.")
-        print("  You drive under the delayed CAMERA (downlink) + delayed COMMAND (uplink);")
-        print("  the filter is OFF while you drive, so this is your raw intent. Drive")
-        print("  naturally toward the hazards so the filter has something to prevent.")
+        print("  You drive under the delayed CAMERA (downlink) + delayed COMMAND (uplink)")
+        print("  with the live HUD overlay; the filter is OFF, so this is your raw intent.")
+        print("  Drive naturally toward the hazards so the filter has something to prevent.")
+        print("  The automated counterfactual replays run AFTER all drives are recorded.")
         print("*" * 72, flush=True)
-        replays = []
+
+        # ---- Phase 2: collect every human drive first -----------------------
+        pending = []  # (link, scen, replay_lat, session_dir)
+        drive_no = 0
         for prof in profiles:
             link = Path(prof).stem if prof else f"fixed{args.hil_delays}"
             if use_profile:
@@ -148,8 +160,7 @@ def main() -> None:
                 drive_lat = ["--delays", *[str(d) for d in args.hil_delays]]
                 replay_lat = []   # convoy reads each round's recorded delay from its dir name
             for scen in args.teleop_convoy:
-                # Phase 2: record raw human intent on this (link, scenario) with the
-                # filter off, under the 5G latency on BOTH camera and command channels.
+                drive_no += 1
                 run([PY, str(BENCH / "human_delay_compensation_rounds.py"),
                      "--convoy", scen, "--filters", "none", *drive_lat,
                      "--rounds", str(args.rounds),
@@ -161,19 +172,30 @@ def main() -> None:
                      "--terrains", args.teleop_terrain,
                      "--bumpiness", str(args.teleop_bumpiness),
                      "--paths", "straight", "--speeds", "4.0",
+                     "--goal-distance", str(args.teleop_goal_distance),
+                     "--live-hud",  # the HMI overlay (speed/latency/wheel/warning)
                      "--manual-mode", args.manual_mode, "--vis-mode", "sensor"],
-                    f"2/3  G29 drive: link='{link}' convoy='{scen}' (INTERACTIVE)",
+                    f"DRIVE {drive_no}/{n_drives}: link='{link}' convoy='{scen}' (INTERACTIVE)",
                     interactive=True)
                 sess = newest("human_delay_compensation_rounds")
                 if not sess:
                     print(f"[warn] no recorded session for '{link}/{scen}'; skipping its replay")
                     continue
-                # Phase 3: replay this scenario's traces off vs DOB-CBF on the same
-                # preset, under the same command-channel latency the filter saw live.
+                pending.append((link, scen, replay_lat, sess))
+
+        # ---- Phase 3: replay every recorded trace (automated, batched) ------
+        replays = []
+        if pending:
+            print("\n" + "=" * 72)
+            print(f"  ALL {len(pending)} DRIVES RECORDED. Running counterfactual replays now")
+            print("  (automated -- off vs DOB-CBF on each trace, same preset + link).")
+            print("  You can step away; this is the wheel-free part.")
+            print("=" * 72, flush=True)
+            for i, (link, scen, replay_lat, sess) in enumerate(pending, 1):
                 run([PY, str(BENCH / "convoy_counterfactual_eval.py"),
                      "--trace-dir", sess, "--convoy", scen, "--filters", "none", "dob_cbf",
                      *replay_lat, "--workers", str(args.workers), "--timeout", str(args.timeout)],
-                    f"3/3  counterfactual replay: link='{link}' convoy='{scen}' (automated)")
+                    f"REPLAY {i}/{len(pending)}: link='{link}' convoy='{scen}' (automated)")
                 replays.append(f"{link}/{scen}: {newest('convoy_counterfactual_eval')}")
         outs["teleop_replays"] = "\n                    ".join(replays) if replays else "(none)"
 
