@@ -1864,9 +1864,26 @@ to $20\%$ and turning a mean
 clearance of $-1.69\,$m into $+1.94\,$m. It does so at small command deviation
 ($|\Delta\delta|=0.13$, $|\Delta\tau|=0.28$), mixing steering with braking ---
 the obstacle-type-aware QP steers around static rocks but is willing to brake
-behind a vehicle. The same machinery replays a \emph{recorded} G29 trace
-unchanged, making logged human intent a compatible input to the same
-counterfactual protocol.
+behind a vehicle.
+
+The same machinery replays a \emph{recorded} G29 trace unchanged, so logged
+human intent is a drop-in input to this protocol. We replayed ten such drives
+--- the five convoy scenarios under both a good and a congested learned 5G
+\emph{command}-channel profile (Sec.~\ref{sec:latency}) --- filter-off vs
+DOB-CBF (Fig.~\ref{fig:teleop_cf}). Unlike the adversarial stand-in, the human
+operator is competent: collision-free in eight of the ten drives. DOB-CBF
+leaves that competence essentially untouched, acting at an order of magnitude
+less command deviation than on the scripted intents
+($|\Delta\delta|\!\approx\!0.018$, $|\Delta\tau|\!\approx\!0.09$ versus $0.13$,
+$0.28$), yet it still lifts the median minimum clearance from $0.38$ to
+$4.23\,$m and averts one of the operator's two collisions --- the forward
+platoon clip ($-0.40\!\to\!+10.4\,$m). The collision it does \emph{not} prevent
+is a rear-approach, which a forward-collision filter cannot address by
+construction; we include it to mark the limitation rather than hide it. On
+genuine human intent the filter thus restores margin without fighting a capable
+driver. (This corroboration uses a single operator and applies the 5G profile
+to the command channel; a multi-operator study under combined command-and-video
+latency is left to future work.)
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
@@ -1891,6 +1908,20 @@ counterfactual protocol.
     \bottomrule
   \end{tabular}
 \end{table}
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{teleop_counterfactual_clearance.png}
+  \caption{Counterfactual replay on ten \emph{recorded human} G29 drives (five
+    convoy scenarios $\times$ good/congested command-channel 5G latency),
+    operator (no filter) vs DOB-CBF. The competent operator is collision-free
+    in eight of ten drives but skims hazards (median minimum clearance
+    $0.38\,$m, twice dipping below zero into a collision); DOB-CBF restores the
+    median to $4.23\,$m and averts the forward platoon collision, at a near-inert
+    $|\Delta\delta|\!\approx\!0.018$. The one unaverted collision is a
+    rear-approach, outside a forward-collision filter's scope by construction.}
+  \label{fig:teleop_cf}
+\end{figure}
 
 
 \subsection{Real-time cost}

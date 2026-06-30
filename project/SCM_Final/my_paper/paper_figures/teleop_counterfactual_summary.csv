@@ -1,0 +1,2 @@
+drives,human_collisions,filtered_collisions,median_human_clearance_m,median_filtered_clearance_m,min_human_clearance_m,median_clearance_gain_m,mean_abs_dsteer,mean_abs_dthrottle
+10,2,1,0.382,4.232,-0.965,3.1,0.018,0.0945
