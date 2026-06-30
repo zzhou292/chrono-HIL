@@ -77,10 +77,20 @@ class G29Controller:
         self._profile_arg = profile  # 'auto' | 'g29' | 'gamepad_stick'
         self._profile = None         # resolved after init
 
-        # Pedal convention auto-detection (G29 profile only)
-        # Linux G29: rest=-1, pressed=+1; Windows G29: rest=+1, pressed=-1
-        self._pedal_inverted = None  # None=not yet detected
-        self._pedal_detect_frames = 0
+        # Pedal convention (G29 profile only). Linux G29: rest=-1, pressed=+1;
+        # Windows G29: rest=+1, pressed=-1. This is fixed by the OS/driver, so
+        # PIN it by platform rather than sniffing the rest value each run: an
+        # untouched G29 pedal axis reads ~0.0 (not -1) under SDL2 until its
+        # first motion event, so a per-run rest-value sniff flips Linux<->Windows
+        # between rounds depending on whether the pedal happened to be 'warm' --
+        # which silently SWAPPED throttle/brake on the 2nd round of a session.
+        import sys as _sys
+        self._pedal_inverted = (_sys.platform != "win32")  # True on Linux/macOS
+        # Until each pedal axis has reported a genuine released value (near -1),
+        # treat it as released (output 0) so a not-yet-initialised axis reading
+        # ~0.0 cannot produce a phantom half-throttle at the start of a round.
+        self._throttle_live = False
+        self._brake_live = False
         
         # Force feedback state (PySDL2)
         self._haptic = None
@@ -206,24 +216,22 @@ class G29Controller:
 
             self.steering = -raw_steering
 
-            if self._pedal_inverted is None:
-                self._pedal_detect_frames += 1
-                if self._pedal_detect_frames >= 3:
-                    if raw_throttle < -0.5:
-                        self._pedal_inverted = True
-                        print(f"    G29 pedals: Linux convention detected "
-                              f"(rest={raw_throttle:.2f})")
-                    else:
-                        self._pedal_inverted = False
-                        print(f"    G29 pedals: Windows convention detected "
-                              f"(rest={raw_throttle:.2f})")
-
-            if self._pedal_inverted:
-                self.throttle = (raw_throttle + 1.0) / 2.0
-                self.brake = (raw_brake + 1.0) / 2.0
-            else:
-                self.throttle = (1.0 - raw_throttle) / 2.0
-                self.brake = (1.0 - raw_brake) / 2.0
+            # A pedal axis only reveals its true released value once SDL2 has
+            # delivered its first motion event; before that pygame returns ~0.0.
+            # Map a pedal only after we have seen it at/near its released
+            # extreme, so the start-of-round ~0.0 reading stays "released"
+            # instead of becoming a phantom mid-throttle (and the mapping is the
+            # platform-pinned convention, so it can never flip between rounds).
+            if self._pedal_inverted:   # Linux/macOS: released -1, pressed +1
+                self._throttle_live = self._throttle_live or raw_throttle <= -0.5
+                self._brake_live = self._brake_live or raw_brake <= -0.5
+                self.throttle = (raw_throttle + 1.0) / 2.0 if self._throttle_live else 0.0
+                self.brake = (raw_brake + 1.0) / 2.0 if self._brake_live else 0.0
+            else:                       # Windows: released +1, pressed -1
+                self._throttle_live = self._throttle_live or raw_throttle >= 0.5
+                self._brake_live = self._brake_live or raw_brake >= 0.5
+                self.throttle = (1.0 - raw_throttle) / 2.0 if self._throttle_live else 0.0
+                self.brake = (1.0 - raw_brake) / 2.0 if self._brake_live else 0.0
 
         # Clamp to valid range
         self.steering = max(-1.0, min(1.0, self.steering))
