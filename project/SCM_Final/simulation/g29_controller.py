@@ -77,20 +77,21 @@ class G29Controller:
         self._profile_arg = profile  # 'auto' | 'g29' | 'gamepad_stick'
         self._profile = None         # resolved after init
 
-        # Pedal convention (G29 profile only). Linux G29: rest=-1, pressed=+1;
-        # Windows G29: rest=+1, pressed=-1. This is fixed by the OS/driver, so
-        # PIN it by platform rather than sniffing the rest value each run: an
-        # untouched G29 pedal axis reads ~0.0 (not -1) under SDL2 until its
-        # first motion event, so a per-run rest-value sniff flips Linux<->Windows
-        # between rounds depending on whether the pedal happened to be 'warm' --
-        # which silently SWAPPED throttle/brake on the 2nd round of a session.
-        import sys as _sys
-        self._pedal_inverted = (_sys.platform != "win32")  # True on Linux/macOS
-        # Until each pedal axis has reported a genuine released value (near -1),
-        # treat it as released (output 0) so a not-yet-initialised axis reading
-        # ~0.0 cannot produce a phantom half-throttle at the start of a round.
-        self._throttle_live = False
-        self._brake_live = False
+        # Per-pedal released-baseline auto-calibration (G29 profile only).
+        # The released rest value is a fixed hardware/driver property but is
+        # NOT the same everywhere: this rig's G29 rests at +1 (pressed -> -1),
+        # other setups rest at -1 (pressed -> +1). Do NOT assume a platform
+        # convention (that was backwards on this rig) and do NOT sniff a single
+        # early frame (an untouched axis reads ~0.0 under SDL2 until its first
+        # motion event, and one spurious frame silently SWAPPED throttle/brake
+        # between rounds). Instead DETECT each pedal's released baseline from a
+        # stable, live, multi-frame reading; until calibrated, output 0
+        # (released). throttle/brake = fraction the pedal has travelled from its
+        # released rest toward the opposite (fully-pressed) extreme.
+        self._pedal_cal = {
+            "thr": {"rest": None, "sign": 0.0, "streak": 0},
+            "brk": {"rest": None, "sign": 0.0, "streak": 0},
+        }
         
         # Force feedback state (PySDL2)
         self._haptic = None
@@ -215,23 +216,8 @@ class G29Controller:
             raw_brake = self.joystick.get_axis(self.BRAKE_AXIS)
 
             self.steering = -raw_steering
-
-            # A pedal axis only reveals its true released value once SDL2 has
-            # delivered its first motion event; before that pygame returns ~0.0.
-            # Map a pedal only after we have seen it at/near its released
-            # extreme, so the start-of-round ~0.0 reading stays "released"
-            # instead of becoming a phantom mid-throttle (and the mapping is the
-            # platform-pinned convention, so it can never flip between rounds).
-            if self._pedal_inverted:   # Linux/macOS: released -1, pressed +1
-                self._throttle_live = self._throttle_live or raw_throttle <= -0.5
-                self._brake_live = self._brake_live or raw_brake <= -0.5
-                self.throttle = (raw_throttle + 1.0) / 2.0 if self._throttle_live else 0.0
-                self.brake = (raw_brake + 1.0) / 2.0 if self._brake_live else 0.0
-            else:                       # Windows: released +1, pressed -1
-                self._throttle_live = self._throttle_live or raw_throttle >= 0.5
-                self._brake_live = self._brake_live or raw_brake >= 0.5
-                self.throttle = (1.0 - raw_throttle) / 2.0 if self._throttle_live else 0.0
-                self.brake = (1.0 - raw_brake) / 2.0 if self._brake_live else 0.0
+            self.throttle = self._pedal_fraction("thr", raw_throttle)
+            self.brake = self._pedal_fraction("brk", raw_brake)
 
         # Clamp to valid range
         self.steering = max(-1.0, min(1.0, self.steering))
@@ -254,12 +240,42 @@ class G29Controller:
             else:
                 raw_throttle = self.joystick.get_axis(self.THROTTLE_AXIS)
                 raw_brake = self.joystick.get_axis(self.BRAKE_AXIS)
-                inv_tag = "LINUX" if self._pedal_inverted else "WIN"
+                _tr = self._pedal_cal["thr"]["rest"]
+                _br = self._pedal_cal["brk"]["rest"]
+                inv_tag = f"rest thr={_tr} brk={_br}"
                 print(f"    [G29 diag #{self._diag_count}] "
                       f"raw_thr={raw_throttle:+.3f} raw_brk={raw_brake:+.3f}"
                       f" -> thr={self.throttle:.3f} brk={self.brake:.3f} "
                       f"steer={self.steering:+.3f} [{inv_tag}]")
     
+    def _pedal_fraction(self, key: str, raw: float) -> float:
+        """Map a raw pedal-axis reading to [0,1] travel, auto-calibrating the
+        released baseline from a stable live reading.
+
+        The released rest is +1 on some G29s and -1 on others; we detect it
+        rather than assume it. A reading is a calibration vote only when it is
+        clearly live (|raw| >= 0.5), so the cold ~0.0 reading an axis returns
+        before its first SDL motion event never sets the baseline. The baseline
+        locks after a short run of same-sign live frames, which rejects a lone
+        spurious frame -- the cause of throttle/brake swapping between rounds.
+        Until locked, the pedal reads released (0).
+        """
+        c = self._pedal_cal[key]
+        if c["rest"] is None:
+            if abs(raw) >= 0.5:
+                sign = 1.0 if raw > 0.0 else -1.0
+                c["streak"] = c["streak"] + 1 if sign == c["sign"] else 1
+                c["sign"] = sign
+                if c["streak"] >= 5:        # stable released baseline found
+                    c["rest"] = sign
+            else:
+                c["streak"], c["sign"] = 0, 0.0
+            if c["rest"] is None:
+                return 0.0                  # not yet calibrated -> released
+        rest = c["rest"]
+        # released (raw==rest) -> 0; fully pressed (raw==-rest) -> 1.
+        return max(0.0, min(1.0, (rest - raw) / (2.0 * rest)))
+
     def get_inputs(self) -> Tuple[float, float, float]:
         """Get current (steering, throttle, brake) values."""
         self.update()
