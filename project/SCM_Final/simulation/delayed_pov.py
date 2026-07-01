@@ -1,30 +1,33 @@
 #!/usr/bin/env python3
 """Software frame-delay buffer for the driver POV, so the operator actually
-SEES the camera/downlink latency -- smoothly.
+SEES the camera/downlink latency -- smoothly and driveably.
 
 Why this exists: Chrono's ``ChCameraSensor.SetLag`` only gates when the sensor
 buffer becomes available to *data consumers*; ``ChFilterVisualize`` draws each
 frame at render time, so the displayed POV is NOT delayed by SetLag. For a human
 teleoperator that removes the dominant difficulty factor -- delayed video.
+(NB: SetLag *does* delay ``GetMostRecentRGBA8Buffer``, so the caller must keep
+SetLag at ~0 while this buffer owns the delay, or the two stack and double it.)
 
-Design (mirrors the C++ ``ChCameraDelaySim`` reference in
-``chrono_hil/network/sim/``, which is driveable):
-
-  * **Wall-clock timing.** Each captured frame is stamped with a wall-clock
-    ``apply_time = now + delay``. It is displayed once ``apply_time`` has passed
-    in wall-clock time. Timing the delay in *sim* time (an earlier bug) coupled
-    the display to sim-step jitter and made it undriveable.
-  * **Release every loop iteration**, not just at sim/sensor ticks, so frames
-    appear on screen at their correct real-world moment (smooth cadence)
-    regardless of how the sim-step wall time fluctuates.
+Design (mirrors the driveable C++ ``ChCameraDelaySim`` in ``chrono_hil``):
+  * **Wall-clock timing.** Each captured frame gets ``apply_time = now + delay``
+    and is shown once that wall-clock deadline passes. Timing in sim time (an
+    earlier bug) coupled the display to sim-step jitter and made it undriveable.
+  * **Release every loop iteration** so frames appear at their real-world moment
+    (smooth cadence), not only at sim/sensor ticks.
   * **Anti-rewind + monotonic apply times** so a growing delay never shows an
-    older frame after a newer one (that reads as violent jitter).
+    older frame after a newer one.
+  * **Borderless desktop window** (not exclusive fullscreen) so the always-on-top
+    HUD overlay still composits on top of the POV.
+  * **Warm-up**: show the freshest frame while the delay buffer fills, so the
+    screen isn't black for the first ``delay`` seconds.
 
 Fail-safe: if the pygame display cannot be created (headless), ``ok`` is False
 and the caller keeps the live ``ChFilterVisualize`` path.
 """
 from __future__ import annotations
 
+import os as _os
 import time as _time
 from collections import deque
 
@@ -42,11 +45,11 @@ class DelayedPOV:
         self.ok = False
         self._pg = None
         self._screen = None
-        # buffer holds (apply_wall, source_wall, rgb_frame); FIFO in capture order
+        self._win_w, self._win_h = self.width, self.height
         self._buf: deque[tuple[float, float, np.ndarray]] = deque()
         self._max_frames = max(8, int(max_delay_s / max(frame_period_s, 1e-3)) + 8)
-        self._last_apply = -1.0        # last apply_time pushed (keep monotonic)
-        self._last_shown_apply = -1.0  # last apply_time displayed (anti-rewind)
+        self._last_apply = -1.0
+        self._last_shown_apply = -1.0
         self._n_cap = 0
         self._n_show = 0
         try:
@@ -55,15 +58,18 @@ class DelayedPOV:
             if not pygame.get_init():
                 pygame.init()
             pygame.display.init()
-            fs = pygame.FULLSCREEN if fullscreen else 0
-            for flags in (pygame.SCALED | fs, fs):
-                try:
-                    self._screen = pygame.display.set_mode((self.width, self.height), flags)
-                    break
-                except Exception:
-                    self._screen = None
-            if self._screen is None:
-                raise RuntimeError("set_mode failed")
+            if fullscreen:
+                # Borderless window filling the desktop -- NOT exclusive
+                # FULLSCREEN, which bypasses the WM and hides the always-on-top
+                # HUD overlay. NOFRAME stays a normal (WM-composited) window.
+                info = pygame.display.Info()
+                if info.current_w > 0 and info.current_h > 0:
+                    self._win_w, self._win_h = info.current_w, info.current_h
+                _os.environ.setdefault("SDL_VIDEO_WINDOW_POS", "0,0")
+                self._screen = pygame.display.set_mode((self._win_w, self._win_h),
+                                                       pygame.NOFRAME)
+            else:
+                self._screen = pygame.display.set_mode((self._win_w, self._win_h))
             pygame.display.set_caption("Driver POV (delayed downlink)")
             self.ok = True
         except Exception as e:
@@ -71,8 +77,19 @@ class DelayedPOV:
                   f"keeping live ChFilterVisualize (camera delay will NOT be shown)")
             self.ok = False
 
+    def _blit(self, frame: np.ndarray) -> None:
+        pg = self._pg
+        surf = pg.image.frombuffer(frame.tobytes(), (self.width, self.height), "RGB")
+        if self.flip_vertical:
+            surf = pg.transform.flip(surf, False, True)
+        if (self._win_w, self._win_h) != (self.width, self.height):
+            surf = pg.transform.scale(surf, (self._win_w, self._win_h))
+        self._screen.blit(surf, (0, 0))
+        pg.display.flip()
+        pg.event.pump()
+
     def capture(self, driver_cam, delay_s: float) -> None:
-        """Grab the freshly rendered frame; schedule it to appear ``delay_s`` from now."""
+        """Grab the freshly rendered frame; schedule it ``delay_s`` from now."""
         if not self.ok:
             return
         try:
@@ -82,8 +99,7 @@ class DelayedPOV:
             d = b.GetRGBA8Data()  # (H, W, 4) uint8, bottom-up
             now = _time.monotonic()
             apply_t = now + max(float(delay_s), 0.0)
-            # keep apply times monotonic so frames never reorder in the buffer
-            if apply_t <= self._last_apply:
+            if apply_t <= self._last_apply:      # keep buffer ordered
                 apply_t = self._last_apply + 1e-4
             self._last_apply = apply_t
             self._buf.append((apply_t, now, np.ascontiguousarray(d[..., :3])))
@@ -99,23 +115,20 @@ class DelayedPOV:
             return
         now = _time.monotonic()
         chosen = None
-        # release every frame now due, keeping the newest (drop skipped ones so
-        # the view never lags behind wall-clock)
         while self._buf and self._buf[0][0] <= now:
             chosen = self._buf.popleft()
         if chosen is None:
+            # Warm-up: nothing is "due" yet (buffer still filling). Show the
+            # freshest frame so the screen isn't black -- but don't advance the
+            # anti-rewind clock, so normal delayed release takes over cleanly.
+            if self._last_shown_apply < 0.0:
+                self._blit(self._buf[-1][2])
             return
         apply_t, source_t, frame = chosen
         if apply_t <= self._last_shown_apply:
             return
         self._last_shown_apply = apply_t
-        pg = self._pg
-        surf = pg.image.frombuffer(frame.tobytes(), (self.width, self.height), "RGB")
-        if self.flip_vertical:
-            surf = pg.transform.flip(surf, False, True)
-        self._screen.blit(surf, (0, 0))
-        pg.display.flip()
-        pg.event.pump()
+        self._blit(frame)
         self._n_show += 1
         if self.debug and (self._n_show <= 5 or self._n_show % 30 == 0):
             print(f"  [POV-dbg] shown#{self._n_show} realized_delay="

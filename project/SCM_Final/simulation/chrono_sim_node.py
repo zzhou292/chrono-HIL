@@ -772,6 +772,12 @@ def run_sim_node(args):
                     frame_period_s=1.0 / max(args.cam_rate, 1.0),
                     debug=os.environ.get("DELAYED_POV_DEBUG") == "1")
                 if delayed_pov.ok:
+                    # The POV buffer applies the whole camera delay in wall-clock
+                    # time, so keep the sensor's own lag at ~0 -- otherwise SetLag
+                    # (which delays GetMostRecentRGBA8Buffer availability) stacks on
+                    # top and DOUBLES the effective delay (that made even the good
+                    # link undriveable).
+                    driver_cam.SetLag(0.0)
                     print(f"  Chrono Sensor: driver POV shown through a "
                           f"software delay buffer (camera-channel latency visible)")
                 else:
@@ -1348,10 +1354,14 @@ def run_sim_node(args):
                     cam_lag_ema = camera_delay_s
                 else:
                     cam_lag_ema += 0.1 * (camera_delay_s - cam_lag_ema)
-                try:
-                    driver_cam.SetLag(cam_lag_ema)
-                except Exception:
-                    pass
+                # Only the live ChFilterVisualize path relies on SetLag. With the
+                # delayed-POV buffer active, SetLag stays 0 (the buffer owns the
+                # delay) to avoid double-delaying.
+                if delayed_pov is None:
+                    try:
+                        driver_cam.SetLag(cam_lag_ema)
+                    except Exception:
+                        pass
             _tw = wall_time.time()
             sensor_manager.Update()
             _dt_s = wall_time.time() - _tw
