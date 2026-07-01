@@ -64,6 +64,7 @@ from chrono_setup import (
     load_terrain_config,
 )
 from g29_controller import ManualDriver
+from delayed_pov import DelayedPOV
 
 # Safety filter + obstacles (optional)
 from sensors.obstacles import add_rock_obstacles, get_rock_positions, get_rock_radii
@@ -726,6 +727,7 @@ def run_sim_node(args):
     # ------------------------------------------------------------------
     sensor_manager = None
     driver_cam = None
+    delayed_pov = None
     if use_sensor:
         try:
             sensor_manager = sens.ChSensorManager(system)
@@ -756,9 +758,31 @@ def run_sim_node(args):
             )
             driver_cam.SetName("DriverPOV")
             driver_cam.SetLag(latency_profile.delay(0.0, "camera") if latency_profile is not None else 0.0)
-            driver_cam.PushFilter(sens.ChFilterVisualize(
-                args.cam_width, args.cam_height, "Driver POV", args.cam_fullscreen
-            ))
+            # Live manual driving can display the POV through a software
+            # frame-delay buffer so the operator actually sees the camera-channel
+            # latency (SetLag does not delay ChFilterVisualize -- see delayed_pov).
+            want_delayed_pov = bool(getattr(args, "delayed_pov", False)) and \
+                (args.manual or args.wasd)
+            if want_delayed_pov:
+                driver_cam.PushFilter(sens.ChFilterRGBA8Access())
+                delayed_pov = DelayedPOV(
+                    args.cam_width, args.cam_height,
+                    fullscreen=args.cam_fullscreen,
+                    flip_vertical=bool(getattr(args, "pov_flip", False)),
+                    frame_period_s=1.0 / max(args.cam_rate, 1.0))
+                if delayed_pov.ok:
+                    print(f"  Chrono Sensor: driver POV shown through a "
+                          f"software delay buffer (camera-channel latency visible)")
+                else:
+                    # fall back to the live view so driving is never broken
+                    driver_cam.PushFilter(sens.ChFilterVisualize(
+                        args.cam_width, args.cam_height, "Driver POV", args.cam_fullscreen))
+                    delayed_pov = None
+            else:
+                delayed_pov = None
+                driver_cam.PushFilter(sens.ChFilterVisualize(
+                    args.cam_width, args.cam_height, "Driver POV", args.cam_fullscreen
+                ))
             if getattr(args, "cam_save_dir", ""):
                 os.makedirs(args.cam_save_dir, exist_ok=True)
                 driver_cam.PushFilter(sens.ChFilterSave(args.cam_save_dir + "/"))
@@ -769,6 +793,7 @@ def run_sim_node(args):
             print(f"Warning: Sensor visualization failed: {e}")
             sensor_manager = None
             driver_cam = None
+            delayed_pov = None
 
     # ------------------------------------------------------------------
     # IMU Sensors (Chrono Sensor module — accelerometer + gyroscope)
@@ -1333,6 +1358,14 @@ def run_sim_node(args):
             _sensor_calls += 1
             last_sensor_time = time_chrono
 
+            # Software frame-delay POV: buffer the freshly rendered frame and
+            # display the one from ~camera_delay ago. Uses the EMA-smoothed lag
+            # (raw per-frame delay is jittery -> stuttery frame selection).
+            if delayed_pov is not None:
+                delayed_pov.capture(time_chrono, driver_cam)
+                _disp_lag = cam_lag_ema if cam_lag_ema is not None else camera_delay_s
+                delayed_pov.show(time_chrono, _disp_lag)
+
         step_count += 1
         _t_report_steps += 1
 
@@ -1531,6 +1564,8 @@ def run_sim_node(args):
     # ------------------------------------------------------------------
     # Shutdown
     # ------------------------------------------------------------------
+    if delayed_pov is not None:
+        delayed_pov.close()
     if collision_logger is not None:
         collision_logger.close()
     if sim_diag_file is not None:
@@ -1713,6 +1748,15 @@ def main():
                    help="Fixed lag applied to the driver POV camera feed. Models "
                         "downlink video latency to the operator. Overridden by the "
                         "camera channel of --latency-profile-json when supplied.")
+    p.add_argument("--delayed-pov", action="store_true",
+                   help="Display the driver POV through a software frame-delay "
+                        "buffer so the operator actually SEES the camera-channel "
+                        "latency. Chrono's SetLag only delays data availability, not "
+                        "the ChFilterVisualize display, so without this the live view "
+                        "is real-time. Requires a display; falls back to the live view "
+                        "if pygame can't open one. Ignored outside live manual mode.")
+    p.add_argument("--pov-flip", action="store_true",
+                   help="Vertically flip the delayed POV (if the frame is upside down).")
     p.add_argument("--latency-profile-json", default="",
                    help="JSON profile for time-varying 5G-like one-way latency. "
                         "Overrides fixed --teleop-delay/--manual-input-delay per channel.")

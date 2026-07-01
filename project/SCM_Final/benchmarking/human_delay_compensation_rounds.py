@@ -104,6 +104,14 @@ def parse_args() -> argparse.Namespace:
                    default=True,
                    help="Display the driver POV fullscreen (renders at cam W x H, "
                         "scaled to the screen). Use --no-cam-fullscreen for a window.")
+    p.add_argument("--delayed-pov", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="Show the driver POV through a software frame-delay buffer so "
+                        "the operator SEES the camera-channel latency (Chrono's SetLag "
+                        "does not delay the display). On by default for live rounds; "
+                        "--no-delayed-pov reverts to the real-time view.")
+    p.add_argument("--pov-flip", action="store_true",
+                   help="Vertically flip the delayed POV if it renders upside down.")
     p.add_argument("--convoy", nargs="+", default=[""],
                    help="Convoy scenario(s) the operator must avoid, swept as "
                         "separate rounds (lead_brake/cut_in/stalled/swerver/convoy/"
@@ -191,6 +199,10 @@ def command_for_round(args: argparse.Namespace, run_dir: Path, idx: int, filter_
     ]
     if args.cam_fullscreen:
         cmd.append("--cam-fullscreen")
+    if getattr(args, "delayed_pov", False):
+        cmd.append("--delayed-pov")
+        if getattr(args, "pov_flip", False):
+            cmd.append("--pov-flip")
     if convoy:
         cmd += ["--convoy", convoy, "--traffic-detail", args.traffic_detail]
     if args.goal_distance > 0:
