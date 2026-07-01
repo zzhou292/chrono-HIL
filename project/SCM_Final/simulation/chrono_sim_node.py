@@ -1356,10 +1356,25 @@ def run_sim_node(args):
                     cam_lag_ema += 0.1 * (camera_delay_s - cam_lag_ema)
                 # Only the live ChFilterVisualize path relies on SetLag. With the
                 # delayed-POV buffer active, SetLag stays 0 (the buffer owns the
-                # delay) to avoid double-delaying.
+                # delay) to avoid double-delaying. EXPERIMENT (env
+                # DELAYED_POV_SENSOR_LAG=1): let the sensor's own lag apply the
+                # delay -- ChOptixEngine only *waits* for a sensor buffer after
+                # lag+collection elapses, so a large lag should make the readback
+                # non-blocking (sim stays real-time; frames arrive delayed).
                 if delayed_pov is None:
                     try:
                         driver_cam.SetLag(cam_lag_ema)
+                    except Exception:
+                        pass
+                else:
+                    # Delayed-POV: SetLag is NOT used for the delay (it does not
+                    # cleanly age the content); it only needs to be large enough
+                    # that ChOptixEngine doesn't block the sim loop waiting for
+                    # the render. A small fixed pipeline lag decouples render from
+                    # the loop (sim stays real-time at full res); the actual delay
+                    # is applied by the wall-clock ring buffer below.
+                    try:
+                        driver_cam.SetLag(float(os.environ.get("DELAYED_POV_PIPELINE_LAG", "0.2")))
                     except Exception:
                         pass
             _tw = wall_time.time()
