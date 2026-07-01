@@ -50,6 +50,8 @@ class DelayedPOV:
         self._last_shown_apply = -1.0
         self._n_cap = 0
         self._n_show = 0
+        self._n_miss = 0   # capture() calls where HasData() was False
+        self._last_ts = None  # last captured buffer.TimeStamp (dedupe duplicates)
         try:
             import pygame
             self._pg = pygame
@@ -87,7 +89,17 @@ class DelayedPOV:
         try:
             b = driver_cam.GetMostRecentRGBA8Buffer()
             if not b.HasData():
+                self._n_miss += 1
                 return
+            # The sensor block runs every physics step (sensor_interval=0 when the
+            # IMU is active), but the camera only renders at cam_rate. Dedupe by the
+            # buffer's render TimeStamp so we store one entry per real frame (~30/s),
+            # not ~330/s duplicates -- otherwise the ring buffer holds < the delay
+            # window and the delayed frame is evicted before it is due.
+            ts = getattr(b, "TimeStamp", None)
+            if ts is not None and ts == self._last_ts:
+                return
+            self._last_ts = ts
             d = b.GetRGBA8Data()  # (H, W, 4) uint8, bottom-up
             rgb = d[::-1, :, :3] if self.flip_vertical else d[..., :3]  # flip once, here
             now = _time.monotonic()
@@ -129,6 +141,9 @@ class DelayedPOV:
                   f"captured={self._n_cap}", flush=True)
 
     def close(self) -> None:
+        if self.debug:
+            print(f"  [POV-dbg] final: captured={self._n_cap} shown={self._n_show} "
+                  f"hasdata_misses={self._n_miss}", flush=True)
         if self.ok and self._pg is not None:
             try:
                 self._pg.display.quit()

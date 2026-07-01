@@ -92,15 +92,15 @@ def parse_args() -> argparse.Namespace:
                         "lock-to-lock range to match the physical wheel (default 450).")
     # Real-time tuning for interactive driving (defaults favour real-time over
     # the autonomous-sweep fidelity, since a human must drive these live).
-    p.add_argument("--cam-width", type=int, default=1920,
-                   help="Driver POV render width (px). Full 1920x1200 now holds ~1.0x "
-                        "real-time on single-vehicle scenes: the delayed POV renders "
-                        "NON-BLOCKING (small sensor pipeline lag) so the sim no longer "
-                        "waits on the GPU. Video fps is GPU-limited (~10-15 at full "
-                        "res) but motion is real-time. Multi-vehicle scenes (convoy/"
-                        "platoon) run ~0.8x (5-vehicle soil physics, not render).")
-    p.add_argument("--cam-height", type=int, default=1200,
-                   help="Driver POV render height (px). 1200 = 16:10.")
+    p.add_argument("--cam-width", type=int, default=1280,
+                   help="Driver POV render width (px), GPU-upscaled to the display. "
+                        "The delayed POV dedupes frames by render TimeStamp so the "
+                        "readback runs ~30/s (not per physics step), which holds RT "
+                        "~1.0x up to ~1600x1000 on single-vehicle scenes. Default 1280 "
+                        "(16:10). Multi-vehicle scenes (convoy/platoon) run ~0.7x from "
+                        "the 5-vehicle soil physics, not render.")
+    p.add_argument("--cam-height", type=int, default=800,
+                   help="Driver POV render height (px). 800 = 16:10 with width 1280.")
     p.add_argument("--cam-fov", type=float, default=1.05,
                    help="Driver POV camera horizontal FOV (rad, ~1.05=60deg).")
     p.add_argument("--cam-rate", type=float, default=30.0,
