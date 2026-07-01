@@ -1869,21 +1869,24 @@ behind a vehicle.
 The same machinery replays a \emph{recorded} G29 trace unchanged, so logged
 human intent is a drop-in input to this protocol. We replayed ten such drives
 --- the five convoy scenarios under both a good and a congested learned 5G
-\emph{command}-channel profile (Sec.~\ref{sec:latency}) --- filter-off vs
-DOB-CBF (Fig.~\ref{fig:teleop_cf}). Unlike the adversarial stand-in, the human
-operator is competent: collision-free in eight of the ten drives. DOB-CBF
-leaves that competence essentially untouched, acting at an order of magnitude
-less command deviation than on the scripted intents
-($|\Delta\delta|\!\approx\!0.018$, $|\Delta\tau|\!\approx\!0.09$ versus $0.13$,
-$0.28$), yet it still lifts the median minimum clearance from $0.38$ to
-$4.23\,$m and averts one of the operator's two collisions --- the forward
-platoon clip ($-0.40\!\to\!+10.4\,$m). The collision it does \emph{not} prevent
-is a rear-approach, which a forward-collision filter cannot address by
-construction; we include it to mark the limitation rather than hide it. On
-genuine human intent the filter thus restores margin without fighting a capable
-driver. (This corroboration uses a single operator and applies the 5G profile
-to the command channel; a multi-operator study under combined command-and-video
-latency is left to future work.)
+profile (Sec.~\ref{sec:latency}), the operator driving on the \emph{delayed}
+camera feed and through the delayed command path (glass-to-glass) --- filter-off
+vs DOB-CBF (Fig.~\ref{fig:teleop_cf}). Under this genuinely hard condition the
+operator collided in five of the ten drives; DOB-CBF cut that to two, a net
+\emph{three of five averted}, and lifted the median minimum clearance from
+$0.15$ to $4.42\,$m at a modest command deviation
+($|\Delta\delta|\!\approx\!0.04$, $|\Delta\tau|\!\approx\!0.15$, below the
+scripted-intent case and near-inert on the good link). It prevented \emph{all
+four} forward-collision cases the operator hit --- both convoys, the congested
+lead-brake, and the congested platoon ($-0.69\!\to\!+10.3\,$m). Its two residual
+collisions mark the filter's limits, which we report rather than hide: a
+rear-approach, which a forward-collision filter cannot prevent by construction
+(the operator hit it too), and one congested stalled-vehicle case where the
+filter over-steered ($|\Delta\delta|\!=\!0.23$) and stalled the truck in the
+boulder field, colliding where the operator had squeezed past. On genuine human
+intent the filter thus restores large clearance margins on the cases it is
+designed for, without fighting a capable driver. (Single operator; a
+multi-operator study is left to future work.)
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
@@ -1913,13 +1916,14 @@ latency is left to future work.)
   \centering
   \includegraphics[width=\columnwidth]{teleop_counterfactual_clearance.png}
   \caption{Counterfactual replay on ten \emph{recorded human} G29 drives (five
-    convoy scenarios $\times$ good/congested command-channel 5G latency),
-    operator (no filter) vs DOB-CBF. The competent operator is collision-free
-    in eight of ten drives but skims hazards (median minimum clearance
-    $0.38\,$m, twice dipping below zero into a collision); DOB-CBF restores the
-    median to $4.23\,$m and averts the forward platoon collision, at a near-inert
-    $|\Delta\delta|\!\approx\!0.018$. The one unaverted collision is a
-    rear-approach, outside a forward-collision filter's scope by construction.}
+    convoy scenarios $\times$ good/congested 5G latency, driven glass-to-glass on
+    the delayed camera + command paths), operator (no filter) vs DOB-CBF. Under
+    the hard delayed-video condition the operator collides in five of ten
+    (clearance $<0$); DOB-CBF averts the four \emph{forward}-collision cases and
+    lifts the median minimum clearance from $0.15$ to $4.42\,$m at
+    $|\Delta\delta|\!\approx\!0.04$. Two residual collisions bound its scope: a
+    rear-approach (a forward filter cannot prevent it) and one congested stalled
+    case where the filter over-steered into the boulder field.}
   \label{fig:teleop_cf}
 \end{figure}
 
