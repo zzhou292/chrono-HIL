@@ -769,7 +769,8 @@ def run_sim_node(args):
                     args.cam_width, args.cam_height,
                     fullscreen=args.cam_fullscreen,
                     flip_vertical=not bool(getattr(args, "pov_no_flip", False)),
-                    frame_period_s=1.0 / max(args.cam_rate, 1.0))
+                    frame_period_s=1.0 / max(args.cam_rate, 1.0),
+                    debug=os.environ.get("DELAYED_POV_DEBUG") == "1")
                 if delayed_pov.ok:
                     print(f"  Chrono Sensor: driver POV shown through a "
                           f"software delay buffer (camera-channel latency visible)")
@@ -1358,13 +1359,13 @@ def run_sim_node(args):
             _sensor_calls += 1
             last_sensor_time = time_chrono
 
-            # Software frame-delay POV: buffer the freshly rendered frame and
-            # display the one from ~camera_delay ago. Uses the EMA-smoothed lag
-            # (raw per-frame delay is jittery -> stuttery frame selection).
+            # Software frame-delay POV: buffer the freshly rendered frame, tagged
+            # to appear ~camera_delay from now (wall-clock). Uses the EMA-smoothed
+            # lag (raw per-frame delay is jittery -> reorders/stutter). The actual
+            # display happens every loop iteration below (steady wall-clock cadence).
             if delayed_pov is not None:
-                delayed_pov.capture(time_chrono, driver_cam)
                 _disp_lag = cam_lag_ema if cam_lag_ema is not None else camera_delay_s
-                delayed_pov.show(time_chrono, _disp_lag)
+                delayed_pov.capture(driver_cam, _disp_lag)
 
         step_count += 1
         _t_report_steps += 1
@@ -1409,6 +1410,12 @@ def run_sim_node(args):
             state_pub.send(state_msg)
             _t_state_extract += wall_time.time() - _tw
             last_state_pub_time = time_chrono
+
+        # --- Delayed POV: release frames on the wall clock every iteration ---
+        # (kept out of the sensor block so display cadence tracks real time, not
+        # the sim-step timing -- that coupling was the source of the jitter).
+        if delayed_pov is not None:
+            delayed_pov.show()
 
         # --- Real-time pacing (always on unless --no-rt) ---
         # Without this, the headless sim runs 4-5x real-time and the
