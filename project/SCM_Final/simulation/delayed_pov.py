@@ -27,6 +27,7 @@ and the caller keeps the live ``ChFilterVisualize`` path.
 """
 from __future__ import annotations
 
+import os as _os
 import time as _time
 from collections import deque
 
@@ -44,6 +45,7 @@ class DelayedPOV:
         self.ok = False
         self._pg = None
         self._screen = None
+        self._win_w, self._win_h = self.width, self.height  # display window size
         self._buf: deque[tuple[float, float, np.ndarray]] = deque()
         self._max_frames = max(8, int(max_delay_s / max(frame_period_s, 1e-3)) + 8)
         self._last_apply = -1.0
@@ -58,13 +60,20 @@ class DelayedPOV:
             if not pygame.get_init():
                 pygame.init()
             pygame.display.init()
-            # Draw at the native camera resolution and let pygame SCALED do the
-            # fit-to-display on the GPU. A CPU transform.scale per frame (the old
-            # path) cost ~10-15 ms/frame in the sim loop and dragged the whole sim
-            # into slow motion (RT ~0.17x). SCALED is *not* exclusive fullscreen,
-            # so the always-on-top HUD overlay still composits over it.
-            flags = pygame.SCALED if fullscreen else 0
-            self._screen = pygame.display.set_mode((self.width, self.height), flags)
+            # Fullscreen = a BORDERLESS window sized to the desktop (NOFRAME), NOT
+            # exclusive FULLSCREEN. Exclusive fullscreen bypasses the window manager
+            # and hides the always-on-top HUD overlay; a NOFRAME window stays
+            # WM-composited so the HUD floats over it. The frame is scaled up to the
+            # desktop in _blit (affordable now that dedupe caps the blit at ~30/s).
+            if fullscreen:
+                info = pygame.display.Info()
+                if info.current_w > 0 and info.current_h > 0:
+                    self._win_w, self._win_h = info.current_w, info.current_h
+                _os.environ.setdefault("SDL_VIDEO_WINDOW_POS", "0,0")
+                self._screen = pygame.display.set_mode((self._win_w, self._win_h),
+                                                       pygame.NOFRAME)
+            else:
+                self._screen = pygame.display.set_mode((self._win_w, self._win_h))
             pygame.display.set_caption("Driver POV (delayed downlink)")
             self.ok = True
         except Exception as e:
@@ -78,6 +87,8 @@ class DelayedPOV:
         # which is what keeps the sim at real-time. SCALED fits it to the display.
         pg = self._pg
         surf = pg.image.frombuffer(frame, (self.width, self.height), "RGB")
+        if (self._win_w, self._win_h) != (self.width, self.height):
+            surf = pg.transform.scale(surf, (self._win_w, self._win_h))
         self._screen.blit(surf, (0, 0))
         pg.display.flip()
         pg.event.pump()
