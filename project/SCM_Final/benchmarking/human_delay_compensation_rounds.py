@@ -225,13 +225,29 @@ def command_for_round(args: argparse.Namespace, run_dir: Path, idx: int, filter_
                 "--camera-input-delay", str(camera_delay)]
     cmd.append("--wasd" if args.manual_mode == "wasd" else "--manual")
     if args.rocks > 0:
-        zone = PATH_ROCK_ZONES.get(path, PATH_ROCK_ZONES["sinusoidal"])
+        min_spacing = args.rock_min_spacing
+        if convoy:
+            # With traffic in the lane, keep the centerline thinned: the cars are
+            # the lane hazard and the driver swerves off-centre into the rocks.
+            zone = PATH_ROCK_ZONES.get(path, PATH_ROCK_ZONES["sinusoidal"])
+            centerline_clear = args.rock_centerline_clear
+        else:
+            # NO CARS: the rocks ARE the hazard, so they must occupy the driving
+            # corridor. The default thinned/wide field (centerline clear, x out to
+            # 98 m) leaves a straight bypass to the ~40 m goal -> an empty course.
+            # Tighten to the start->goal corridor, don't clear the centerline, and
+            # tighten spacing so the corridor holds a real staggered weave (default
+            # 5 rocks -> ~4 in the corridor; a clear gap >= spacing always exists).
+            gx = args.goal_distance if args.goal_distance > 0 else 45.0
+            zone = {"x": (8.0, gx + 4.0), "y": (-5.0, 5.0)}
+            centerline_clear = 0.0
+            min_spacing = min(min_spacing, 4.5)
         cmd += [
             "--rock-zone-x", str(zone["x"][0]), str(zone["x"][1]),
             "--rock-zone-y", str(zone["y"][0]), str(zone["y"][1]),
             "--rock-size", str(args.rock_size[0]), str(args.rock_size[1]),
-            "--rock-min-spacing", str(args.rock_min_spacing),
-            "--rock-centerline-clear", str(args.rock_centerline_clear),
+            "--rock-min-spacing", str(min_spacing),
+            "--rock-centerline-clear", str(centerline_clear),
             "--rock-spawn-clear", str(args.rock_spawn_clear),
         ]
     if filter_name != "none":
