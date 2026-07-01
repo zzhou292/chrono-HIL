@@ -306,6 +306,11 @@ Examples:
                    help="Driver POV camera horizontal FOV (rad, ~1.05=60deg).")
     p.add_argument("--cam-rate", type=float, default=30.0,
                    help="Driver POV camera render rate (Hz); real-time lever.")
+    p.add_argument("--delayed-pov", action="store_true",
+                   help="Show the driver POV through a software frame-delay buffer so "
+                        "the operator sees the camera-channel latency (forwarded to sim).")
+    p.add_argument("--pov-flip", action="store_true",
+                   help="Vertically flip the delayed POV (forwarded to sim).")
     p.add_argument("--cam-fullscreen", action="store_true",
                    help="Display the driver POV fullscreen (renders at cam W x H).")
     p.add_argument("--convoy", type=str, default="",
@@ -433,6 +438,10 @@ Examples:
                     "--cam-rate", str(args.cam_rate)])
     if args.cam_fullscreen:
         sim_cmd.append("--cam-fullscreen")
+    if args.delayed_pov:
+        sim_cmd.append("--delayed-pov")
+    if args.pov_flip:
+        sim_cmd.append("--pov-flip")
     if args.convoy:
         sim_cmd.extend(["--convoy", args.convoy, "--traffic-detail", args.traffic_detail])
     if args.goal_distance > 0:

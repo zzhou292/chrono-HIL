@@ -100,7 +100,15 @@ def ensure_runtime_env() -> None:
 
 
 def timestamped_result_dir(prefix: str) -> Path:
-    out = RESULTS_ROOT / f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}"
+    # Second-resolution timestamps collide when two runs start in the same
+    # second (e.g. a fast-failing sub-run, or back-to-back launches). Append a
+    # numeric suffix on collision instead of raising FileExistsError.
+    base = f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}"
+    out = RESULTS_ROOT / base
+    n = 1
+    while out.exists():
+        out = RESULTS_ROOT / f"{base}_{n}"
+        n += 1
     out.mkdir(parents=True, exist_ok=False)
     (out / "raw").mkdir()
     (out / "figures").mkdir()
