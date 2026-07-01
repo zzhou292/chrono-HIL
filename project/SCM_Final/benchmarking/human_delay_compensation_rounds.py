@@ -92,10 +92,14 @@ def parse_args() -> argparse.Namespace:
                         "lock-to-lock range to match the physical wheel (default 450).")
     # Real-time tuning for interactive driving (defaults favour real-time over
     # the autonomous-sweep fidelity, since a human must drive these live).
-    p.add_argument("--cam-width", type=int, default=1920,
-                   help="Driver POV render width (px).")
-    p.add_argument("--cam-height", type=int, default=1200,
-                   help="Driver POV render height (px). 1200 = 16:10 (default).")
+    p.add_argument("--cam-width", type=int, default=640,
+                   help="Driver POV RENDER width (px). Default 640 (16:10). The POV is "
+                        "GPU-upscaled to the display, so this sets render cost, not "
+                        "window size. 1920x1200 ray-traced over the SCM mesh runs at "
+                        "~0.25x real-time (slow motion, undriveable); 640x400 holds "
+                        "~1.0x on single-vehicle scenes. Raise only if your GPU keeps RT.")
+    p.add_argument("--cam-height", type=int, default=400,
+                   help="Driver POV RENDER height (px). Default 400 (16:10 with 640).")
     p.add_argument("--cam-fov", type=float, default=1.05,
                    help="Driver POV camera horizontal FOV (rad, ~1.05=60deg).")
     p.add_argument("--cam-rate", type=float, default=30.0,
