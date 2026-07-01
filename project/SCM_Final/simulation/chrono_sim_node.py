@@ -768,7 +768,7 @@ def run_sim_node(args):
                 delayed_pov = DelayedPOV(
                     args.cam_width, args.cam_height,
                     fullscreen=args.cam_fullscreen,
-                    flip_vertical=bool(getattr(args, "pov_flip", False)),
+                    flip_vertical=not bool(getattr(args, "pov_no_flip", False)),
                     frame_period_s=1.0 / max(args.cam_rate, 1.0))
                 if delayed_pov.ok:
                     print(f"  Chrono Sensor: driver POV shown through a "
@@ -1755,8 +1755,9 @@ def main():
                         "the ChFilterVisualize display, so without this the live view "
                         "is real-time. Requires a display; falls back to the live view "
                         "if pygame can't open one. Ignored outside live manual mode.")
-    p.add_argument("--pov-flip", action="store_true",
-                   help="Vertically flip the delayed POV (if the frame is upside down).")
+    p.add_argument("--pov-no-flip", action="store_true",
+                   help="Disable the delayed POV's default vertical flip (the Chrono "
+                        "RGBA8 buffer is bottom-up, so it is flipped upright by default).")
     p.add_argument("--latency-profile-json", default="",
                    help="JSON profile for time-varying 5G-like one-way latency. "
                         "Overrides fixed --teleop-delay/--manual-input-delay per channel.")

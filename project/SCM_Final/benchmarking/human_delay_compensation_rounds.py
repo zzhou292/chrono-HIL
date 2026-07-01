@@ -110,8 +110,9 @@ def parse_args() -> argparse.Namespace:
                         "the operator SEES the camera-channel latency (Chrono's SetLag "
                         "does not delay the display). On by default for live rounds; "
                         "--no-delayed-pov reverts to the real-time view.")
-    p.add_argument("--pov-flip", action="store_true",
-                   help="Vertically flip the delayed POV if it renders upside down.")
+    p.add_argument("--pov-no-flip", action="store_true",
+                   help="Disable the delayed POV's default vertical flip (it is flipped "
+                        "upright by default; use this if your POV shows upside down).")
     p.add_argument("--convoy", nargs="+", default=[""],
                    help="Convoy scenario(s) the operator must avoid, swept as "
                         "separate rounds (lead_brake/cut_in/stalled/swerver/convoy/"
@@ -201,8 +202,8 @@ def command_for_round(args: argparse.Namespace, run_dir: Path, idx: int, filter_
         cmd.append("--cam-fullscreen")
     if getattr(args, "delayed_pov", False):
         cmd.append("--delayed-pov")
-        if getattr(args, "pov_flip", False):
-            cmd.append("--pov-flip")
+        if getattr(args, "pov_no_flip", False):
+            cmd.append("--pov-no-flip")
     if convoy:
         cmd += ["--convoy", convoy, "--traffic-detail", args.traffic_detail]
     if args.goal_distance > 0:
