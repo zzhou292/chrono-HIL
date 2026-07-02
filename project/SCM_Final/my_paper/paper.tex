@@ -1882,10 +1882,12 @@ lead-brake, and the congested platoon ($-0.69\!\to\!+10.3\,$m). Its two residual
 collisions mark the filter's limits, which we report rather than hide: a
 rear-approach, which a forward-collision filter cannot prevent by construction
 (the operator hit it too), and one congested stalled-vehicle case where the
-filter over-steered ($|\Delta\delta|\!=\!0.23$) and stalled the truck in the
-boulder field, colliding where the operator had squeezed past. On genuine human
-intent the filter thus restores large clearance margins on the cases it is
-designed for, without fighting a capable driver. (Single operator; a
+filter, rather than committing to the operator's wide lateral bypass, cut
+throttle to a crawl and re-centred the truck ($|\Delta\delta|\!=\!0.23$,
+$|\Delta\tau|\!=\!0.37$), pinning it against the stalled vehicle's corner where
+the operator had instead kept speed and passed with $1.0\,$m clearance. On
+genuine human intent the filter thus restores large clearance margins on the
+cases it is designed for, without fighting a capable driver. (Single operator; a
 multi-operator study is left to future work.)
 
 \begin{table}[!t]
@@ -1923,7 +1925,8 @@ multi-operator study is left to future work.)
     lifts the median minimum clearance from $0.15$ to $4.42\,$m at
     $|\Delta\delta|\!\approx\!0.04$. Two residual collisions bound its scope: a
     rear-approach (a forward filter cannot prevent it) and one congested stalled
-    case where the filter over-steered into the boulder field.}
+    case where the filter over-braked and re-centred, pinning the truck against
+    the stalled vehicle instead of swerving wide as the operator did.}
   \label{fig:teleop_cf}
 \end{figure}
 
