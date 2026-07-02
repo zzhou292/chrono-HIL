@@ -73,17 +73,19 @@ teleoperation. In parallel, a terrain- and latency-aware forward
 collision warning re-uses the same tire surrogate to derive a
 soil-conditioned braking budget and advise the operator without
 overriding commands. Chrono::Vehicle inside Chrono::HIL provides the
-plant, and a learned 5G profile drives the configurable command and
-camera delays. Repeatable simulation experiments show that the
-terrain-aware neural stack reduces median RMS crosstrack error by
-$37$--$38\,\%$ relative to SCM-calibrated Pacejka and TMeasy baselines
-in the live-estimator regime, the disturbance observer increases
+plant, and a synthetic 5G latency trace --- from a sequence model fit to a
+public 5G uplink dataset and mapped through a queue-load delay model ---
+drives the configurable command and camera delays. Repeatable simulation
+experiments show that the terrain-aware neural stack reduces median RMS
+crosstrack error by $37$--$38\,\%$ relative to SCM-calibrated Pacejka and
+TMeasy baselines in the live-estimator regime --- a gain concentrated in
+off-nominal (dirt, higher-speed) cells where the fixed analytical models lose
+grip, with medians otherwise comparable --- the disturbance observer increases
 achieved speed with a small tracking penalty, the DOB-CBF filter reduces
-collisions under the learned 5G profile, a deterministic
-counterfactual replay attributes $31$ of $39$ matched averted
-collisions to the filter under scripted adversarial intents, and the
-warning predicts stopping distance to within $0.17\,\mathrm{m}$ mean
-absolute error against Chrono brake stops.
+collisions under the synthetic 5G profile, a deterministic counterfactual
+replay attributes $31$ of $39$ matched averted collisions to the filter under
+scripted worst-case drive-into-hazard commands, and the warning reproduces
+Chrono brake-stop distances to within $0.17\,\mathrm{m}$ mean absolute error.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -143,8 +145,9 @@ Concretely, this integration paper contributes:
         estimator fuses a learned lateral-force channel with a
         proprioceptive window-MLP inside a state-augmented
         UKF~\cite{Dallas21}; on a 100-soil sweep along the
-        clay--dirt--sand Bekker--Mohr manifold (Chrono SCM, live
-        closed-loop NMPC), it tracks $n$ across the full deployable
+        clay--dirt--sand Bekker--Mohr manifold with the other five
+        Bekker--Mohr parameters held near their presets (Chrono SCM, live
+        closed-loop NMPC), it tracks $n$ across the deployable
         range with a $4.5\,\%$ median $|\Delta n|/n_{\mathrm{true}}$
         ($94\,\%$ of soils within $\pm 20\,\%$) --- the best of four
         backends, and well ahead of the force-only UKFs, which
@@ -167,10 +170,13 @@ Concretely, this integration paper contributes:
         \emph{counterfactual replay} --- replaying a fixed command trace
         (filter off vs.\ on) on the identical scenario --- giving a
         paired, reproducible collision-prevention measurement over a
-        scripted population of adversarial intents.
-  \item A learned 5G latency model (Section~\ref{sec:latency}) that
-        drives a queue-load delay on both the operator-command and
-        camera paths and exercises closed-loop robustness.
+        scripted population of worst-case drive-into-hazard commands (a
+        proxy for an inattentive or latency-overwhelmed operator).
+  \item A synthetic 5G latency model (Section~\ref{sec:latency}): a
+        sequence model fit to a public 5G uplink dataset, mapped through a
+        queue-load delay on both the operator-command and camera paths,
+        exercising closed-loop robustness (the queue-load mapping and outage
+        spikes are modeling choices, not measured link behavior).
   \item A terrain- and latency-aware forward collision warning
         (Section~\ref{sec:collision_warning}) that re-uses the rig
         tire surrogate for a soil-conditioned braking budget, advises
@@ -180,8 +186,9 @@ Concretely, this integration paper contributes:
         (Section~\ref{sec:suite}) that reproduces every non-HIL
         figure and CSV from a single command, and an integrated
         end-to-end demonstration (Section~\ref{sec:integrated}) that runs
-        all layers together on one mission --- the concrete evidence that the
-        components compose, not merely coexist.
+        all layers together on one mission --- a proof-of-concept that the
+        components compose in an end-to-end run (a single mission, not a
+        statistical full-stack claim; see Section~\ref{sec:integrated}).
 \end{enumerate}
 
 Several of these components individually extend prior work
@@ -1571,9 +1578,12 @@ common \texttt{filter} interface: the filter receives the desired
 steering, throttle, brake, the current state, and the nearby
 obstacles, and returns the filtered command plus diagnostics. The
 DOB-CBF variant solves a single-step minimum-deviation QP around the
-incoming command --- the natural intent-preserving mechanism for HIL
-teleoperation --- and logs intervention rate and command deviation as
-an intrusiveness signal. It also carries a rear-approach guard: when an
+incoming command --- a minimally-invasive control-barrier-function
+filter~\cite{Ames19} in the shared-control tradition of predictive and
+shared-autonomy teleoperation~\cite{Hirche12,Dragan13}, here with a
+disturbance-observer traction budget and physical rate limits; it is the
+natural intent-preserving mechanism for HIL teleoperation --- and logs
+intervention rate and command deviation as an intrusiveness signal. It also carries a rear-approach guard: when an
 in-lane vehicle is closing from behind within a threat distance, it refuses
 any deceleration and, with the path ahead clear, accelerates to escape (even
 from a standstill), since slowing into a rear approach only worsens the impact
@@ -1628,7 +1638,7 @@ variance and a separate experimental protocol). We instead validate the filter
 with the deterministic \emph{counterfactual} of Sec.~\ref{sec:safety_convoy}:
 replaying a fixed command trace (filter-off versus DOB-CBF-on) over the
 \emph{identical} scenario, so the collision-prevention measurement is paired and
-reproducible. The traces used are adversarial ``drive-into-the-hazard'' intents
+reproducible. The traces used are worst-case ``drive-into-the-hazard'' commands
 that stress the filter; because the simulator is deterministic, the same replay
 machinery can also be applied to recorded G29 traces without changing the
 evaluation code.
@@ -1851,9 +1861,9 @@ a fixed command trace is replayed through the \emph{identical}
 scenario with the filter off and on, so every outcome difference is attributable
 to the filter alone in a paired, reproducible collision-prevention measure
 with no path-tracking proxy. To avoid resting the result on one input, the trace
-is drawn from a small \emph{population of adversarial intents}: a
+is drawn from a small \emph{population of scripted worst-case commands}: a
 ``drive-into-the-hazard'' command at three throttle levels
-($0.4$, $0.6$, $0.8$), an adversarial stand-in for an inattentive or
+($0.4$, $0.6$, $0.8$), a stand-in for an inattentive or
 latency-overwhelmed operator. Table~\ref{tab:convoy_cf} aggregates these intents
 across five convoy scenarios (lead-brake, 3- and 5-vehicle convoys,
 rear-approach, stalled) $\times$ three command delays ($0$, $0.15$, $0.30\,$s)
@@ -1899,7 +1909,7 @@ future work.)
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
-  \caption{Counterfactual convoy replay: a population of adversarial intents
+  \caption{Counterfactual convoy replay: a population of scripted worst-case commands
     (constant throttle $\in\{0.4,0.6,0.8\}$ into the hazard) replayed
     filter-off vs DOB-CBF across 5 traffic scenarios $\times$ 3 command delays
     ($45$ unfiltered cells, $44$ completed DOB-CBF replays). The paired
@@ -2022,7 +2032,7 @@ all. We isolate it with a deterministic ablation: the command path is delayed
 by $\Delta_\mathrm{cmd}$ in \emph{every} run, but the filter is either
 \emph{told} the delay ($\texttt{teleop\_delay}\!=\!\Delta_\mathrm{cmd}$,
 ``aware'') or not ($\texttt{teleop\_delay}\!=\!0$, ``blind''); everything else
-is identical, and the same adversarial intents (Sec.~\ref{sec:safety_convoy})
+is identical, and the same scripted worst-case commands (Sec.~\ref{sec:safety_convoy})
 are replayed, so blind-vs-aware is paired. We sweep it as a dose-response over
 six command delays ($0$ to $0.5\,$s) $\times$ $5$ convoy scenarios $\times$ three
 intents ($90$ cells per variant). Both filters reduce collisions substantially
@@ -2042,7 +2052,7 @@ specifically, rather than only showing generic latency robustness.
 \begin{figure}[!t]
   \centering
   \includegraphics[width=\columnwidth]{latency_awareness_ablation.png}
-  \caption{Latency-awareness dose-response. The same adversarial intents are
+  \caption{Latency-awareness dose-response. The same scripted worst-case commands are
     replayed with the command path delayed by $\Delta_\mathrm{cmd}$, the DOB-CBF
     filter either \emph{told} that delay (aware) or not (blind), swept over six
     delays. At zero delay the two coincide (nothing to be aware of); the gap
@@ -2296,13 +2306,15 @@ coefficients online by stochastic gradient descent on state-derivative
 residuals. The approach is complementary to ours: they fold soil
 mechanics into a structured force law where we estimate the soil and
 re-condition an unstructured surrogate. A direct adaptation of their
-model into the per-axle interface of our acados solver improved
+tire model into the per-axle interface of our acados solver improved
 offline force prediction (held-out $R^2_{F_y}$ from $0.35$ to $0.59$)
-but underperformed on aggressive transient maneuvers because the
-static formulation triggered QP failures in our in-horizon NMPC; a
-faithful deployment requires the dedicated curvilinear-coordinate,
-wheelspeed-state MPC of~\cite{Onozuka25}, which is out of this paper's
-scope. Gupta et al.~\cite{Gupta24} compensate unmodeled dynamics with
+but did not run stably in \emph{our} in-horizon NMPC, where the static
+formulation triggered QP failures on aggressive transients. We stress this
+is \emph{not} a fair head-to-head: their model is designed for the dedicated
+curvilinear-coordinate, wheelspeed-state MPC of~\cite{Onozuka25}, which we did
+not reimplement, so we draw \emph{no} superiority conclusion from it --- only
+that the two approaches are complementary (they structure the force law; we
+estimate the soil and re-condition an unstructured surrogate around it). Gupta et al.~\cite{Gupta24} compensate unmodeled dynamics with
 a reinforcement-learning residual on top of MPC; in a feasibility
 prototype on the same plant the residual closed less than $8\,\%$ of
 the residual tracking error and only at the largest model
@@ -2327,7 +2339,7 @@ g--g profile) at a small (${\sim}7\,\mathrm{mm}$) tracking
 cost. The two-layer planner-aware stack drives collisions to $0.13$/run with
 the DOB-CBF filter, the DOB-CBF filter benefits substantially from
 re-using the neural surrogate, and a deterministic counterfactual replay over a
-population of adversarial intents attributes the averted collisions to
+population of scripted worst-case commands attributes the averted collisions to
 the filter ($31$ of $39$, collision rate $89\%\!\to\!20\%$) in a paired,
 reproducible safety measure that avoids human-operator variance. The forward
 collision warning closes the advisory gap the override-style filter
@@ -2407,6 +2419,20 @@ it cannot guarantee avoidance --- a fast tailgater is unescapable from low
 speed --- and this behaviour has so far been validated only on a single
 rear-approach scenario in simulation. A lane-change escape and a predictive
 rear cost are the natural extensions.
+Two caveats bound the safety evaluation specifically. First, DOB-CBF is
+measured against a \emph{no-filter} baseline rather than competing safety
+filters: whether the disturbance observer and neural traction budget improve
+on a textbook CBF-QP~\cite{Ames19} or a reachability-based
+filter~\cite{Bansal17} is left to future work; the NN-vs-no-NN ablation
+(Sec.~\ref{sec:safety_dobcbf}) isolates one component but not the CBF-QP itself.
+Second, the human-intent evaluation uses a single operator, and the
+counterfactual replay loses fidelity when the filter substantially alters the
+speed profile --- in one congested stalled-vehicle case the filter braked to a
+near-stop (a safe action) but the operator's faster-drive steering, replayed
+on the slowed vehicle, drifted it into a $0.5\,$m contact that is partly a
+replay artifact rather than a filter failure (Sec.~\ref{sec:safety_convoy}). A
+competitive safety-filter benchmark and a multi-operator study are the natural
+next steps.
 Estimating the full soil vector online and hardware transfer are the
 principal directions for future work; the HIL pipeline additionally enables
 a human-factors teleoperation study, which is a separate undertaking beyond
@@ -2535,6 +2561,25 @@ Choi et al.~\cite{Choi23}.
 \bibitem{Zhou23}
   Z.~Zhou \emph{et al.}, ``A Chrono-based framework for large-scale
   traffic simulation with human-in-the-loop,'' 2023.
+
+\bibitem{Ames19}
+  A.~D.~Ames, S.~Coogan, M.~Egerstedt, G.~Notomista, K.~Sreenath, and
+  P.~Tabuada, ``Control barrier functions: Theory and applications,'' in
+  \emph{Proc.\ European Control Conf.\ (ECC)}, 2019, pp.~3420--3431.
+
+\bibitem{Bansal17}
+  S.~Bansal, M.~Chen, S.~Herbert, and C.~J.~Tomlin,
+  ``Hamilton--Jacobi reachability: A brief overview and recent advances,''
+  in \emph{Proc.\ IEEE Conf.\ Decision and Control (CDC)}, 2017, pp.~2242--2253.
+
+\bibitem{Hirche12}
+  S.~Hirche and M.~Buss, ``Human-oriented control for haptic
+  teleoperation,'' \emph{Proc.\ IEEE}, vol.~100, no.~3, pp.~623--647, 2012.
+
+\bibitem{Dragan13}
+  A.~D.~Dragan and S.~S.~Srinivasa, ``A policy-blending formalism for
+  shared control,'' \emph{Int.\ J.\ Robotics Research}, vol.~32, no.~7,
+  pp.~790--805, 2013.
 
 \end{thebibliography}
 
