@@ -2023,28 +2023,32 @@ by $\Delta_\mathrm{cmd}$ in \emph{every} run, but the filter is either
 \emph{told} the delay ($\texttt{teleop\_delay}\!=\!\Delta_\mathrm{cmd}$,
 ``aware'') or not ($\texttt{teleop\_delay}\!=\!0$, ``blind''); everything else
 is identical, and the same adversarial intents (Sec.~\ref{sec:safety_convoy})
-are replayed, so blind-vs-aware is paired. Over $30$ cells per variant ($5$
-convoy scenarios $\times$ two delays $\times$ three intents), both filters reduce
-collisions substantially relative to no filter ($0.87$), but the delay-aware filter
-is strictly better: a $0.13$ collision rate vs the delay-blind $0.23$, at nearly
-twice the clearance margin ($+2.12$ vs $+1.10\,$m). Crucially the gap
-\emph{grows with delay} (Fig.~\ref{fig:latency_ablation}): at
-$\Delta_\mathrm{cmd}\!=\!0.15\,$s the two tie on collisions ($0.27$) but the
-aware filter already holds more margin ($+1.67$ vs $+0.97\,$m), while at
-$0.30\,$s delay-awareness removes the residual collisions the
-delay-blind filter still suffers ($0.20\!\to\!0.00$). This supports the
-\emph{latency-aware} claim specifically, rather than only showing generic
-latency robustness.
+are replayed, so blind-vs-aware is paired. We sweep it as a dose-response over
+six command delays ($0$ to $0.5\,$s) $\times$ $5$ convoy scenarios $\times$ three
+intents ($90$ cells per variant). Both filters reduce collisions substantially
+relative to no filter ($0.87$), but the delay-aware filter is strictly better
+overall: a $0.17$ collision rate vs the delay-blind $0.26$, at twice the
+clearance margin ($+2.34$ vs $+1.16\,$m), preventing $8$ of the blind filter's
+collisions on matched cells. Crucially the gap \emph{grows with delay}
+(Fig.~\ref{fig:latency_ablation}): at $\Delta_\mathrm{cmd}\!=\!0$ the two are
+identical ($0.33$ each --- the sanity check, since with no delay there is
+nothing to be aware of), by $0.30\,$s the delay-blind filter still collides at
+$0.20$ while the aware filter is down to $0.07$, and by $0.50\,$s awareness
+removes the residual entirely ($0.20\!\to\!0.00$). Intrusiveness is comparable
+either way ($|\Delta\delta|\!\approx\!0.10$--$0.14$), so the gain is smarter
+timing, not more aggression. This supports the \emph{latency-aware} claim
+specifically, rather than only showing generic latency robustness.
 
 \begin{figure}[!t]
   \centering
   \includegraphics[width=\columnwidth]{latency_awareness_ablation.png}
-  \caption{Latency-awareness ablation. The same adversarial intent is replayed
-    with the command path delayed by $\Delta_\mathrm{cmd}$, the DOB-CBF filter
-    either \emph{told} that delay (aware) or not (blind). A filter helps at both
-    delays, but knowing the delay matters more as the delay grows: at $0.30\,$s
-    it removes the residual collisions the delay-blind filter still suffers.
-    $30$ deterministic cells per bar.}
+  \caption{Latency-awareness dose-response. The same adversarial intents are
+    replayed with the command path delayed by $\Delta_\mathrm{cmd}$, the DOB-CBF
+    filter either \emph{told} that delay (aware) or not (blind), swept over six
+    delays. At zero delay the two coincide (nothing to be aware of); the gap
+    grows with delay --- by $0.5\,$s awareness removes the residual collisions
+    the delay-blind filter still suffers, at comparable intrusiveness. $90$
+    deterministic cells per variant.}
   \label{fig:latency_ablation}
 \end{figure}
 
