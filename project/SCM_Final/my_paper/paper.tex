@@ -1882,13 +1882,20 @@ lead-brake, and the congested platoon ($-0.69\!\to\!+10.3\,$m). Its two residual
 collisions mark the filter's limits, which we report rather than hide: a
 rear-approach, which a forward-collision filter cannot prevent by construction
 (the operator hit it too), and one congested stalled-vehicle case where the
-filter, rather than committing to the operator's wide lateral bypass, cut
-throttle to a crawl and re-centred the truck ($|\Delta\delta|\!=\!0.23$,
-$|\Delta\tau|\!=\!0.37$), pinning it against the stalled vehicle's corner where
-the operator had instead kept speed and passed with $1.0\,$m clearance. On
-genuine human intent the filter thus restores large clearance margins on the
-cases it is designed for, without fighting a capable driver. (Single operator; a
-multi-operator study is left to future work.)
+filter, rather than committing to the operator's wide lateral bypass, braked the
+truck to a near-stop ($|\Delta\tau|\!=\!0.37$). The braking is itself a safe
+response; the resulting $0.5\,$m contact is largely an artifact of open-loop
+counterfactual replay --- with the filter running $5\times$ slower than the
+operator's recorded drive, the operator's post-pass \emph{steering}, replayed on
+the still-approaching slowed vehicle, drifts it laterally into the stalled
+vehicle's corner (a closed-loop operator would see the stall and adapt). It
+nonetheless marks two real limits we report rather than hide: the filter is
+over-conservative on a stationary blocker under heavy delay (it stops rather
+than swerving), and open-loop command replay loses fidelity when the filter
+substantially alters the speed profile. On genuine human intent the filter thus
+restores large clearance margins on the cases it is designed for, without
+fighting a capable driver. (Single operator; a multi-operator study is left to
+future work.)
 
 \begin{table}[!t]
   \renewcommand{\arraystretch}{1.10}
@@ -1925,8 +1932,9 @@ multi-operator study is left to future work.)
     lifts the median minimum clearance from $0.15$ to $4.42\,$m at
     $|\Delta\delta|\!\approx\!0.04$. Two residual collisions bound its scope: a
     rear-approach (a forward filter cannot prevent it) and one congested stalled
-    case where the filter over-braked and re-centred, pinning the truck against
-    the stalled vehicle instead of swerving wide as the operator did.}
+    case where the filter braked to a near-stop instead of swerving wide; that
+    $0.5\,$m contact is largely an open-loop-replay artifact (operator steering
+    replayed on the $5\times$-slower filtered vehicle), not a braking failure.}
   \label{fig:teleop_cf}
 \end{figure}
 
